@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LIVE VJ // OUTPUT</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: #000;
+      }
+      #start-output {
+        position: fixed;
+        inset: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        background: #000;
+        color: #7dffb0;
+        font: 700 28px/1.3 Consolas, "Courier New", monospace;
+        letter-spacing: 0.14em;
+        text-align: center;
+        cursor: pointer;
+        transition: opacity 0.25s ease;
+      }
+      #start-output.gone {
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="mirror"></canvas>
+    <div id="start-output">CLICK TO START OUTPUT</div>
+    <script type="module" src="/src/output/outputPage.js"></script>
+  </body>
+</html>

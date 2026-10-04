@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LIVE VJ // TOOL</title>
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="topbar">
+        <span class="logo">LIVE&nbsp;VJ<em>//</em>TOOL</span>
+        <div class="file-launch">
+          <button id="file-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Save, load, or start a project">File</button>
+          <div id="file-menu" class="file-menu" hidden role="menu">
+            <button id="scenes-export" type="button" role="menuitem">Save Project</button>
+            <button id="scenes-save-new" type="button" role="menuitem">Save New</button>
+            <button id="scenes-import" type="button" role="menuitem">Load Project</button>
+            <button id="scenes-new" type="button" role="menuitem">New Project</button>
+            <input id="scenes-import-file" type="file" accept=".vjproj,.json,application/json" hidden />
+          </div>
+        </div>
+        <span id="fps" class="fps">-- fps</span>
+        <div class="master-transport" role="group" aria-label="Master transport">
+          <button id="master-play" type="button" class="on" aria-pressed="true" title="Play. Synced video and audio resume, and the timeline starts.">&#x25B6;</button>
+          <button id="master-pause" type="button" aria-pressed="false" title="Pause. Synced video and audio freeze on this frame. The timeline holds.">&#x275A;&#x275A;</button>
+          <button id="master-stop" type="button" aria-pressed="false" title="Stop. Synced video freezes, synced audio returns to the start, and the output goes black.">&#x25A0;</button>
+        </div>
+        <div class="view-switch">
+          <label for="view-mode">View</label>
+          <select id="view-mode" title="Studio keeps the full workspace. APC Mini is the live hardware surface. Both drive the same layers.">
+            <option value="studio">Studio / Full Control</option>
+            <option value="apc">APC Mini / Live Hardware View</option>
+          </select>
+        </div>
+        <div class="view-switch">
+          <label for="preview-format">Preview</label>
+          <select id="preview-format" title="Target frame. The picture keeps this shape when the panels around it resize.">
+            <option value="16:9">16:9 (Landscape)</option>
+            <option value="9:16">9:16 (Vertical/Social)</option>
+            <option value="1:1">1:1 (Square/Diamond LED)</option>
+          </select>
+        </div>
+        <div class="top-tools">
+          <button id="prefs-btn" type="button" title="UI scale">Preferences</button>
+          <button id="perform-btn" type="button" aria-pressed="false" title="Lock the desk for a live set. Hold the button to exit.">
+            <i class="perform-hold"></i>
+            <span>PERFORM</span>
+          </button>
+          <div class="out-launch">
+            <button id="output-win" type="button" class="primary" title="Choose a display and open a borderless master output">Master Output</button>
+            <div id="screen-menu" class="screen-menu" hidden role="menu"></div>
+          </div>
+          <button id="output-advanced" type="button" title="Corner pins and output mask for projection mapping">Advanced Output</button>
+          <button id="fs-btn" type="button">Fullscreen</button>
+          <select id="rec-aspect" title="Frame written into the recording. Native keeps the current render size.">
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16</option>
+            <option value="1:1">1:1</option>
+            <option value="native">Native</option>
+          </select>
+          <button id="rec-btn" type="button" class="rec">&#x25CF; REC</button>
+          <span id="rec-time" class="status"></span>
+          <button id="sys-toggle" type="button" class="on" title="Show or hide the library sidebar">Hide Library</button>
+          <button id="diag-toggle" type="button" title="Open the routing and performance helper">Diagnostics</button>
+          <button id="ui-mode" type="button" title="Timeline Mode edits cues. Live Performance Mode hides the track and enlarges scene pads.">Timeline Mode</button>
+        </div>
+      </header>
+
+      <aside class="library" id="library">
+        <h2 class="col-title">Library</h2>
+        <details id="diag-panel" class="fold diag">
+          <summary>Helper / Diagnostics <i id="diag-nominal" class="diag-nominal" hidden>All Systems Nominal</i><i id="diag-badge" class="diag-badge" hidden>0</i></summary>
+          <p class="hint">Click a warning to select that layer, open its group, and flash the slider for two seconds.</p>
+          <h3>What's happening</h3>
+          <ul id="diag-routes" class="diag-list"></ul>
+          <h3>What's messy</h3>
+          <ul id="diag-warn" class="diag-list"></ul>
+          <h3>Performance</h3>
+          <ul id="diag-load" class="diag-list"></ul>
+          <h3>Keep it readable</h3>
+          <ul id="diag-readable" class="diag-list"></ul>
+        </details>
+        <details id="acc-media" class="fold" open>
+          <summary>Media Library</summary>
+          <div class="row">
+            <button id="media-add" type="button">+ Add media files</button>
+            <input id="media-files" type="file" multiple hidden
+              accept="image/*,video/*,.mp4,.mov,.m4v,.webm" />
+          </div>
+          <div id="media-list" class="media-grid"></div>
+          <p id="media-missing" class="status error" hidden></p>
+          <p class="hint">Drop files on the preview to add them. Hover a clip and send it to a layer. A single file also goes onto the selected layer. Uploads are cached in this browser so scenes reload their clips automatically.</p>
+          <div id="online-source" class="online-source">
+            <label for="online-prompt">Live Text-to-Visual</label>
+            <select id="online-mode" title="Source">
+              <option value="pexels">Pexels</option>
+            </select>
+            <div class="row">
+              <input id="online-prompt" type="text" placeholder="clouds, neon sunset" autocomplete="off" spellcheck="false" />
+              <button id="online-fetch" type="button">Fetch Video Loop</button>
+            </div>
+            <p id="online-status" class="hint"></p>
+          </div>
+        </details>
+
+        <details id="acc-audio" class="fold">
+          <summary>Audio</summary>
+          <div class="seg" id="audio-kind">
+            <button type="button" data-kind="device" class="on">Live Hardware</button>
+            <button type="button" data-kind="file">Local File</button>
+          </div>
+          <div id="audio-device-row" class="row">
+            <select id="audio-device" title="Input device. Focusrite channels and loopback show up here after the browser is allowed to listen.">
+              <option value="">Select input…</option>
+            </select>
+            <button id="audio-refresh" type="button" title="Refresh devices">&#x21bb;</button>
+          </div>
+          <div id="audio-file-row" hidden>
+            <div class="row">
+              <input id="audio-file" type="file" accept=".mp3,.wav,.aiff,.aif,audio/mpeg,audio/wav,audio/wave,audio/aiff,audio/x-aiff,audio/*" />
+            </div>
+            <div id="audio-drop" class="audio-drop">Drop an .mp3, .wav, or .aiff</div>
+            <div class="transport">
+              <button id="audio-play" type="button" disabled>Play</button>
+              <input id="audio-scrub" type="range" min="0" max="1000" step="1" value="0" disabled />
+              <span id="audio-time" class="status">0:00</span>
+            </div>
+            <div class="row">
+              <label class="check" title="Loop the music on the audio clock. A video ending or looping does not move this track."><input id="audio-loop" type="checkbox" checked /> Loop Audio</label>
+              <label class="check" title="When on, header Play, Pause, and Stop drive this track. Turn off and it ignores the master transport."><input id="audio-sync" type="checkbox" checked /> Sync to Master</label>
+              <span id="audio-status" class="status"></span>
+            </div>
+            <div class="param">
+              <label for="audio-volume">Volume</label>
+              <input id="audio-volume" type="range" min="0" max="1" step="0.01" value="0.8" />
+              <output id="audio-volume-out">0.80</output>
+            </div>
+          </div>
+          <label class="check" title="Compressor and makeup gain in front of the FFT, so a quiet interface and a hot file land on the same scale.">
+            <input id="audio-agc" type="checkbox" checked /> Auto-Gain
+          </label>
+          <p class="hint">One 4096-point FFT. Sub, low-mid, high-mid, and air are the RMS of those ranges, then shaped by attack and release. A beat is a jump above the last 60 frames, not a loud hold.</p>
+          <div class="param audio-gain">
+            <label for="audio-master">Master Gain</label>
+            <input id="audio-master" type="range" min="0" max="4" step="0.01" value="1" title="Scales the analysed signal. The file volume slider is the speaker level." />
+            <output id="audio-master-out">1.00</output>
+            <button id="audio-mute" type="button" title="Silence the speakers and the analysis">Mute</button>
+          </div>
+          <div class="audio-env">
+            <label for="audio-attack">Attack</label>
+            <input id="audio-attack" type="range" min="0.001" max="0.08" step="0.001" value="0.01" title="How fast a band rises when the energy jumps." />
+            <output id="audio-attack-out">0.01s</output>
+            <label for="audio-release">Release</label>
+            <input id="audio-release" type="range" min="0.02" max="0.6" step="0.01" value="0.15" title="How slowly a band falls after the energy drops." />
+            <output id="audio-release-out">0.15s</output>
+          </div>
+          <div class="audio-monitor">
+            <canvas id="audio-fft" aria-label="Raw spectrum with smoothed mel bands"></canvas>
+            <div class="mel-legend">
+              <span class="mel-sub">Sub</span>
+              <span class="mel-low">Low-Mid</span>
+              <span class="mel-high">High-Mid</span>
+              <span class="mel-air">Air</span>
+            </div>
+          </div>
+          <div class="meters" id="audio-spectrum">
+            <div class="meter beat"><span>KICK</span><i id="m-kick"></i></div>
+            <div class="meter beat"><span>SNARE</span><i id="m-snare"></i></div>
+            <div class="meter macro"><span>NRG</span><i id="m-energy"></i></div>
+            <div class="meter macro"><span>BRK</span><i id="m-break"></i></div>
+            <div class="meter macro"><span>DROP</span><i id="m-drop"></i></div>
+          </div>
+        </details>
+
+        <details id="acc-midi" class="fold">
+          <summary>MIDI <span id="midi-status" class="status"></span></summary>
+          <div class="row">
+            <button id="midi-enable" type="button">Enable MIDI</button>
+            <button id="midi-learn" type="button" title="Arm learn, click a slider or pad, then move a knob or hit a pad">MIDI Learn</button>
+            <button id="apc-preset" type="button" title="Channel 1 map for the APC Mini MK2. Pads, faders, and LEDs bind without MIDI Learn.">APC Mini MK2 Default</button>
+            <button id="midi-clear" type="button">Clear maps</button>
+          </div>
+          <p class="hint">MIDI Learn highlights the next slider, menu, or pad you click. APC Mini MK2 Default binds Channel 1 without Learn: pads 0–63, scene buttons 112–113, faders CC 48–50 and master CC 56, track buttons 64–67. Pad LEDs follow the live page.</p>
+        </details>
+
+        <details id="acc-macros" class="fold">
+          <summary>Macro Knobs</summary>
+          <div id="macro-list" class="macro-list"></div>
+          <button id="macro-add" type="button">Add macro knob</button>
+          <p class="hint">One CC can move several sliders. Depth is how far it travels. Invert flips the direction.</p>
+        </details>
+
+        <details id="acc-output" class="fold">
+          <summary>Output</summary>
+          <div class="row">
+            <label>Aspect</label>
+            <select id="aspect" title="Same target frame as Preview Format in the header.">
+              <option value="16:9">16:9 (Landscape)</option>
+              <option value="9:16">9:16 (Vertical/Social)</option>
+              <option value="1:1">1:1 (Square/Diamond LED)</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Scale</label>
+            <div class="seg">
+              <button id="scale-fill" type="button" class="on">Fill</button>
+              <button id="scale-fit" type="button">Fit</button>
+            </div>
+          </div>
+          <div class="row">
+            <label>Render scale</label>
+            <select id="render-scale" title="Internal frame size. 1x is the target frame (1920×1080, 1080×1920, or 1152×1152). The preview scales that frame with CSS. It never renders at screen pixel density.">
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1x</option>
+            </select>
+          </div>
+          <div class="row">
+            <select id="rec-format"></select>
+          </div>
+          <div class="row">
+            <label class="check"><input id="rec-audio" type="checkbox" checked /> Include audio</label>
+          </div>
+          <p class="hint">
+            Keys: <b>Q W E</b> select layer &middot; <b>1-9</b> layer shader &middot; <b>Shift+1-9</b> launch scene
+            &middot; <b>Space</b> timeline play/pause &middot; <b>T</b> tap tempo &middot; <b>L</b> live/timeline
+            &middot; <b>H</b> code HUD &middot; <b>C</b> cycle overlay mode &middot; <b>P</b> hide UI &middot; <b>F</b> fullscreen &middot; <b>R</b> record
+            <br />Each layer picks its own engine. 3D shaders: drag the preview to orbit, scroll to zoom. Double-click a slider to reset it.
+          </p>
+        </details>
+
+        <details id="code-overlay" class="fold">
+          <summary>Code Overlay</summary>
+          <p class="hint">Preset, line height, mix, and output routing sit under HUD Settings on the Composition panel. Drag the box on the preview to place the overlay.</p>
+        </details>
+      </aside>
+
+      <main id="stage" class="preview">
+        <div id="preview-wrap" class="preview-wrap">
+          <div id="hud-frame" class="hud-frame" hidden title="Drag to move the overlay. Drag a corner to resize. Double-click to swap a column and a landscape bar.">
+            <pre id="hud" class="hud"></pre>
+            <div class="hud-box" aria-hidden="true">
+              <span class="hud-handle" data-handle="nw"></span>
+              <span class="hud-handle" data-handle="ne"></span>
+              <span class="hud-handle" data-handle="sw"></span>
+              <span class="hud-handle" data-handle="se"></span>
+            </div>
+          </div>
+          <p id="dpi-readout" class="dpi-readout">[OUTPUT RATIO: 1.0 (PREVIEW 0.3)]</p>
+        </div>
+      </main>
+
+      <aside class="inspector" id="inspector">
+        <h2 class="col-title">Inspector</h2>
+        <section class="layer-editor" id="layer-editor">
+          <h2>Layer <span id="layer-name" class="layer-badge">A</span></h2>
+          <div class="row">
+            <select id="layer-media" title="Media for this layer"></select>
+            <button id="layer-media-refresh" type="button" title="Refresh cameras">&#x21bb;</button>
+          </div>
+          <div class="row layer-flags">
+            <label class="check"><input id="layer-mirror" type="checkbox" /> Mirror</label>
+            <label class="check" title="When on, this layer follows header Play, Pause, and Stop. Turn off and it keeps playing through a blackout."><input id="layer-sync" type="checkbox" checked /> Sync to Master</label>
+            <span id="layer-status" class="status"></span>
+          </div>
+          <div id="video-transport" class="video-transport" hidden>
+            <div class="row">
+              <button id="video-play" type="button" title="Play">&#x25B6; Play</button>
+              <button id="video-pause" type="button" title="Pause">&#x275A;&#x275A; Pause</button>
+              <button id="video-restart" type="button" title="Restart from the loop in point">&#x23EE; Restart</button>
+            </div>
+            <div class="playback-row">
+              <div class="scrub-row">
+                <input id="video-scrub" type="range" min="0" max="0" step="0.01" value="0" aria-label="Playhead" />
+                <span id="video-time" class="status">00:00.0 / 00:00.0</span>
+              </div>
+              <div id="loop-track" class="loop-track" aria-label="Loop range">
+                <div id="loop-span" class="loop-span"></div>
+                <button id="loop-in-thumb" type="button" class="loop-thumb" aria-label="Loop in"></button>
+                <button id="loop-out-thumb" type="button" class="loop-thumb" aria-label="Loop out"></button>
+              </div>
+              <span class="loop-spacer" aria-hidden="true"></span>
+            </div>
+          </div>
+          <div id="layer-params"></div>
+        </section>
+        <div id="param-help" class="param-help">
+          <b id="param-help-title">Parameter</b>
+          <p id="param-help-body">Hover a slider to read what it changes on the picture.</p>
+        </div>
+      </aside>
+
+      <div id="apc-view" hidden></div>
+
+      <footer id="dock" class="dock">
+        <div class="dock-stage">
+        <div id="mixer" class="mixer"></div>
+        <div class="dock-scenes">
+          <div class="scene-bar">
+            <div class="scene-save">
+              <input id="scene-name" type="text" placeholder="Scene name (optional)" maxlength="40" />
+              <button id="scene-save" type="button" class="primary">Save Current State as Scene</button>
+            </div>
+            <div id="scene-banks" class="scene-banks"></div>
+            <div class="tl-transport">
+            <button id="tl-play" type="button" title="Play or pause the timeline">&#x25B6;</button>
+            <button id="tl-stop" type="button" title="Stop and rewind">&#x25A0;</button>
+            <button id="tl-loop" type="button" class="on" title="Loop">Loop</button>
+            <label>BPM <input id="tl-bpm" type="number" min="20" max="300" step="1" value="120" /></label>
+            <button id="tl-tap" type="button" title="Tap tempo">Tap</button>
+            <label>Bars <input id="tl-bars" type="number" min="1" max="128" step="1" value="16" /></label>
+            <label class="fade-sec" title="Scene transition time">X-fade
+              <input id="tl-fade-sec" type="range" min="0" max="10" step="0.1" value="1" />
+              <output id="tl-fade-readout">1.0s</output>
+            </label>
+            <select id="tl-style" title="Transition style">
+              <option value="0">Crossfade Alpha</option>
+              <option value="1">Additive Bleed</option>
+              <option value="2">Wiping Glitch</option>
+            </select>
+            <span id="tl-pos" class="tl-pos">1.1</span>
+            </div>
+          </div>
+          <div class="scene-launcher">
+            <div id="scene-pads" class="scene-pads"></div>
+          </div>
+        </div>
+        <div class="dock-timeline">
+          <div id="tl-track" class="tl-track" title="Drop a scene or a library clip here. Click to move the playhead.">
+            <div id="tl-labels" class="tl-labels"></div>
+            <div id="tl-cues" class="tl-cues"></div>
+            <div id="tl-drop" class="tl-drop" hidden></div>
+            <div id="tl-head" class="tl-head"></div>
+          </div>
+        </div>
+        </div>
+        <section id="master-bus" class="master-bus" aria-label="Master bus">
+          <div class="master-pin">
+          <header class="master-bus-head">
+            <span class="strip-letter">M</span>
+            <h2>Composition</h2>
+          </header>
+          <div class="clock-bar" title="Global tempo. Shaders read it as uBeat / uBeatPhase.">
+            <i id="beat-led" class="beat-led"></i>
+            <span class="bpm-readout locked"><b id="bpm-value">120.0</b></span>
+            <button id="bpm-mode" type="button" aria-pressed="false" title="Auto Sync listens to the playing audio. Manual Lock holds the number and enables the slider.">Manual Lock</button>
+            <div class="bpm-actions">
+              <button id="bpm-tap" type="button" title="Tap a tempo, or tap once on the beat to align phase (T)">Tap/Phase</button>
+              <button id="bpm-double" type="button" title="Double the tempo">x2</button>
+              <button id="bpm-half" type="button" title="Halve the tempo">/2</button>
+              <button id="bpm-nudge-up" type="button" title="Raise the tempo by 0.1">Nudge +</button>
+              <button id="bpm-nudge-down" type="button" title="Lower the tempo by 0.1">Nudge -</button>
+            </div>
+            <input id="bpm-slider" type="range" min="20" max="300" step="0.1" value="120" title="Manual BPM (double-click for 120)" />
+          </div>
+          <label class="master-speed" title="Scales shader motion and automation. 0 freezes them. 1 is normal speed. 4 is four times faster.">
+            Master Speed
+            <input id="master-speed" type="range" min="0" max="4" step="0.01" value="1" />
+            <output id="master-speed-out">1.00x</output>
+          </label>
+          </div>
+          <section id="live-tools" class="live-tools" aria-label="Live performance tools">
+            <h3>Live Performance Tools</h3>
+            <button id="shuffle-layer-fx" type="button" title="Randomize the visible effect sliders on the selected layer">&#x1F3B2; Shuffle Layer FX</button>
+            <div id="momentary-pads" class="momentary-pads"></div>
+            <div class="live-overlay">
+              <label class="moment-pad hud-toggle" title="Draw the code overlay on this monitor.">
+                <input id="hud-enable" type="checkbox" />
+                <b>HUD</b>
+              </label>
+              <select id="hud-color" title="Overlay text color">
+                <option value="green">Green</option>
+                <option value="amber">Amber</option>
+                <option value="cyan">Cyan</option>
+                <option value="white">White</option>
+              </select>
+              <div class="live-sliders">
+                <label class="live-slider">Scale
+                  <input id="hud-size" type="range" min="10" max="48" step="1" value="16" title="Monospace size. Larger sizes fill the left half of the picture." />
+                  <output id="hud-size-out">16</output>
+                </label>
+              </div>
+              <details id="hud-settings" class="hud-settings">
+                <summary>HUD Settings</summary>
+                <label class="hud-field">Preset
+                  <select id="hud-preset" title="Overlay source. This sets the display and the glyph together.">
+                    <option value="">Custom</option>
+                    <option value="ascii">ASCII</option>
+                    <option value="logs">Terminal Logs</option>
+                    <option value="matrix">Kinetic Matrix</option>
+                    <option value="diag">Live Diagnostics</option>
+                    <option value="audio">Audio Reactive Data</option>
+                  </select>
+                </label>
+                <label class="hud-field">Display
+                  <select id="hud-mode" title="What the code overlay draws over the picture.">
+                    <option value="scan">Active Scanner</option>
+                    <option value="glsl">Full GLSL Shader Source</option>
+                    <option value="matrix">Dynamic Matrix HUD</option>
+                    <option value="formula">Compact Math Formula</option>
+                    <option value="diag">Live Diagnostics</option>
+                    <option value="audio">Audio Reactive Data</option>
+                  </select>
+                </label>
+                <label class="hud-field">Glyph
+                  <select id="hud-glyph" title="Character set used for the live readouts.">
+                    <option value="ramp">Brightness ramp</option>
+                    <option value="matrix">Matrix</option>
+                    <option value="ascii">ASCII</option>
+                  </select>
+                </label>
+                <label class="live-slider">Line
+                  <input id="hud-leading" type="range" min="1" max="2" step="0.05" value="1.45" title="Line height." />
+                  <output id="hud-leading-out">1.45</output>
+                </label>
+                <div id="hud-size-mod" class="hud-size-mod"></div>
+                <label class="live-slider">Mix
+                  <input id="hud-mix" type="range" min="0" max="1" step="0.01" value="0.92" title="Overlay mix." />
+                  <output id="hud-mix-out">0.92</output>
+                </label>
+                <label class="live-slider">Back
+                  <input id="hud-bg" type="range" min="0" max="1" step="0.01" value="0.62" title="Background opacity." />
+                  <output id="hud-bg-out">0.62</output>
+                </label>
+                <label class="check" title="Copy the code overlay onto the projector. The desk preview can stay clean.">
+                  <input id="hud-output" type="checkbox" />
+                  Show on Master Output
+                </label>
+                <label class="check" title="Keep the code overlay on the preview after Perform mode hides the desk panels.">
+                  <input id="hud-perform" type="checkbox" />
+                  Show on Perform Mode
+                </label>
+                <label class="check" title="Scale the code overlay with the preview card and the projector resolution. Off keeps the font size and line height at the slider values.">
+                  <input id="hud-dpi" type="checkbox" checked />
+                  Auto-adjust Overlays for Output DPI
+                </label>
+              </details>
+            </div>
+            <details id="sting-rack" class="sting-settings">
+              <summary>Overlay Settings</summary>
+            </details>
+          </section>
+          <div id="master-params" class="master-params"></div>
+          <div id="master-help" class="param-help">
+            <b id="master-help-title">Composition</b>
+            <p id="master-help-body">Hover a master slider to read what it does to the mixed picture.</p>
+          </div>
+        </section>
+      </footer>
+      <div id="split-library" class="split split-col" data-pane="library" title="Drag to resize the library"></div>
+      <div id="split-inspector" class="split split-col" data-pane="inspector" title="Drag to resize the inspector"></div>
+      <div id="split-dock" class="split split-row" data-pane="dock" title="Drag to resize the mixer"></div>
+    </div>
+
+    <div id="prefs-modal" class="map-modal" hidden>
+      <div class="map-card" role="dialog" aria-labelledby="prefs-title">
+        <header class="map-head">
+          <h2 id="prefs-title">Preferences</h2>
+          <button id="prefs-close" type="button">Close</button>
+        </header>
+        <div class="param">
+          <label for="ui-scale">Global UI Scale</label>
+          <input id="ui-scale" type="range" min="75" max="125" step="5" value="100" title="Shrink or enlarge every panel and the type together." />
+          <output id="ui-scale-out">100%</output>
+        </div>
+        <p class="hint">75% to 125%. Drag the edges between the library, the preview, and the inspector, and the top edge of the mixer, to resize those blocks.</p>
+      </div>
+    </div>
+
+    <div id="output-map-modal" class="map-modal" hidden>
+      <div class="map-card" role="dialog" aria-labelledby="map-title">
+        <header class="map-head">
+          <h2 id="map-title">Advanced Output</h2>
+          <button id="map-close" type="button">Close</button>
+        </header>
+        <p class="hint">Drag a corner pin to skew the final picture onto the projector. The grid is the output frame.</p>
+        <div id="map-stage" class="map-stage">
+          <svg id="map-svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg>
+        </div>
+        <div class="row map-tools">
+          <label for="output-mask">Output Mask</label>
+          <select id="output-mask" title="Shape cut out of the warped output. Everything outside it is black.">
+            <option value="none">None (Full Screen)</option>
+            <option value="ellipse">Circle/Ellipse</option>
+            <option value="triangle">Triangle</option>
+            <option value="diamond">Diamond</option>
+            <option value="letterbox">16:9 Letterbox</option>
+            <option value="led25">Stepped Diamond (7x7 / 25-Panel LED)</option>
+          </select>
+          <button id="map-reset" type="button">Reset corners</button>
+        </div>
+        <div class="row map-tools map-bezel">
+          <label for="output-bezel">Panel Bezels / Gaps</label>
+          <input id="output-bezel" type="range" min="0" max="5" step="0.1" value="0" title="Inset each LED cell. 0% is a tight grid. 5% opens a gap between modules." disabled />
+          <output id="output-bezel-out">0%</output>
+        </div>
+        <p id="map-led-note" class="hint" hidden>Preview locked to 1:1. Reference frame 1152×1152. Cells outside the 25 panels are black.</p>
+      </div>
+    </div>
+
+    <div id="scene-menu" class="scene-menu" hidden>
+      <button type="button" data-action="launch-cut">Launch (cut)</button>
+      <button type="button" data-action="update">Update with current state</button>
+      <button type="button" data-action="rename">Rename</button>
+      <button type="button" data-action="midi">MIDI learn</button>
+      <button type="button" data-action="delete" class="danger">Delete</button>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

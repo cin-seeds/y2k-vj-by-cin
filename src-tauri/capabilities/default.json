@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Desk window plus the borderless projector window",
+  "windows": [
+    "main",
+    "master-output",
+    "projection-screen",
+    "projection-output",
+    "projection-output-*",
+    "projection-window"
+  ],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-set-fullscreen-on-monitor",
+    "core:window:allow-set-decorations",
+    "core:window:allow-show",
+    "core:window:allow-close"
+  ]
+}
