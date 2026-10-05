@@ -1,5 +1,6 @@
-// CoreMIDI via midir. The Windows desk keeps using Web MIDI in the webview.
-// This module only answers the midi_* commands; the Mac shell calls them.
+// CoreMIDI and ALSA via midir. The Windows desk keeps using Web MIDI in the webview.
+// This module only answers the midi_* commands. macOS and Linux call them when
+// requestMIDIAccess is missing.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, Once, OnceLock};

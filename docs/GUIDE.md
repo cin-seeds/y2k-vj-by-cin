@@ -90,7 +90,8 @@ This finds a stock video clip online from a few words.
 1. Pick a source: **All sources**, **Wikimedia Commons** or **Internet Archive**.
 2. Type a few words, for example `clouds, neon sunset`.
 3. Click **Fetch Video Loop**, or press Enter. A list of clips appears.
-4. Click a clip. It downloads into the Media Library and goes onto the selected layer.
+4. Click a clip. The desktop app downloads it, transcodes it to H.264, and puts that MP4 in the Media Library on the selected layer. If the transcode fails, the card shows the error and the original file stays off the layer.
+5. In a browser, Wikimedia WebM clips are left out of the list. The status says "Open the desktop app to use this clip."
 
 In the desktop app, set where the clips are saved with **Stock Media Download Folder** in **Preferences**.
 
@@ -165,6 +166,7 @@ Press **1** to **9** to choose from the first nine looks for the selected layer.
 13. MiniDV
 14. Flash MX
 15. Starfield
+16. Black Metallic Y2K
 
 On the 3D looks, drag the preview to orbit and scroll to zoom.
 
@@ -579,7 +581,7 @@ The 25-panel LED mask locks the preview to 1:1 with a 1152×1152 reference frame
   - 3840×2160
 - **Bring it in.** Pick the source in the Inspector **Media** menu.
 
-Windows uses NDI and Spout. Mac uses NDI and Syphon. This only works in the desktop app.
+Windows uses NDI and Spout. Mac uses NDI and Syphon. Linux shows NDI, and says Spout and Syphon are not on this system. This only works in the desktop app.
 
 **Tips.**
 

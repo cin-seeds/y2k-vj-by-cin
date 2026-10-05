@@ -65,6 +65,15 @@ export class MediaLibrary {
     return this.cache.get(name);
   }
 
+  cacheBlob(name, file, kind) {
+    if (!name || !file) return Promise.resolve();
+    return this.cache.put(file, { name, kind, fileName: file.name }).catch((err) => console.warn('Could not cache', name, err));
+  }
+
+  getBlob(name) {
+    return this.cache.get(name);
+  }
+
   /** Pull named files back out of IndexedDB into the live library. */
   async ensureCached(names) {
     await this.ready;

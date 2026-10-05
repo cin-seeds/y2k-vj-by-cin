@@ -203,10 +203,13 @@ function releaseTexture(slot) {
 }
 
 export class StingRack {
-  constructor(root, { onChange } = {}) {
+  constructor(root, { onChange, onAssign, onPersist } = {}) {
     this.slots = [];
     this.root = root;
+    this.silent = false;
     this.onChange = onChange || (() => {});
+    this.onAssign = onAssign || (() => {});
+    this.onPersist = onPersist || (() => {});
     const list = document.createElement('div');
     list.className = 'sting-slots';
     root.append(list);
@@ -238,6 +241,67 @@ export class StingRack {
   shown(index) {
     const slot = this.slots[index | 0];
     return logoShown(slot?.playing, slot?.dismissing);
+  }
+
+  snapshot() {
+    return this.slots.map((slot) => ({
+      label: slot.label,
+      name: slot.name,
+      cacheKey: slot.cacheKey || '',
+      opacity: slot.opacity,
+      scale: slot.scale,
+      x: slot.x,
+      y: slot.y,
+      mode: slot.mode,
+      motion: slot.motion,
+      motionSec: slot.motionSec,
+      autoMask: slot.autoMask,
+      fx: slot.fx,
+      fxAmt: slot.fxAmt,
+      fxReact: slot.fxReact,
+    }));
+  }
+
+  /** Replace the three slot settings. A new file is loaded afterwards by cache key. */
+  apply(rows) {
+    this.silent = true;
+    this.slots.forEach((slot, i) => {
+      const row = Array.isArray(rows) ? rows[i] : null;
+      const keep = !!(row?.cacheKey && slot.ready && row.cacheKey === slot.cacheKey);
+      if (!keep) this.#clear(slot);
+      this.#applyRow(slot, row);
+      if (!keep && slot.cacheKey) {
+        slot.nameEl.textContent = 'Loading…';
+        slot.nameEl.title = slot.name;
+      }
+    });
+    this.silent = false;
+    this.#save();
+    this.#syncDefine();
+    this.onChange();
+  }
+
+  loadFile(index, file) {
+    const slot = this.slots[index | 0];
+    if (!slot || !file) return;
+    this.#load(slot, file);
+  }
+
+  markMissing(index) {
+    const slot = this.slots[index | 0];
+    if (!slot || slot.ready) return;
+    slot.nameEl.textContent = 'Missing';
+    slot.nameEl.title = slot.name || '';
+    if (slot.clearBtn) slot.clearBtn.hidden = false;
+  }
+
+  clearAll() {
+    this.silent = true;
+    for (const slot of this.slots) this.#clear(slot);
+    this.silent = false;
+    this.#save();
+    this.#syncDefine();
+    this.onChange();
   }
 
   update(renderer, dt = 0) {
@@ -368,6 +432,7 @@ export class StingRack {
       gl: null,
       url: '',
       name: '',
+      cacheKey: '',
       token: 0,
       ready: false,
       aspect: 1,
@@ -455,7 +520,7 @@ export class StingRack {
     file.addEventListener('change', () => {
       const next = file.files?.[0];
       file.value = '';
-      if (next) this.#load(slot, next);
+      if (next) this.#choose(slot, next);
     });
     card.querySelector('.sting-label-input').addEventListener('input', (e) => {
       slot.label = e.target.value;
@@ -499,36 +564,36 @@ export class StingRack {
   }
 
   #save() {
-    const data = this.slots.map((slot) => ({
-      label: slot.label,
-      opacity: slot.opacity,
-      scale: slot.scale,
-      x: slot.x,
-      y: slot.y,
-      mode: slot.mode,
-      motion: slot.motion,
-      motionSec: slot.motionSec,
-      autoMask: slot.autoMask,
-      fx: slot.fx,
-      fxAmt: slot.fxAmt,
-      fxReact: slot.fxReact,
-    }));
-    try { localStorage.setItem(STORE, JSON.stringify(data)); } catch { /* ignore a full store */ }
+    if (this.silent) return;
+    try { localStorage.setItem(STORE, JSON.stringify(this.snapshot())); } catch { /* ignore a full store */ }
+    this.onPersist();
   }
 
-  #restore(slot) {
-    let saved = [];
-    try { saved = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { saved = []; }
-    const row = Array.isArray(saved) ? saved[slot.index] : null;
+  async #choose(slot, file) {
+    slot.cacheKey = `logo:${slot.index}:${file.name}`;
+    try { await this.onAssign(slot, file); } catch { /* the clip still plays this session */ }
+    this.#load(slot, file);
+  }
+
+  #applyRow(slot, row) {
     if (!row || typeof row !== 'object') {
-      this.#applyButton(slot);
-      return;
+      this.#applyRow(slot, {
+        label: '', name: '', cacheKey: '',
+        opacity: 1, scale: 1, x: 0, y: 0, mode: 1,
+        motion: 'fade', motionSec: 0.5, autoMask: false,
+        fx: 0, fxAmt: 0.5, fxReact: false,
+      });
+      return false;
     }
     const num = (key, fallback) => {
       const value = Number(row[key]);
       return Number.isFinite(value) ? value : fallback;
     };
     slot.label = typeof row.label === 'string' ? row.label.slice(0, 16) : '';
+    slot.name = typeof row.name === 'string' ? row.name : '';
+    slot.cacheKey = typeof row.cacheKey === 'string' && row.cacheKey
+      ? row.cacheKey
+      : (slot.name ? `logo:${slot.index}:${slot.name}` : '');
     slot.opacity = num('opacity', slot.opacity);
     slot.scale = num('scale', slot.scale);
     slot.x = num('x', slot.x);
@@ -558,6 +623,18 @@ export class StingRack {
       sel.value = String(slot[sel.dataset.key]);
     });
     this.#applyButton(slot);
+    return true;
+  }
+
+  #restore(slot) {
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { saved = []; }
+    const row = Array.isArray(saved) ? saved[slot.index] : null;
+    this.#applyRow(slot, row);
+    if (slot.cacheKey && !slot.ready) {
+      slot.nameEl.textContent = 'Loading…';
+      slot.nameEl.title = slot.name;
+    }
   }
 
   #load(slot, file) {
@@ -571,6 +648,7 @@ export class StingRack {
     const token = slot.token;
     slot.url = URL.createObjectURL(file);
     slot.name = file.name;
+    this.#save();
     const video = slot.video;
     video.crossOrigin = 'anonymous';
     video.src = slot.url;
@@ -610,6 +688,7 @@ export class StingRack {
     releaseTexture(slot);
     slot.url = '';
     slot.name = '';
+    slot.cacheKey = '';
     slot.ready = false;
     slot.aspect = 1;
     const video = slot.video;
@@ -620,6 +699,8 @@ export class StingRack {
     if (slot.liveBtn) slot.liveBtn.hidden = true;
     if (slot.clearBtn) slot.clearBtn.hidden = true;
     this.#syncDefine();
+    if (this.silent) return;
+    this.#save();
     this.onChange();
   }
 

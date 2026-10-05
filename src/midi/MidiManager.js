@@ -35,13 +35,14 @@ export class MidiManager {
   }
 
   get supported() {
-    if ('requestMIDIAccess' in navigator) return true;
+    if (typeof navigator.requestMIDIAccess === 'function') return true;
     return this.#inTauri();
   }
 
   async init() {
     if (!this.supported) throw new Error('Web MIDI is not supported in this browser (use Chrome or Edge).');
-    if ('requestMIDIAccess' in navigator) {
+    // Linux WebKit has no requestMIDIAccess. That uses the native MIDI path.
+    if (typeof navigator.requestMIDIAccess === 'function') {
       try {
         this.access = await navigator.requestMIDIAccess({ sysex: false });
       } catch (err) {

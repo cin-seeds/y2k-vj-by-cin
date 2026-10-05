@@ -50,7 +50,7 @@ The app listens to sound through your audio input. When the app asks for the mic
 
 ## Features
 
-- **Three layers (A, B, C)** of video, images, webcams or NDI / Spout / Syphon sources, with 15 looks such as Glitch, VHS, Y2K / 2000s, PS1 / N64 CRT and Windows 98 Crash.
+- **Three layers (A, B, C)** of video, images, webcams or NDI / Spout / Syphon sources, with 16 looks such as Glitch, VHS, Y2K / 2000s, Black Metallic Y2K, PS1 / N64 CRT and Windows 98 Crash.
 - **Three engines** per layer: Standard Video / Image FX, Particle Vector Swarm and Hydra Feedback Synth.
 - **Sound to picture**: live audio input or a music file drives any slider, with kick, snare, energy, breakdown and drop detection.
 - **Tempo**: tap tempo, automatic BPM from the music, and LFOs that lock to the beat.

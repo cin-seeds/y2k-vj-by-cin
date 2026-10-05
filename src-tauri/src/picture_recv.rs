@@ -314,8 +314,10 @@ fn local_names() -> Vec<String> {
 fn local_label() -> &'static str {
   #[cfg(target_os = "macos")]
   { "Syphon" }
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(windows)]
   { "Spout" }
+  #[cfg(not(any(windows, target_os = "macos")))]
+  { "" }
 }
 
 fn parse_source(source: &str) -> Result<(Kind, String), String> {

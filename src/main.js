@@ -37,7 +37,7 @@ import { dpiState, formatFactor, pixelsOf, setDpiAuto, setOutputPixels, setPrevi
 import { OutputMap } from './output/OutputMap.js';
 import { SceneManager } from './scenes/SceneManager.js';
 import { Timeline } from './scenes/Timeline.js';
-import { ProjectState, coerceDocument } from './project/ProjectState.js';
+import { ProjectState, coerceDocument, normalizeDesk } from './project/ProjectState.js';
 import { Hud, HUD_PRESETS, HUD_BOX_DEFAULT, clampHudBox } from './ui/Hud.js';
 import { Panel } from './ui/Panel.js';
 import { Diagnostics, flashControl } from './ui/Diagnostics.js';
@@ -290,7 +290,11 @@ const stingMaterial = new THREE.ShaderMaterial({
   depthWrite: false,
 });
 const stingRt = new THREE.WebGLRenderTarget(1, 1, STACK_RT);
-const stings = new StingRack($('logo-overlay'), { onChange: () => apcView?.refresh() });
+const stings = new StingRack($('logo-overlay'), {
+  onChange: () => apcView?.refresh(),
+  onAssign: (slot, file) => library.cacheBlob(slot.cacheKey, file, 'logo'),
+  onPersist: () => persistDesk(),
+});
 document.querySelectorAll('#live-tools .sting-fire').forEach((btn) => {
   btn.addEventListener('click', () => stings.trigger(Number(btn.dataset.sting)));
 });
@@ -592,14 +596,25 @@ function refreshMediaSelect() {
   sel.value = layer.mediaKey;
 }
 
+const LINUX_PICTURE_NOTE = 'Spout and Syphon are not on this system.';
+
+function isLinuxSystem() {
+  const platform = navigator.platform || '';
+  if (/^Linux/i.test(platform)) return true;
+  const ua = navigator.userAgent || '';
+  return /Linux/i.test(ua) && !/Android/i.test(ua);
+}
+
 function pictureKindLabel() {
+  if (isLinuxSystem()) return '';
   if (pictureSources.localKind) return pictureSources.localKind;
   return /Mac|iPhone|iPad/i.test(navigator.userAgent) ? 'Syphon' : 'Spout';
 }
 
 function pictureSourceGroup(layer) {
   const group = document.createElement('optgroup');
-  group.label = `NDI / ${pictureKindLabel()}`;
+  const kind = pictureKindLabel();
+  group.label = kind ? `NDI / ${kind}` : 'NDI';
   const key = layer.mediaKey || '';
   const named = key.startsWith('ndi:') || key.startsWith('spout:');
   const currentName = named ? key.slice(key.indexOf(':') + 1) : '';
@@ -611,24 +626,27 @@ function pictureSourceGroup(layer) {
   };
   if (!isTauri()) {
     hold('Desktop app');
-    return group;
-  }
-  if (!pictureSources.ready) {
+  } else if (!pictureSources.ready) {
     hold('Looking...');
-    return group;
+  } else {
+    for (const name of pictureSources.ndi) group.append(new Option(name, `ndi:${name}`));
+    for (const name of pictureSources.local) group.append(new Option(name, `spout:${name}`));
+    if (currentName) {
+      const listed = key.startsWith('ndi:')
+        ? pictureSources.ndi.includes(currentName)
+        : pictureSources.local.includes(currentName);
+      if (!listed) group.append(new Option(`(gone) ${currentName}`, key));
+    }
+    if (!group.children.length) {
+      const opt = new Option('No senders', 'picture-none');
+      opt.disabled = true;
+      group.append(opt);
+    }
   }
-  for (const name of pictureSources.ndi) group.append(new Option(name, `ndi:${name}`));
-  for (const name of pictureSources.local) group.append(new Option(name, `spout:${name}`));
-  if (currentName) {
-    const listed = key.startsWith('ndi:')
-      ? pictureSources.ndi.includes(currentName)
-      : pictureSources.local.includes(currentName);
-    if (!listed) group.append(new Option(`(gone) ${currentName}`, key));
-  }
-  if (!group.children.length) {
-    const opt = new Option('No senders', 'picture-none');
-    opt.disabled = true;
-    group.append(opt);
+  if (isLinuxSystem()) {
+    const note = new Option(LINUX_PICTURE_NOTE, 'picture-platform');
+    note.disabled = true;
+    group.append(note);
   }
   return group;
 }
@@ -1094,24 +1112,48 @@ async function ensureStockDir() {
   return dir;
 }
 
-async function fileFromStock(clip) {
+function stockErrorText(err, fallback) {
+  if (typeof err === 'string' && err.trim()) return err.trim();
+  const message = err?.message || String(err || '');
+  return message.trim() || fallback;
+}
+
+async function fileFromStock(clip, onPhase) {
   const filename = libraryName(clip);
   const type = /\.webm$/i.test(filename) ? 'video/webm' : 'video/mp4';
-  let blob;
   if (isTauri()) {
     const saveDir = await ensureStockDir();
     const { convertFileSrc, invoke } = await import('@tauri-apps/api/core');
     const path = await invoke('download_video', { url: clip.videoUrl, filename, saveDir });
-    const assetUrl = convertFileSrc(path);
+    onPhase?.('Transcoding...');
+    let output;
+    try {
+      output = await invoke('transcode_media', {
+        jobId: crypto.randomUUID(),
+        inputPath: path,
+        saveDir,
+      });
+    } catch (err) {
+      const error = new Error(stockErrorText(err, 'Transcode failed'));
+      error.transcode = true;
+      throw error;
+    }
+    const assetUrl = convertFileSrc(output);
     const res = await fetch(assetUrl);
     if (!res.ok) throw new Error('Download failed');
-    blob = await res.blob();
-  } else {
-    const res = await fetch(clip.videoUrl);
-    if (!res.ok) throw new Error('Download failed');
-    blob = await res.blob();
+    const blob = await res.blob();
+    const leaf = String(output).split(/[\\/]/).pop();
+    if (!leaf) throw new Error('Download failed');
+    return new File([blob], leaf, { type: blob.type || 'video/mp4' });
   }
+  const res = await fetch(clip.videoUrl);
+  if (!res.ok) throw new Error('Download failed');
+  const blob = await res.blob();
   return new File([blob], filename, { type: blob.type || type });
+}
+
+function isWikimediaWebm(clip) {
+  return clip?.source === 'wikimedia' && /\.webm(\?|#|$)/i.test(String(clip.videoUrl || ''));
 }
 
 async function downloadClip(clip, card) {
@@ -1123,7 +1165,7 @@ async function downloadClip(clip, card) {
   const previous = source.textContent;
   source.textContent = 'Downloading...';
   try {
-    const file = await fileFromStock(clip);
+    const file = await fileFromStock(clip, (text) => { source.textContent = text; });
     const added = library.add([file]);
     if (!added.length) throw new Error('Download failed');
     await assignMediaToLayer(added[0], panel.selected);
@@ -1132,13 +1174,19 @@ async function downloadClip(clip, card) {
     showToast(`Saved ${added[0]}`);
   } catch (err) {
     card.classList.add('failed');
-    source.textContent = 'Download failed';
-    setOnlineStatus(err?.message || 'Download failed', true);
-    showToast('Download failed', true);
-    window.setTimeout(() => {
-      if (source.textContent === 'Download failed') source.textContent = previous;
-      card.classList.remove('failed');
-    }, 2400);
+    const transcode = !!err?.transcode;
+    const message = stockErrorText(err, transcode ? 'Transcode failed' : 'Download failed');
+    source.textContent = transcode ? message : 'Download failed';
+    source.title = message;
+    card.title = message;
+    setOnlineStatus(message, true);
+    showToast(transcode ? message : 'Download failed', true);
+    if (!transcode) {
+      window.setTimeout(() => {
+        if (source.textContent === 'Download failed') source.textContent = previous;
+        card.classList.remove('failed');
+      }, 2400);
+    }
   } finally {
     card.dataset.busy = '0';
     card.classList.remove('downloading');
@@ -1186,9 +1234,14 @@ async function fetchOnline() {
   setOnlineStatus('Searching stock video…');
   $('online-fetch').disabled = true;
   try {
-    const clips = await fetchVideoLoop(source, prompt);
+    const found = await fetchVideoLoop(source, prompt);
+    const hidWebm = !isTauri() && found.some(isWikimediaWebm);
+    const clips = hidWebm ? found.filter((clip) => !isWikimediaWebm(clip)) : found;
     renderOnlineResults(clips);
-    setOnlineStatus(`${clips.length} clip${clips.length === 1 ? '' : 's'}.`);
+    const count = `${clips.length} clip${clips.length === 1 ? '' : 's'}.`;
+    if (hidWebm && !clips.length) setOnlineStatus('Open the desktop app to use this clip.', true);
+    else if (hidWebm) setOnlineStatus(`${count} Open the desktop app to use this clip.`);
+    else setOnlineStatus(count);
   } catch (err) {
     renderOnlineResults([]);
     setOnlineStatus(err?.message || 'Could not fetch a video loop.', true);
@@ -1237,6 +1290,8 @@ panel.onSelect = (id) => {
 
 // ---------------------------------------------------------------- scenes + timeline
 const project = new ProjectState();
+let deskReady = false;
+let deskWriting = false;
 
 const FOLD_LOCKS = ['acc-audio', 'acc-master', 'acc-output', 'code-overlay', 'logo-overlay', 'screensaver'];
 const COMP_LOCKS = ['Color & Texture', 'Distortion & Glitch', 'Motion & Timing'];
@@ -1511,6 +1566,7 @@ function setPerformMode(on) {
     $('screen-menu').hidden = true;
     if (!$('output-map-modal').hidden) openOutputMap(false);
     if (!$('prefs-modal').hidden) $('prefs-modal').hidden = true;
+    if (!$('guide-modal').hidden) openGuide(false);
     if (midi.learnArmed) midi.toggleLearn();
     controls.enabled = false;
     if (!document.fullscreenElement) {
@@ -1656,6 +1712,7 @@ function setBrandMark(on) {
   if (state) state.textContent = brandMarkOn ? 'On' : 'Off';
   try { localStorage.setItem('vj.screenOn', brandMarkOn ? '1' : '0'); } catch { /* ignore */ }
   refreshScreen();
+  persistDesk();
 }
 
 function setBrandScale(value) {
@@ -1667,6 +1724,7 @@ function setBrandScale(value) {
   if (out) out.textContent = `${next}%`;
   try { localStorage.setItem('vj.brandSize', String(next)); } catch { /* ignore */ }
   refreshScreen();
+  persistDesk();
 }
 
 function setScreenText(value) {
@@ -1675,6 +1733,7 @@ function setScreenText(value) {
   if (field && field.value !== screenText) field.value = screenText;
   try { localStorage.setItem('vj.screenText', screenText); } catch { /* ignore */ }
   refreshScreen();
+  persistDesk();
 }
 
 function setScreenFont(value) {
@@ -1683,6 +1742,7 @@ function setScreenFont(value) {
   if (field) field.value = screenFont;
   try { localStorage.setItem('vj.screenFont', screenFont); } catch { /* ignore */ }
   refreshScreen();
+  persistDesk();
 }
 
 function setScreenShade(value) {
@@ -1693,6 +1753,7 @@ function setScreenShade(value) {
   if (out) out.textContent = String(screenShade);
   try { localStorage.setItem('vj.screenShade', String(screenShade)); } catch { /* ignore */ }
   refreshScreen();
+  persistDesk();
 }
 
 function setScreenBg(value) {
@@ -1703,6 +1764,7 @@ function setScreenBg(value) {
   if (out) out.textContent = screenBg.toFixed(2);
   try { localStorage.setItem('vj.screenBg', String(screenBg)); } catch { /* ignore */ }
   refreshScreen();
+  persistDesk();
 }
 
 function setScreenColor(value) {
@@ -1711,6 +1773,7 @@ function setScreenColor(value) {
   if (field) field.value = screenColor;
   try { localStorage.setItem('vj.screenColor', screenColor); } catch { /* ignore */ }
   refreshScreen();
+  persistDesk();
 }
 
 function layoutBrandMark(mark, wrapW, wrapH) {
@@ -1964,7 +2027,243 @@ function saveScene(name) {
   scenes.save(name);
 }
 
+function captureDesk() {
+  return normalizeDesk({
+    logos: stings.snapshot(),
+    code: {
+      enabled: !!$('hud-enable')?.checked,
+      motion: hudMotion.motion,
+      sec: hudMotion.sec,
+      glyph: $('hud-glyph')?.value,
+      color: $('hud-color')?.value,
+      size: Number($('hud-size')?.value),
+      mix: Number($('hud-mix')?.value),
+      bg: Number($('hud-bg')?.value),
+      automask: !!$('hud-automask')?.checked,
+      leading: Number($('hud-leading')?.value),
+      mode: $('hud-mode')?.value,
+      perform: !!$('hud-perform')?.checked,
+      dpi: !!$('hud-dpi')?.checked,
+      logoOutput: $('logo-output')?.checked !== false,
+      box: { ...hudBox },
+    },
+    screen: {
+      on: brandMarkOn,
+      text: screenText,
+      font: screenFont,
+      shade: screenShade,
+      bg: screenBg,
+      color: screenColor,
+      size: brandScale,
+    },
+    audio: {
+      mode: audioMode,
+      volume: audio.volume,
+      muted: audio.muted,
+      agc: audio.agc,
+      loop: $('audio-loop')?.checked !== false,
+      overrideStop: audioOverrideStop,
+      attack: Number($('audio-attack')?.value),
+      release: Number($('audio-release')?.value),
+      file: audio.fileName || '',
+    },
+    outputSize: $('output-size')?.value || '',
+    recAspect: $('rec-aspect')?.value || '',
+    recFormat: $('rec-format')?.value || '',
+    recAudio: $('rec-audio')?.checked !== false,
+    syncMaster: { ...syncMaster },
+  });
+}
+
+function persistDesk() {
+  if (!deskReady || deskWriting) return;
+  project.setDesk(captureDesk());
+}
+
+function applyCode(code) {
+  if (!code) return;
+  hudMotion.motion = code.motion;
+  hudMotion.sec = code.sec;
+  const motion = $('hud-motion');
+  const motionSec = $('hud-motion-sec');
+  const motionOut = $('hud-motion-sec-out');
+  if (motion) motion.value = hudMotion.motion;
+  if (motionSec) motionSec.value = String(hudMotion.sec);
+  if (motionOut) motionOut.textContent = hudMotion.sec.toFixed(2);
+  try {
+    localStorage.setItem(HUD_MOTION_KEY, JSON.stringify({ motion: hudMotion.motion, sec: hudMotion.sec }));
+  } catch { /* ignore */ }
+  if ($('hud-glyph')) $('hud-glyph').value = code.glyph;
+  if ($('hud-color')) $('hud-color').value = code.color;
+  if ($('hud-size')) $('hud-size').value = String(Math.round(code.size));
+  if ($('hud-mix')) $('hud-mix').value = String(code.mix);
+  if ($('hud-bg')) $('hud-bg').value = String(code.bg);
+  if ($('hud-leading')) $('hud-leading').value = String(code.leading);
+  if ($('hud-automask')) $('hud-automask').checked = code.automask;
+  if ($('hud-mode')) $('hud-mode').value = HUD_MODES.includes(code.mode) ? code.mode : 'scan';
+  if ($('hud-size-out')) $('hud-size-out').textContent = String(Math.round(code.size));
+  if ($('hud-leading-out')) $('hud-leading-out').textContent = code.leading.toFixed(2);
+  if ($('hud-mix-out')) $('hud-mix-out').textContent = code.mix.toFixed(2);
+  if ($('hud-bg-out')) $('hud-bg-out').textContent = code.bg.toFixed(2);
+  hud.setDisplay($('hud-mode').value);
+  hud.applyChrome({
+    glyph: code.glyph,
+    color: code.color,
+    size: code.size,
+    mix: code.mix,
+    bg: code.bg,
+    automask: code.automask,
+    leading: code.leading,
+  });
+  syncPresetSelect();
+  try {
+    localStorage.setItem(HUD_STYLE_KEY.glyph, code.glyph);
+    localStorage.setItem(HUD_STYLE_KEY.color, code.color);
+    localStorage.setItem(HUD_STYLE_KEY.size, String(code.size));
+    localStorage.setItem(HUD_STYLE_KEY.mix, String(code.mix));
+    localStorage.setItem(HUD_STYLE_KEY.bg, String(code.bg));
+    localStorage.setItem(HUD_STYLE_KEY.automask, code.automask ? '1' : '0');
+    localStorage.setItem(HUD_STYLE_KEY.leading, String(code.leading));
+    localStorage.setItem(HUD_STYLE_KEY.mode, $('hud-mode').value);
+  } catch { /* ignore */ }
+  applyHudBox(code.box || HUD_BOX_DEFAULT, false);
+  try { localStorage.setItem('vj.hudBox', JSON.stringify(hudBox)); } catch { /* ignore */ }
+  setHudPerform(code.perform);
+  setDpiAuto(code.dpi);
+  if ($('hud-dpi')) $('hud-dpi').checked = code.dpi;
+  syncDpi();
+  const logoOut = $('logo-output');
+  if (logoOut) {
+    logoOut.checked = code.logoOutput;
+    try { localStorage.setItem('vj.logoOutput', code.logoOutput ? '1' : '0'); } catch { /* ignore */ }
+  }
+  setHudEnabled(code.enabled);
+}
+
+function applyDesk(desk) {
+  const next = normalizeDesk(desk);
+  if (!next) return;
+  deskWriting = true;
+  try {
+    stings.apply(next.logos);
+    applyCode(next.code);
+    setScreenText(next.screen.text);
+    setScreenFont(next.screen.font);
+    setScreenShade(next.screen.shade);
+    setScreenBg(next.screen.bg);
+    setScreenColor(next.screen.color);
+    setBrandScale(next.screen.size);
+    setBrandMark(next.screen.on);
+    showAudioMode(next.audio.mode);
+    audio.volume = next.audio.volume;
+    if ($('audio-volume')) $('audio-volume').value = String(audio.volume);
+    if ($('audio-volume-out')) $('audio-volume-out').textContent = audio.volume.toFixed(2);
+    try { localStorage.setItem('vj.audioVolume', String(audio.volume)); } catch { /* ignore */ }
+    audio.muted = next.audio.muted;
+    $('audio-mute')?.classList.toggle('on', audio.muted);
+    if ($('audio-mute')) $('audio-mute').textContent = audio.muted ? 'Muted' : 'Mute';
+    try { localStorage.setItem('vj.audioMute', audio.muted ? '1' : '0'); } catch { /* ignore */ }
+    audio.agc = next.audio.agc;
+    if ($('audio-agc')) $('audio-agc').checked = audio.agc;
+    try { localStorage.setItem('vj.audioAgc', audio.agc ? '1' : '0'); } catch { /* ignore */ }
+    if ($('audio-loop')) $('audio-loop').checked = next.audio.loop;
+    audio.setLoop(next.audio.loop);
+    try { localStorage.setItem('vj.audioLoop', next.audio.loop ? '1' : '0'); } catch { /* ignore */ }
+    setAudioOverrideStop(next.audio.overrideStop);
+    if ($('audio-attack')) {
+      $('audio-attack').value = String(next.audio.attack);
+      $('audio-attack').dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if ($('audio-release')) {
+      $('audio-release').value = String(next.audio.release);
+      $('audio-release').dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    for (const key of ['audio', 'A', 'B', 'C']) syncMaster[key] = next.syncMaster[key];
+    try { localStorage.setItem('vj.syncMaster', JSON.stringify(syncMaster)); } catch { /* ignore */ }
+    paintMasterTransport();
+    const size = $('output-size');
+    if (size && next.outputSize && [...size.options].some((o) => o.value === next.outputSize)) {
+      size.value = next.outputSize;
+      const [w, h] = next.outputSize.split('x').map(Number);
+      if (w > 8 && h > 8) setMasterOutput({ w, h });
+      try { localStorage.setItem('vj.outputSize', size.value); } catch { /* ignore */ }
+    }
+    if ($('rec-aspect') && next.recAspect && (RECORD_FRAMES[next.recAspect] || next.recAspect === 'native')) {
+      $('rec-aspect').value = next.recAspect;
+      try { localStorage.setItem('vj.recAspect', next.recAspect); } catch { /* ignore */ }
+    }
+    if ($('rec-format') && next.recFormat && [...$('rec-format').options].some((o) => o.value === next.recFormat)) {
+      $('rec-format').value = next.recFormat;
+    }
+    if ($('rec-audio')) $('rec-audio').checked = next.recAudio;
+  } finally {
+    deskWriting = false;
+  }
+}
+
+function resetProjectDesk() {
+  applyDesk({
+    logos: [null, null, null],
+    code: {
+      enabled: false,
+      motion: 'cut',
+      sec: 0.4,
+      glyph: 'ascii',
+      color: 'green',
+      size: 16,
+      mix: 0.92,
+      bg: 0.62,
+      automask: false,
+      leading: 1.45,
+      mode: 'scan',
+      perform: false,
+      dpi: true,
+      logoOutput: true,
+      box: { ...HUD_BOX_DEFAULT },
+    },
+    screen: {
+      on: false,
+      text: SCREEN_TEXT,
+      font: 'desk',
+      shade: 8,
+      bg: 1,
+      color: 'white',
+      size: 100,
+    },
+    audio: {
+      mode: 'device',
+      volume: 0.8,
+      muted: false,
+      agc: true,
+      loop: true,
+      overrideStop: false,
+      attack: 0.01,
+      release: 0.15,
+      file: '',
+    },
+    outputSize: '1920x1080',
+    recAspect: '16:9',
+    recFormat: '0',
+    recAudio: true,
+    syncMaster: { audio: true, A: true, B: true, C: true },
+  });
+}
+
+async function restoreLogoFiles() {
+  await library.ready;
+  for (const slot of stings.slots) {
+    if (!slot.cacheKey || slot.ready) continue;
+    const file = await library.getBlob(slot.cacheKey);
+    if (!file) {
+      stings.markMissing(slot.index);
+      continue;
+    }
+    stings.loadFile(slot.index, file);
+  }
+}
+
 function projectFile() {
+  if (deskReady) project.setDesk(captureDesk());
   syncMediaPool();
   return {
     ...project.toJSON(),
@@ -2056,8 +2355,14 @@ async function loadProject(file) {
   }
   if (data.outputMap) outputMap.apply(data.outputMap);
   if (data.bpmMode || data.bpmSource) setBpmMode(data.bpmMode || data.bpmSource);
+  if (doc.desk) {
+    project.desk = doc.desk;
+    applyDesk(doc.desk);
+  }
   project.setLocks(doc.locks);
   applyLocks();
+  if (!doc.desk) project.setDesk(captureDesk());
+  restoreLogoFiles();
   {
     const shown = showRecordOutput(doc.recordOutput);
     project.setRecordOutput({ code: shown.code, screen: shown.screen });
@@ -2074,6 +2379,8 @@ async function loadProject(file) {
 }
 
 function newProject() {
+  resetProjectDesk();
+  project.setDesk(captureDesk());
   project.setLocks({});
   applyLocks();
   project.setRecordOutput({ code: !!$('hud-enable')?.checked, screen: false });
@@ -2161,6 +2468,7 @@ function showAudioMode(mode) {
     btn.classList.toggle('on', btn.dataset.kind === audioMode);
   }
   try { localStorage.setItem('vj.audioMode', audioMode); } catch { /* ignore */ }
+  persistDesk();
 }
 
 async function refreshAudioDevices() {
@@ -2189,6 +2497,75 @@ function syncTransport() {
 }
 
 const masterTransport = { state: 'playing' };
+
+// Which CDJ deck drives which hit. Deck numbers are 1–4.
+const prolinkMapping = {
+  pulse: 1,
+  glitch: 2,
+};
+try {
+  const saved = JSON.parse(localStorage.getItem('vj.prolinkMapping') || 'null');
+  const pulse = parseInt(saved?.pulse, 10);
+  const glitch = parseInt(saved?.glitch, 10);
+  if (pulse >= 1 && pulse <= 4) prolinkMapping.pulse = pulse;
+  if (glitch >= 1 && glitch <= 4) prolinkMapping.glitch = glitch;
+} catch { /* ignore */ }
+let proLinkPulse = 0;
+let proLinkGlitch = 0;
+const proLinkSeen = { pulse: 0, glitch: 0 };
+
+function triggerStrobePulse() {
+  proLinkPulse = 1;
+}
+
+function triggerGlitch() {
+  proLinkGlitch = 1;
+}
+
+function initProDjLink() {
+  if (!isTauri()) return;
+  Promise.all([
+    import('@tauri-apps/api/core'),
+    import('@tauri-apps/api/event'),
+  ]).then(async ([{ invoke }, { listen }]) => {
+    await invoke('start_pro_dj_link');
+    await listen('prolink-beat', (event) => {
+      const deck = event.payload?.deck;
+      if (deck < 1 || deck > 4 || !event.payload?.is_beat) return;
+      const now = performance.now();
+      if (deck === prolinkMapping.pulse && now - proLinkSeen.pulse >= 180) {
+        proLinkSeen.pulse = now;
+        triggerStrobePulse();
+        if (masterTransport.state === 'playing' && !timeline.playing) {
+          bpmEngine.beats = Math.round(bpmEngine.beats);
+          beatClock.snap();
+        }
+      }
+      if (deck === prolinkMapping.glitch && now - proLinkSeen.glitch >= 180) {
+        proLinkSeen.glitch = now;
+        triggerGlitch();
+      }
+    });
+  }).catch(() => {});
+}
+
+initProDjLink();
+
+function bindProlinkSettings() {
+  for (const effect of ['pulse', 'glitch']) {
+    const select = $(`prolink-${effect}`);
+    if (!select) continue;
+    select.value = String(prolinkMapping[effect]);
+    select.addEventListener('change', (e) => {
+      const deck = parseInt(e.target.value, 10);
+      if (deck < 1 || deck > 4) return;
+      prolinkMapping[effect] = deck;
+      try { localStorage.setItem('vj.prolinkMapping', JSON.stringify(prolinkMapping)); } catch { /* ignore */ }
+    });
+  }
+}
+
+bindProlinkSettings();
 let audioOverrideStop = false;
 try { audioOverrideStop = localStorage.getItem('vj.audioOverrideStop') === '1'; } catch { /* ignore */ }
 const syncMaster = { audio: true, A: true, B: true, C: true };
@@ -2203,6 +2580,7 @@ try {
 
 function saveSyncMaster() {
   try { localStorage.setItem('vj.syncMaster', JSON.stringify(syncMaster)); } catch { /* ignore */ }
+  persistDesk();
 }
 
 function paintMasterTransport() {
@@ -2274,6 +2652,7 @@ function setAudioOverrideStop(on) {
   audioOverrideStop = !!on;
   try { localStorage.setItem('vj.audioOverrideStop', audioOverrideStop ? '1' : '0'); } catch { /* ignore */ }
   paintMasterTransport();
+  persistDesk();
 }
 
 function setLayerSync(id, on) {
@@ -2446,6 +2825,7 @@ $('audio-play').addEventListener('click', () => {
 $('audio-loop').addEventListener('change', (e) => {
   audio.setLoop(e.target.checked);
   try { localStorage.setItem('vj.audioLoop', e.target.checked ? '1' : '0'); } catch { /* ignore */ }
+  persistDesk();
 });
 $('audio-scrub').addEventListener('pointerdown', () => { scrubbing = true; });
 window.addEventListener('pointerup', () => { scrubbing = false; });
@@ -2459,6 +2839,7 @@ $('audio-volume').addEventListener('input', (e) => {
   audio.volume = Number(e.target.value);
   $('audio-volume-out').textContent = audio.volume.toFixed(2);
   try { localStorage.setItem('vj.audioVolume', String(audio.volume)); } catch { /* ignore */ }
+  persistDesk();
 });
 for (const [rangeId, outId] of [
   ['audio-volume', 'audio-volume-out'],
@@ -2478,6 +2859,7 @@ for (const [rangeId, outId] of [
 $('audio-agc').addEventListener('change', (e) => {
   audio.agc = e.target.checked;
   try { localStorage.setItem('vj.audioAgc', audio.agc ? '1' : '0'); } catch { /* ignore */ }
+  persistDesk();
 });
 function bindEnvelope(id, outId, key, digits) {
   const el = $(id);
@@ -2490,6 +2872,7 @@ function bindEnvelope(id, outId, key, digits) {
     audio[id === 'audio-attack' ? 'attack' : 'release'] = v;
     $(outId).textContent = `${v.toFixed(digits)}s`;
     try { localStorage.setItem(key, String(v)); } catch { /* ignore */ }
+    persistDesk();
   };
   el.addEventListener('input', paint);
   paint();
@@ -2501,6 +2884,7 @@ $('audio-mute').addEventListener('click', () => {
   $('audio-mute').classList.toggle('on', audio.muted);
   $('audio-mute').textContent = audio.muted ? 'Muted' : 'Mute';
   try { localStorage.setItem('vj.audioMute', audio.muted ? '1' : '0'); } catch { /* ignore */ }
+  persistDesk();
 });
 $('audio-master').addEventListener('input', (e) => {
   params.set('audioGain', Number(e.target.value));
@@ -2744,7 +3128,10 @@ if (savedRecAspect && (RECORD_FRAMES[savedRecAspect] || savedRecAspect === 'nati
 }
 $('rec-aspect').addEventListener('change', () => {
   try { localStorage.setItem('vj.recAspect', $('rec-aspect').value); } catch { /* ignore */ }
+  persistDesk();
 });
+$('rec-format')?.addEventListener('change', () => persistDesk());
+$('rec-audio')?.addEventListener('change', () => persistDesk());
 const pushOverlay = (force = true) => outputWin.syncHud(hud.capture(), { force });
 
 const HUD_MODES = ['scan', 'glsl', 'matrix', 'formula', 'diag', 'audio'];
@@ -2823,6 +3210,7 @@ function bindHudChrome() {
     $('hud-bg-out').textContent = next.bg.toFixed(2);
     hud.applyChrome(next);
     pushOverlay(true);
+    persistDesk();
   };
   for (const id of ['hud-glyph', 'hud-color', 'hud-size', 'hud-leading', 'hud-mix', 'hud-bg']) {
     $(id).addEventListener('input', persist);
@@ -2859,6 +3247,7 @@ function setHudDisplay(mode) {
   $('hud-mode').value = hud.display;
   localStorage.setItem(HUD_STYLE_KEY.mode, hud.display);
   pushOverlay(true);
+  persistDesk();
 }
 bindHudChrome();
 
@@ -2958,6 +3347,7 @@ function bindHudMotion() {
     try {
       localStorage.setItem(HUD_MOTION_KEY, JSON.stringify({ motion: hudMotion.motion, sec: hudMotion.sec }));
     } catch { /* ignore */ }
+    persistDesk();
   };
   sel?.addEventListener('change', () => {
     hudMotion.motion = HUD_MOTIONS.includes(sel.value) ? sel.value : 'cut';
@@ -2977,6 +3367,7 @@ function setHudEnabled(on) {
   const hudState = document.querySelector('#live-tools .hud-toggle .hud-state');
   if (hudState) hudState.textContent = next ? 'On' : 'Off';
   try { localStorage.setItem('vj.hud', next ? '1' : '0'); } catch { /* ignore */ }
+  persistDesk();
   const frame = $('hud-frame');
   if (next) {
     const resume = hudMotion.playing && hudMotion.dismissing;
@@ -3016,6 +3407,7 @@ function applyHudBox(next, remember = false) {
   hud.applyChrome({ box: hudBox });
   if (remember) {
     try { localStorage.setItem('vj.hudBox', JSON.stringify(hudBox)); } catch { /* ignore */ }
+    persistDesk();
   }
 }
 
@@ -3110,6 +3502,7 @@ function setHudPerform(on) {
   document.body.classList.toggle('hud-perform', !!on);
   $('hud-perform').checked = !!on;
   try { localStorage.setItem('vj.hudPerform', on ? '1' : '0'); } catch { /* ignore */ }
+  persistDesk();
 }
 loadHudBox();
 bindHudBox();
@@ -3122,6 +3515,7 @@ $('hud-dpi').checked = dpiState.auto;
 $('hud-dpi').addEventListener('change', () => {
   setDpiAuto($('hud-dpi').checked);
   syncDpi();
+  persistDesk();
 });
 
 let deskMode = 'live';
@@ -3334,6 +3728,7 @@ function logoIncluded() {
     logoOut.checked = localStorage.getItem('vj.logoOutput') !== '0';
     logoOut.addEventListener('change', () => {
       try { localStorage.setItem('vj.logoOutput', logoOut.checked ? '1' : '0'); } catch { /* ignore */ }
+      persistDesk();
     });
   }
 }
@@ -3416,9 +3811,15 @@ $('map-close').addEventListener('click', () => openOutputMap(false));
 $('output-map-modal').addEventListener('click', (e) => {
   if (e.target === $('output-map-modal')) openOutputMap(false);
 });
+function openGuide(open) {
+  $('guide-modal').hidden = !open;
+}
 function openPrefs(open) {
   $('prefs-modal').hidden = !open;
-  if (open) ensureStockDir().catch(() => {});
+  if (open) {
+    openGuide(false);
+    ensureStockDir().catch(() => {});
+  }
 }
 $('stock-dir-pick').addEventListener('click', async () => {
   if (!isTauri()) {
@@ -3439,6 +3840,16 @@ $('prefs-btn').addEventListener('click', () => {
 $('prefs-close').addEventListener('click', () => openPrefs(false));
 $('prefs-modal').addEventListener('click', (e) => {
   if (e.target === $('prefs-modal')) openPrefs(false);
+});
+$('guide-btn').addEventListener('click', () => {
+  $('file-menu').hidden = true;
+  $('file-menu-btn').setAttribute('aria-expanded', 'false');
+  openPrefs(false);
+  openGuide($('guide-modal').hidden);
+});
+$('guide-close').addEventListener('click', () => openGuide(false));
+$('guide-modal').addEventListener('click', (e) => {
+  if (e.target === $('guide-modal')) openGuide(false);
 });
 
 function setUiScale(percent) {
@@ -3528,6 +3939,7 @@ window.addEventListener('keydown', (e) => {
   $('screen-menu').hidden = true;
   if (!$('output-map-modal').hidden) openOutputMap(false);
   if (!$('prefs-modal').hidden) openPrefs(false);
+  if (!$('guide-modal').hidden) openGuide(false);
 });
 $('fs-btn').addEventListener('click', toggleFullscreen);
 
@@ -3689,6 +4101,15 @@ function frame(stamp) {
     layer.setUniform(def.key, n);
   }
   momentary.apply(layers, grade, now);
+  const glitchWas = proLinkGlitch;
+  proLinkPulse = Math.max(0, proLinkPulse - dt * 8);
+  proLinkGlitch = Math.max(0, proLinkGlitch - dt * 5.5);
+  if (proLinkPulse > 0) grade.uFlash.value = Math.max(grade.uFlash.value, proLinkPulse);
+  if (glitchWas > 0) {
+    for (const layer of layers) {
+      layer.setUniform('glitch', Math.max(layer.get('glitch'), proLinkGlitch));
+    }
+  }
   const gainDef = params.defs.get('audioGain');
   audio.gain = gainDef && panel.isBypassed(gainDef)
     ? neutralOf(gainDef)
@@ -3995,7 +4416,8 @@ syncHudShader();
 async function restoreCachedMedia() {
   await library.ready;
   refreshLayerUi();
-  const name = localStorage.getItem('vj.audioFile');
+  if (project.desk && (project.desk.audio?.mode !== 'file' || !project.desk.audio.file)) return;
+  const name = project.desk?.audio?.file || localStorage.getItem('vj.audioFile');
   if (!name) return;
   const file = await library.getAudio(name);
   if (!file) return;
@@ -4009,8 +4431,6 @@ async function restoreCachedMedia() {
     setStatus($('audio-status'), err.message, true);
   }
 }
-restoreCachedMedia().then(() => paintAudioRecent());
-
 // Focused: requestAnimationFrame, whose timestamp is performance.now().
 // Blurred or hidden: a worker interval, because requestAnimationFrame stalls
 // when this window loses focus and the output mirror would freeze.
@@ -4170,6 +4590,20 @@ syncFrameClock();
 $('mode-live').addEventListener('click', () => setDeskMode('live'));
 $('mode-prep').addEventListener('click', () => setDeskMode('prep'));
 $('mode-midi').addEventListener('click', () => setDeskMode('midi'));
+if (isLinuxSystem()) {
+  const label = document.querySelector('label[for="output-size"]');
+  if (label) label.textContent = 'NDI';
+  const size = $('output-size');
+  if (size) size.title = `NDI output frame size. ${LINUX_PICTURE_NOTE}`;
+  const status = $('output-send-status');
+  if (status && !document.getElementById('picture-platform-note')) {
+    const note = document.createElement('p');
+    note.id = 'picture-platform-note';
+    note.className = 'hint';
+    note.textContent = LINUX_PICTURE_NOTE;
+    status.insertAdjacentElement('beforebegin', note);
+  }
+}
 {
   const savedSize = localStorage.getItem('vj.outputSize');
   const size = $('output-size');
@@ -4178,6 +4612,7 @@ $('mode-midi').addEventListener('click', () => setDeskMode('midi'));
     const [w, h] = size.value.split('x').map(Number);
     if (w > 8 && h > 8) setMasterOutput({ w, h });
     try { localStorage.setItem('vj.outputSize', size.value); } catch { /* ignore */ }
+    persistDesk();
   });
 }
 {
@@ -4186,6 +4621,13 @@ $('mode-midi').addEventListener('click', () => setDeskMode('midi'));
   if (workspace === 'prep' || workspace === 'midi') setDeskMode(workspace);
 }
 bindMediaPrep({ library, ensureStockDir, showToast });
+if (project.desk) applyDesk(project.desk);
+deskReady = true;
+if (!project.desk) project.setDesk(captureDesk());
+restoreCachedMedia().then(async () => {
+  paintAudioRecent();
+  await restoreLogoFiles();
+});
 
 function bindHoverTips() {
   const tip = document.createElement('div');

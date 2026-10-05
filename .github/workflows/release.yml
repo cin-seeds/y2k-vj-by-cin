@@ -22,6 +22,8 @@ jobs:
             target: aarch64-apple-darwin
           - platform: macos-latest
             target: x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +85,26 @@ jobs:
           fi
           chmod +x "$dest"
 
+      - name: Download Linux x86_64 FFmpeg sidecar
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libxdo-dev
+          mkdir -p src-tauri/bin
+          dest=src-tauri/bin/ffmpeg-x86_64-unknown-linux-gnu
+          curl -fL --retry 3 -o "$RUNNER_TEMP/ffmpeg-linux.tar.xz" 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz'
+          mkdir -p "$RUNNER_TEMP/ffmpeg-linux"
+          tar -xJf "$RUNNER_TEMP/ffmpeg-linux.tar.xz" -C "$RUNNER_TEMP/ffmpeg-linux"
+          found=$(find "$RUNNER_TEMP/ffmpeg-linux" -type f -name ffmpeg | head -n 1)
+          if [ -n "$found" ]; then mv "$found" "$dest"; fi
+          if [ ! -f "$dest" ]; then
+            echo "::error file=$dest::FFmpeg sidecar $dest is missing after the download."
+            exit 1
+          fi
+          chmod +x "$dest"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -110,5 +132,7 @@ jobs:
             ```
             xattr -cr "/Applications/Y2K VJ by Cín.app"
             ```
+
+            **Linux:** download the `.deb` or the `.AppImage`. The AppImage needs `chmod +x` before it will open.
           releaseDraft: true
           args: --target ${{ matrix.target }}

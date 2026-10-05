@@ -18,7 +18,7 @@ const fingerprint = (file) => `${file.size}:${file.lastModified}:${file.name}`;
 
 const toFile = (rec) => {
   if (!rec?.blob) return null;
-  return new File([rec.blob], rec.name, { type: rec.type || '', lastModified: rec.lastModified || 0 });
+  return new File([rec.blob], rec.fileName || rec.name, { type: rec.type || '', lastModified: rec.lastModified || 0 });
 };
 
 export class MediaCache {
@@ -44,10 +44,11 @@ export class MediaCache {
 
   async put(file, extra = {}) {
     await this.ready;
-    const kind = kindOf(file);
+    const kind = extra.kind || kindOf(file);
     if (!kind) return;
     const rec = {
-      name: file.name,
+      name: extra.name || file.name,
+      fileName: extra.fileName || file.name,
       type: file.type,
       size: file.size,
       lastModified: file.lastModified,

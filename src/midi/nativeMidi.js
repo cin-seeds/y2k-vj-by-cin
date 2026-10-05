@@ -1,5 +1,6 @@
-// Mac desktop MIDI. Shaped like Web MIDI's MIDIAccess so MidiManager can
-// attach the same way it does in a browser. Windows keeps requestMIDIAccess.
+// Desktop MIDI for macOS and Linux. Shaped like Web MIDI's MIDIAccess so
+// MidiManager can attach the same way it does in a browser. Windows keeps
+// requestMIDIAccess. Linux uses this path because requestMIDIAccess is missing.
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';

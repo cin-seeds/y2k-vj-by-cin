@@ -6,11 +6,11 @@ import { ENGINE_HYDRA, ENGINE_LABELS, ENGINE_PARTICLES, ENGINES, PARTICLE_SOURCE
 
 export const LAYERS = ['A', 'B', 'C'];
 
-export const MODES = ['glitch', 'dither', 'y2k', 'vhs', 'points', 'mesh', 'retro', 'clean', 'win98', 'ps1', 'ascii', 'eater', 'minidv', 'flash', 'starfield'];
+export const MODES = ['glitch', 'dither', 'y2k', 'vhs', 'points', 'mesh', 'retro', 'clean', 'win98', 'ps1', 'ascii', 'eater', 'minidv', 'flash', 'starfield', 'metal'];
 export const MODE_LABELS = [
   'Glitch', 'Pixel Art / Dither', 'Y2K / 2000s', 'VHS', '3D Point Cloud', '3D Spatial Mesh',
   '90s Retro Gaming', 'Clean (no FX)', 'Windows 98 Crash', 'PS1 / N64 CRT', 'ASCII / Pointillism',
-  'Signal Eater', 'MiniDV', 'Flash MX', 'Starfield',
+  'Signal Eater', 'MiniDV', 'Flash MX', 'Starfield', 'Black Metallic Y2K',
 ];
 export const MODE_3D = new Set(['points', 'mesh']);
 
@@ -79,8 +79,8 @@ export const LAYER_DEFS = [
   { id: 'audioBind', label: 'Audio Binding', group: 'layer', min: 0, max: 4, step: 1, value: 0,
     options: AUDIO_BINDS },
   { id: 'beatSync', label: 'Beat Sync (BPM)', group: 'layer', min: 0, max: 1, value: 0 },
-  { id: 'glitch', label: 'Glitch Intensity', group: 'look', modes: ['glitch', 'y2k', 'dither'], min: 0, max: 1, value: 0.5 },
-  { id: 'feedback', label: 'Feedback / Mosh', group: 'look', modes: ['glitch', 'y2k'], min: 0, max: 0.98, value: 0.6 },
+  { id: 'glitch', label: 'Glitch Intensity', group: 'look', modes: ['glitch', 'y2k', 'dither', 'metal'], min: 0, max: 1, value: 0.5 },
+  { id: 'feedback', label: 'Feedback / Mosh', group: 'look', modes: ['glitch', 'y2k', 'metal'], min: 0, max: 0.98, value: 0.6 },
 
   { id: 'pSource', label: 'Particle Texture Source', group: 'particles', min: 0, max: PARTICLE_SOURCES.length - 1, step: 1, value: 0,
     options: PARTICLE_SOURCES, uniform: false,

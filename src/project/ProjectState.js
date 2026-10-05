@@ -57,6 +57,7 @@ export class ProjectState {
     this.transport = emptyTransport();
     this.locks = {};
     this.recordOutput = { code: null, screen: null };
+    this.desk = null;
     this.#load();
   }
 
@@ -75,7 +76,13 @@ export class ProjectState {
         code: this.recordOutput.code,
         screen: this.recordOutput.screen,
       },
+      desk: this.desk,
     };
+  }
+
+  setDesk(desk) {
+    this.desk = normalizeDesk(desk);
+    this.#write();
   }
 
   setLocks(locks) {
@@ -119,6 +126,7 @@ export class ProjectState {
     this.transport = doc.transport;
     this.locks = doc.locks;
     this.recordOutput = doc.recordOutput;
+    this.desk = doc.desk;
     this.#write();
     return doc;
   }
@@ -129,6 +137,7 @@ export class ProjectState {
     this.transport = emptyTransport();
     this.locks = {};
     this.recordOutput = { code: null, screen: null };
+    this.desk = null;
     this.#write();
   }
 
@@ -153,6 +162,7 @@ export class ProjectState {
         this.transport = doc.transport;
         this.locks = doc.locks;
         this.recordOutput = doc.recordOutput;
+        this.desk = doc.desk;
         return;
       }
     } catch { /* fall through to the older keys */ }
@@ -171,6 +181,7 @@ export class ProjectState {
     this.transport = doc.transport;
     this.locks = doc.locks;
     this.recordOutput = doc.recordOutput;
+    this.desk = doc.desk;
     this.#write();
   }
 }
@@ -208,6 +219,95 @@ export function coerceDocument(data = {}) {
     transport,
     locks: normalizeLocks(data.locks),
     recordOutput: normalizeRecordOutput(data.recordOutput),
+    desk: normalizeDesk(data.desk),
     legacy: data,
+  };
+}
+
+function clampNum(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function normalizeLogo(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  const motion = ['cut', 'fade', 'zoom', 'slide'].includes(row.motion) ? row.motion : 'fade';
+  return {
+    label: typeof row.label === 'string' ? row.label.slice(0, 16) : '',
+    name: typeof row.name === 'string' ? row.name.slice(0, 180) : '',
+    cacheKey: typeof row.cacheKey === 'string' ? row.cacheKey.slice(0, 220) : '',
+    opacity: clampNum(row.opacity, 1, 0, 1),
+    scale: clampNum(row.scale, 1, 0.25, 2.5),
+    x: clampNum(row.x, 0, -0.5, 0.5),
+    y: clampNum(row.y, 0, -0.5, 0.5),
+    mode: clampNum(row.mode, 1, 0, 2) | 0,
+    motion,
+    motionSec: clampNum(row.motionSec, 0.5, 0.1, 2),
+    autoMask: !!row.autoMask,
+    fx: clampNum(row.fx, 0, 0, 4) | 0,
+    fxAmt: clampNum(row.fxAmt, 0.5, 0, 1),
+    fxReact: !!row.fxReact,
+  };
+}
+
+/** Left-column show settings: logos, code overlay, screensaver, audio, and the Lock/Sync buttons. */
+export function normalizeDesk(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const logos = [0, 1, 2].map((i) => normalizeLogo(Array.isArray(raw.logos) ? raw.logos[i] : null));
+  const code = raw.code && typeof raw.code === 'object' ? raw.code : {};
+  const screen = raw.screen && typeof raw.screen === 'object' ? raw.screen : {};
+  const audio = raw.audio && typeof raw.audio === 'object' ? raw.audio : {};
+  const sync = raw.syncMaster && typeof raw.syncMaster === 'object' ? raw.syncMaster : {};
+  const box = code.box && typeof code.box === 'object' ? code.box : null;
+  return {
+    logos,
+    code: {
+      enabled: !!code.enabled,
+      motion: ['cut', 'fade', 'zoom', 'slide'].includes(code.motion) ? code.motion : 'cut',
+      sec: clampNum(code.sec, 0.4, 0.1, 2),
+      glyph: typeof code.glyph === 'string' ? code.glyph : 'ascii',
+      color: typeof code.color === 'string' ? code.color : 'green',
+      size: clampNum(code.size, 16, 10, 48),
+      mix: clampNum(code.mix, 0.92, 0, 1),
+      bg: clampNum(code.bg, 0.62, 0, 1),
+      automask: !!code.automask,
+      leading: clampNum(code.leading, 1.45, 1, 2),
+      mode: typeof code.mode === 'string' ? code.mode : 'scan',
+      perform: !!code.perform,
+      dpi: code.dpi !== false,
+      logoOutput: code.logoOutput !== false,
+      box,
+    },
+    screen: {
+      on: !!screen.on,
+      text: typeof screen.text === 'string' ? screen.text.slice(0, 400) : '',
+      font: typeof screen.font === 'string' ? screen.font : 'desk',
+      shade: clampNum(screen.shade, 8, 0, 8),
+      bg: clampNum(screen.bg, 1, 0, 1),
+      color: typeof screen.color === 'string' ? screen.color : 'white',
+      size: clampNum(screen.size, 100, 40, 220),
+    },
+    audio: {
+      mode: audio.mode === 'file' ? 'file' : 'device',
+      volume: clampNum(audio.volume, 0.8, 0, 1),
+      muted: !!audio.muted,
+      agc: audio.agc !== false,
+      loop: audio.loop !== false,
+      overrideStop: !!audio.overrideStop,
+      attack: clampNum(audio.attack, 0.01, 0.001, 0.08),
+      release: clampNum(audio.release, 0.15, 0.02, 0.6),
+      file: typeof audio.file === 'string' ? audio.file.slice(0, 180) : '',
+    },
+    outputSize: typeof raw.outputSize === 'string' ? raw.outputSize : '',
+    recAspect: typeof raw.recAspect === 'string' ? raw.recAspect : '',
+    recFormat: typeof raw.recFormat === 'string' ? raw.recFormat : '',
+    recAudio: raw.recAudio !== false,
+    syncMaster: {
+      audio: sync.audio !== false,
+      A: sync.A !== false,
+      B: sync.B !== false,
+      C: sync.C !== false,
+    },
   };
 }

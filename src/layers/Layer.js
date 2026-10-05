@@ -5,6 +5,7 @@ import commonGlsl from '../shaders/common.glsl?raw';
 import glitchFrag from '../shaders/glitch.frag?raw';
 import ditherFrag from '../shaders/dither.frag?raw';
 import y2kFrag from '../shaders/y2k.frag?raw';
+import metalFrag from '../shaders/metal.frag?raw';
 import vhsFrag from '../shaders/vhs.frag?raw';
 import retroFrag from '../shaders/retro.frag?raw';
 import cleanFrag from '../shaders/clean.frag?raw';
@@ -29,13 +30,14 @@ import { ENGINE_FX, ENGINE_HYDRA, ENGINE_PARTICLES, ENGINES } from '../engines/c
 import { GRID_SIZES, LAYER_DEFS, MODE_3D, MODES, layerParam, uniformName } from '../params.js';
 
 /** Color runs before post. A mode occupies one stage; the other stage copies the picture through. */
-const COLOR_MODES = new Set(['dither', 'y2k', 'win98', 'ascii']);
+const COLOR_MODES = new Set(['dither', 'y2k', 'win98', 'ascii', 'metal']);
 const POST_MODES = new Set(['glitch', 'vhs', 'ps1', 'retro', 'eater', 'minidv', 'flash', 'starfield']);
 
 const FX_SOURCES = {
   glitch: glitchFrag,
   dither: ditherFrag,
   y2k: y2kFrag,
+  metal: metalFrag,
   vhs: vhsFrag,
   retro: retroFrag,
   clean: cleanFrag,
@@ -762,7 +764,7 @@ export class Layer {
   /**
    * Source, then transform, then color, then post, then the caller composites
    * opacity and blend. A color mode (Y2K, dither, Windows 98, ASCII) owns the
-   * color stage. A post mode (glitch, VHS, CRT, retro) owns the post stage.
+   * color stage. Metal is a color stage too. A post mode (glitch, VHS, CRT, retro) owns the post stage.
    * The other stage copies the picture through, so the two looks never write
    * the same buffer. 3D modes stay in camera space. Switching engine, media,
    * or the particle source clears feedback and reseeds the swarm.

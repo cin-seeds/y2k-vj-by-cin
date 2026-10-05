@@ -1,6 +1,7 @@
 mod midi;
 mod picture_recv;
 mod picture_send;
+mod prolink;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -518,6 +519,7 @@ pub fn run() {
             .build(),
         )?;
       }
+      prolink::start_pro_dj_link(app.handle().clone());
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -536,7 +538,8 @@ pub fn run() {
       picture_recv::picture_recv_sources,
       picture_recv::picture_recv_watch,
       picture_recv::picture_recv_frame,
-      picture_recv::picture_recv_unwatch
+      picture_recv::picture_recv_unwatch,
+      prolink::start_pro_dj_link
     ])
     .run(tauri::generate_context!())
     .expect("error while building tauri application");

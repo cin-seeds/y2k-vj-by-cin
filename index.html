@@ -17,6 +17,7 @@
             <button id="scenes-export" type="button" role="menuitem">Save</button>
             <button id="scenes-save-new" type="button" role="menuitem">Save New</button>
             <button id="prefs-btn" type="button" role="menuitem" title="UI scale">Preferences</button>
+            <button id="guide-btn" type="button" role="menuitem">Guide</button>
             <input id="scenes-import-file" type="file" accept=".vjproj,.json,application/json" hidden />
             <p class="menu-label">View</p>
             <label class="menu-check"><input id="view-timeline" type="checkbox" checked /> Timeline</label>
@@ -30,7 +31,7 @@
         </div>
         <div class="desk-mode" role="group" aria-label="Workspace">
           <button id="mode-prep" type="button" aria-pressed="false">Media Manager</button>
-          <button id="mode-live" type="button" class="on" aria-pressed="true">Live VJ</button>
+          <button id="mode-live" type="button" class="on" aria-pressed="true">Live</button>
           <button id="mode-midi" type="button" aria-pressed="false">Perform</button>
         </div>
         <span class="logo">Y2K&nbsp;VJ<em>//</em>BY&nbsp;CÍN</span>
@@ -564,6 +565,27 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             <h3>Live Performance Tools</h3>
             <button id="shuffle-layer-fx" type="button" title="Randomize the visible effect sliders on the selected layer">&#x1F3B2; Shuffle Layer FX</button>
             <div id="momentary-pads" class="momentary-pads"></div>
+            <div id="prolink-settings" class="hardware-menu">
+              <h3>Pioneer Pro DJ Link (Ethernet)</h3>
+              <div class="mapping-row">
+                <label for="prolink-pulse">Strobe / Pulse (uPulse)</label>
+                <select id="prolink-pulse" title="Which deck drives the strobe flash">
+                  <option value="1">Deck 1</option>
+                  <option value="2">Deck 2</option>
+                  <option value="3">Deck 3</option>
+                  <option value="4">Deck 4</option>
+                </select>
+              </div>
+              <div class="mapping-row">
+                <label for="prolink-glitch">Distortion (uGlitch)</label>
+                <select id="prolink-glitch" title="Which deck drives the glitch">
+                  <option value="1">Deck 1</option>
+                  <option value="2" selected>Deck 2</option>
+                  <option value="3">Deck 3</option>
+                  <option value="4">Deck 4</option>
+                </select>
+              </div>
+            </div>
             <div class="overlay-triggers">
               <h3>Overlay Triggers</h3>
               <div class="code-live">
@@ -613,6 +635,62 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
     </div>
 
     <div id="app-toast" class="app-toast" hidden></div>
+    <div id="guide-modal" class="map-modal" hidden>
+      <div class="map-card guide-card" role="dialog" aria-labelledby="guide-title">
+        <header class="map-head">
+          <h2 id="guide-title">Guide</h2>
+          <button id="guide-close" type="button">Close</button>
+        </header>
+        <div class="guide-body">
+          <ol>
+            <li>
+              <h3>Media Manager</h3>
+              <p>Click <b>Media Manager</b>. Drop a video on the drop area, or click it to choose a file. The app fits it to 1920×1080, compresses it for smooth playback, and saves it into the Media Library. Wait until the row finishes. To skip the conversion, click <b>Bypass Transcode &amp; Add Directly</b>. Transcoding runs in the desktop app.</p>
+            </li>
+            <li>
+              <h3>Project: audio and media</h3>
+              <p>Open <b>File</b>. <b>New Project</b> starts clean. <b>Load Project</b> opens a saved show. <b>Save</b> and <b>Save New</b> write the desk, the scenes, and the left-column settings into a project file.</p>
+              <p>Open the <b>Audio</b> fold. Click <b>Live Hardware</b> and pick an input, or click <b>Local File</b> and drop an .mp3, .wav, or .aiff. Press <b>Play</b>. <b>Auto-Gain</b> keeps the level steady. <b>Master Gain</b> and <b>Mute</b> set how hard the sound hits the picture.</p>
+              <p>Open <b>Media Library</b>. Click <b>+ Add media files</b>, or use the clips Media Manager just made. On a card, click <b>A</b>, <b>B</b>, or <b>C</b> to put that clip on a layer.</p>
+            </li>
+            <li>
+              <h3>Layers</h3>
+              <p>Under the preview are layers <b>A</b>, <b>B</b>, and <b>C</b>. Click <b>Select</b> (or press Q, W, or E). The mix menu sets how this layer sits on the one below: <b>Normal</b>, <b>Screen</b>, <b>Multiply</b>, and the rest. Raise the opacity fader to bring it in. <b>Mute</b> and <b>Solo</b> cut or isolate a layer. <b>Sync</b> locks the video to the master Play, Pause, and Stop.</p>
+            </li>
+            <li>
+              <h3>Shaders</h3>
+              <p>With a layer selected, pick a look in the Inspector, or press 1–9 for the first nine. Each look is a shader, from <b>Glitch</b> and <b>Y2K / 2000s</b> through <b>Black Metallic Y2K</b>. On the 3D looks, drag the preview to orbit and scroll to zoom.</p>
+            </li>
+            <li>
+              <h3>Inspector</h3>
+              <p>The Inspector is the column on the right. Work one layer at a time. The <b>Media</b> menu assigns the video: <b>Test pattern</b>, a camera, an NDI / Spout source, or a library clip. <b>Mirror</b> flips it. The groups under that hold the sliders for the current look. Hover a slider to read what it changes. <b>Mute</b> bypasses a group. <b>🎲 Shuffle</b> randomizes that group. Double-click a slider to reset it. Then <b>Select</b> the next layer and repeat.</p>
+            </li>
+            <li>
+              <h3>Audio reactivity</h3>
+              <p>Sound can move the picture in more than one place at once. On a layer strip, pick <b>Sub-Bass</b>, <b>Mid-Energy</b>, <b>High-Hats</b>, <b>LFO 1</b>, or <b>LFO 2</b>, then set <b>Depth</b> and <b>Gate</b>. In the Inspector, each slider has its own audio row. Routes include <b>Punch</b>, <b>BPM Pulse</b>, <b>Song Energy</b>, <b>Drop Pulse</b>, and <b>Beat / Onset</b>. <b>Depth</b> is how far the slider moves. <b>Gate</b> ignores quiet sound. Click <b>A</b> on a slider to add an LFO on top. The Audio fold meters show <b>KICK</b>, <b>SNARE</b>, <b>NRG</b>, <b>BRK</b>, and <b>DROP</b> as the sound comes in.</p>
+            </li>
+            <li>
+              <h3>Diagnostics</h3>
+              <p>Click <b>Diagnostics</b> in the top bar. <b>Helper / Diagnostics</b> keeps updating while you work. <b>What's happening</b> lists what is driving each control. <b>What's messy</b> flags clipping and stacked routes. <b>Performance</b> and <b>Keep it readable</b> flag load and hard-to-read setups. Click a warning to jump to that slider.</p>
+            </li>
+            <li>
+              <h3>BPM</h3>
+              <p>The clock sits at the top of Composition. It starts at 120.0. Click <b>Auto: Read Live</b> to take the tempo from the audio. <b>Tap/Phase</b> (T) sets a tempo, or one tap on the beat lines the phase up. <b>x2</b> and <b>/2</b> double or halve it. <b>Nudge +</b> and <b>Nudge -</b> move it by 0.1. The beat light flashes on each beat. Shaders, the strobe, and the timeline read this clock.</p>
+            </li>
+            <li>
+              <h3>Composition</h3>
+              <p>Composition is the last pass, after the three layers are mixed. Set <b>Master Speed</b> (1.00x is normal, 0 freezes motion) and <b>Output Brightness</b>. Then the master groups: <b>Color &amp; Texture</b>, <b>Distortion &amp; Glitch</b>, and <b>Motion &amp; Timing</b>. <b>Strobe Source</b> can be <b>Manual</b>, <b>Beat Pulse</b>, or <b>Drop Pulse</b>. <b>Lock</b> a group if Shuffle should leave it alone.</p>
+            </li>
+            <li>
+              <h3>Output and recording</h3>
+              <p>Open the <b>Output</b> fold. Pick the <b>Preview</b> shape. Click <b>Master Output</b> and choose a display. Pick an NDI / Syphon / SPOUT size and click <b>Send</b> when another app should receive the picture. Click <b>Advanced Output</b> to drag the corner pins onto a projector.</p>
+              <p>Open <b>Recordings</b>. Set <b>Scale</b> to <b>Fill</b> or <b>Fit</b>, and <b>Render scale</b> to 0.5x, 0.75x, or 1x. Pick the format and leave <b>Include audio</b> on if the file should have sound. In the top bar, pick 16:9, 9:16, 1:1, or Native, then click <b>● REC</b>. Click <b>■ STOP</b> to finish.</p>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
     <div id="prefs-modal" class="map-modal" hidden>
       <div class="map-card" role="dialog" aria-labelledby="prefs-title">
         <header class="map-head">

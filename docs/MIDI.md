@@ -81,7 +81,7 @@ The followed layer is the layer selected on the desk (Q, W, E) while **Follow** 
 | Row 2 | 8–15 | Mute an effect group on the selected layer |
 | Bottom (row 1) | 0–7 | Shuffle an effect group on the selected layer |
 
-There are 15 looks, so the last pad of each "looks 9–16" row is empty.
+There are 16 looks, so the last pad of each "looks 9–16" row is Black Metallic Y2K.
 
 | Pad | Look |
 | --- | --- |
@@ -100,6 +100,7 @@ There are 15 looks, so the last pad of each "looks 9–16" row is empty.
 | 13 | MiniDV |
 | 14 | Flash MX |
 | 15 | Starfield |
+| 16 | Black Metallic Y2K |
 
 The Mute and Shuffle rows follow the effect groups shown in the Inspector for the selected layer, from left to right. The first group is column 1. Columns with no group stay dark.
 
