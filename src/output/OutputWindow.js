@@ -5,6 +5,8 @@
 
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { HUD_COLORS, HUD_FONT, paintHudText } from '../ui/Hud.js';
+import { paintLogos } from '../overlay/StingRack.js';
+import { paintScreensaver } from '../overlay/paintScreensaver.js';
 import { dpiState } from '../ui/dpiScale.js';
 
 const OVERLAY_KEY = 'vj.hudOutput';
@@ -179,12 +181,13 @@ export class OutputWindow {
   }
 
   /** Copy the main WebGL frame into the output. Letterboxes when the screen shape differs. */
-  mirror(overlay = null) {
+  mirror(overlay = null, logos = null, source = null, screensaver = null) {
     if (!this.open) {
       this.outCanvas = null;
       this.outCtx = null;
       return;
     }
+    const picture = source || this.canvas;
     if (this.native) {
       if (this.frameBusy) return;
       const w = this.nativeSize.w;
@@ -192,7 +195,7 @@ export class OutputWindow {
       const dest = this.#localCanvas(w, h);
       const ctx = this.localCtx;
       if (!dest || !ctx) return;
-      this.#paint(ctx, w, h, overlay);
+      this.#paint(ctx, w, h, overlay, logos, picture, screensaver);
       this.#queueNativeFrame(dest);
       return;
     }
@@ -207,7 +210,7 @@ export class OutputWindow {
       dest.width = w;
       dest.height = h;
     }
-    this.#paint(ctx, w, h, overlay);
+    this.#paint(ctx, w, h, overlay, logos, picture, screensaver);
     this.#syncHudStyle(dest, overlay?.chrome);
   }
 
@@ -297,7 +300,7 @@ export class OutputWindow {
     const size = monitor.size.toLogical(scale);
     const options = {
       url,
-      title: 'LIVE VJ - MASTER OUTPUT',
+      title: 'Y2K VJ by Cín - MASTER OUTPUT',
       decorations: false,
       shadow: false,
       resizable: false,
@@ -480,12 +483,13 @@ export class OutputWindow {
     });
   }
 
-  #paint(ctx, w, h, overlay) {
-    const src = this.canvas;
+  #paint(ctx, w, h, overlay, logos = null, source = null, screensaver = null) {
+    const src = source || this.canvas;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);
     const sw = src?.width || 0;
     const sh = src?.height || 0;
+    let box = null;
     if (sw > 0 && sh > 0) {
       const scale = Math.min(w / sw, h / sh);
       const dw = Math.round(sw * scale);
@@ -493,8 +497,11 @@ export class OutputWindow {
       const dx = Math.round((w - dw) / 2);
       const dy = Math.round((h - dh) / 2);
       ctx.drawImage(src, 0, 0, sw, sh, dx, dy, dw, dh);
+      box = { dx, dy, dw, dh };
+      if (logos?.length) paintLogos(ctx, box, logos);
     }
     if (overlay?.lines?.length) this.#drawHud(ctx, w, h, overlay);
+    if (screensaver) paintScreensaver(ctx, w, h, box, screensaver);
   }
 
   #attach() {
@@ -556,14 +563,15 @@ export class OutputWindow {
     const color = (HUD_COLORS[chrome.color] || HUD_COLORS.green)[0];
     const glow = (HUD_COLORS[chrome.color] || HUD_COLORS.green)[1];
     const leadingCss = dpiState.auto ? `${typed.lineH.toFixed(2)}px` : String(chrome.leading ?? 1.45);
-    const key = `${font}|${size}|${leadingCss}|${color}|${chrome.bg ?? ''}|${glow}`;
+    const bg = chrome.automask ? 0 : (chrome.bg ?? 0.72);
+    const key = `${font}|${size}|${leadingCss}|${color}|${bg}|${glow}`;
     if (key === this.hudStyleKey) return;
     this.hudStyleKey = key;
     canvas.style.setProperty('--hud-font', font);
     canvas.style.setProperty('--hud-size', `${size}px`);
     canvas.style.setProperty('--hud-fg', color);
     canvas.style.setProperty('--hud-glow', glow);
-    canvas.style.setProperty('--hud-bg', String(chrome.bg ?? 0.72));
+    canvas.style.setProperty('--hud-bg', String(bg));
     canvas.style.setProperty('--hud-leading', leadingCss);
     canvas.style.fontFamily = font;
   }

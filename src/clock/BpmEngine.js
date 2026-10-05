@@ -1,6 +1,6 @@
-// Hybrid tempo. Auto listens through a 130 Hz lowpass, ranks repeating
-// bass intervals, and only then snaps the printed number. Manual tap,
-// double/half, and nudge hold that number until the next deliberate edit.
+// One-shot tempo. Auto: Read Live collects kicks for 4–8 seconds, locks the
+// dominant tempo, then returns to manual. Tap, double/half, and nudge edit
+// that locked number until the next listen.
 
 const SEARCH_MIN = 70;
 const SEARCH_MAX = 180;
@@ -14,6 +14,8 @@ const TAP_OUTLIER = 0.2;
 const TAP_MIN_MS = 200;
 const PEAK_GAP_SEC = 0.24;
 const FRESH_SEC = 1.25;
+const ANALYZE_MIN_SEC = 4;
+const ANALYZE_MAX_SEC = 8;
 
 export function clampTempo(bpm) {
   const n = Number(bpm);
@@ -42,14 +44,15 @@ function foldOnce(bpm) {
 }
 
 /**
- * Rank inter-onset intervals from the last few seconds.
+ * Rank inter-onset intervals inside `windowSec` (default 4 s).
  * One-beat gaps, and two-beat gaps split in half, are folded into 70–180.
  * The median is the dominant period. It is snapped to a whole or half BPM.
  * Confidence is the share of gaps that sit on that snapped tempo.
  * `anchor` breaks a tie between two equally common tempos.
  */
-export function dominantTempo(peakTimes, now, anchor = 120) {
-  const peaks = peakTimes.filter((t) => t <= now && now - t <= WINDOW_SEC);
+export function dominantTempo(peakTimes, now, anchor = 120, windowSec = WINDOW_SEC) {
+  const limit = windowSec > 0 ? windowSec : WINDOW_SEC;
+  const peaks = peakTimes.filter((t) => t <= now && now - t <= limit);
   if (peaks.length < 4) return null;
   const samples = [];
   for (let i = 1; i < peaks.length; i++) {
@@ -91,7 +94,11 @@ export class BpmEngine {
     this.stableTime = 0;
     this.lastRead = null;
     this.peaks = [];
-    this.intervals = [];
+    this.analysisPeaks = [];
+    this.previewBpm = null;
+    this.analyzing = false;
+    this.analyzeStarted = 0;
+    this.analysisEvent = null;
     this.taps = [];
     this.tapCommitted = false;
     this.filter = null;
@@ -155,6 +162,32 @@ export class BpmEngine {
     this.stableTime = 0;
     this.candidate = null;
     this.locked = next === 'manual';
+    if (next === 'manual') this.analyzing = false;
+  }
+
+  /** Start a fresh listen. `nowSec` is the frame clock, in seconds. */
+  beginAnalysis(nowSec = this.now) {
+    this.mode = 'auto';
+    this.locked = false;
+    this.analyzing = true;
+    this.analysisPeaks = [];
+    this.previewBpm = null;
+    this.analyzeStarted = nowSec;
+    this.stableTime = 0;
+    this.candidate = null;
+    this.analysisEvent = null;
+  }
+
+  analyzeLabel() {
+    const left = ANALYZE_MAX_SEC - (this.now - this.analyzeStarted);
+    const shown = Math.min(ANALYZE_MAX_SEC, Math.max(0, Math.ceil(left)));
+    return `Analyzing... ${shown}s`;
+  }
+
+  consumeAnalysis() {
+    const event = this.analysisEvent;
+    this.analysisEvent = null;
+    return event;
   }
 
   /** Manual edit. Keeps the current beat phase and drops a half-finished tap. */
@@ -229,7 +262,20 @@ export class BpmEngine {
   update(dt, nowSec) {
     const step = Math.min(Math.max(dt || 0, 0), 0.1);
     this.now = nowSec;
-    if (this.mode === 'auto' && this.#listen(nowSec)) this.lastRead = dominantTempo(this.peaks, nowSec, this.bpm);
+    if (this.mode === 'auto' && this.#listen(nowSec)) {
+      this.lastRead = dominantTempo(this.peaks, nowSec, this.bpm);
+      if (this.analyzing) this.analysisPeaks.push(nowSec);
+      this.#alignPhase();
+    }
+    if (this.analyzing) {
+      const elapsed = nowSec - this.analyzeStarted;
+      const read = dominantTempo(this.analysisPeaks, nowSec, this.bpm, Math.max(elapsed, 1e-3));
+      this.previewBpm = read ? read.bpm : null;
+      const ready = elapsed >= ANALYZE_MIN_SEC && this.analysisPeaks.length >= 10 && read && read.confidence >= 0.8;
+      const stop = elapsed >= ANALYZE_MAX_SEC;
+      if (ready || (stop && read && read.confidence >= 0.6)) this.#lockRead(read);
+      else if (stop) this.#finishAnalysis('timeout');
+    }
     const fresh = this.peaks.length > 0 && nowSec - this.peaks[this.peaks.length - 1] < FRESH_SEC;
     const read = fresh ? this.lastRead : null;
     if (read && read.confidence >= MIN_CONFIDENCE) {
@@ -238,7 +284,7 @@ export class BpmEngine {
         this.candidate = read.bpm;
         this.stableTime = step;
       }
-      if (this.stableTime >= HOLD_SEC) {
+      if (this.stableTime >= HOLD_SEC && !this.analyzing) {
         this.locked = true;
         if (this.mode === 'auto' && Math.abs(read.bpm - this.bpm) >= 0.25) {
           this.bpm = read.bpm;
@@ -253,6 +299,35 @@ export class BpmEngine {
     this.beats += (step * this.bpm) / 60;
   }
 
+  #lockRead(read) {
+    this.bpm = snapHalf(read.bpm);
+    this.changed = true;
+    this.tapCommitted = false;
+    this.taps = [];
+    this.beats = Math.round(this.beats);
+    this.previewBpm = null;
+    this.#finishAnalysis('locked');
+  }
+
+  #finishAnalysis(kind) {
+    this.analyzing = false;
+    this.previewBpm = null;
+    this.mode = 'manual';
+    this.locked = true;
+    this.stableTime = 0;
+    this.candidate = null;
+    this.analysisEvent = kind;
+  }
+
+  /** Put an on-tempo kick on the beat. The peak detector itself is unchanged. */
+  #alignPhase() {
+    if (this.peaks.length < 2) return;
+    const gap = this.peaks[this.peaks.length - 1] - this.peaks[this.peaks.length - 2];
+    const period = 60 / Math.max(1, this.bpm);
+    const near = (target) => Math.abs(gap - target) <= Math.max(0.05, target * 0.12);
+    if (near(period) || near(period * 2)) this.beats = Math.round(this.beats);
+  }
+
   #listen(nowSec) {
     if (!this.analyser || !this.time) return false;
     this.analyser.getFloatTimeDomainData(this.time);
@@ -265,12 +340,6 @@ export class BpmEngine {
     const loud = energy > 0.02 && energy > floor * 1.85 && energy > this.prevEnergy * 1.2;
     this.prevEnergy = energy;
     if (!loud || nowSec - this.lastPeak < PEAK_GAP_SEC) return false;
-    if (this.lastPeak > 0) {
-      const interval = nowSec - this.lastPeak;
-      this.intervals.push({ at: nowSec, dt: interval });
-      const cutoff = nowSec - WINDOW_SEC;
-      while (this.intervals.length && this.intervals[0].at < cutoff) this.intervals.shift();
-    }
     this.lastPeak = nowSec;
     this.peaks.push(nowSec);
     const cutoff = nowSec - WINDOW_SEC;

@@ -35,12 +35,22 @@ export class MidiManager {
   }
 
   get supported() {
-    return 'requestMIDIAccess' in navigator;
+    if ('requestMIDIAccess' in navigator) return true;
+    return this.#inTauri();
   }
 
   async init() {
     if (!this.supported) throw new Error('Web MIDI is not supported in this browser (use Chrome or Edge).');
-    this.access = await navigator.requestMIDIAccess({ sysex: false });
+    if ('requestMIDIAccess' in navigator) {
+      try {
+        this.access = await navigator.requestMIDIAccess({ sysex: false });
+      } catch (err) {
+        if (!this.#inTauri()) throw err;
+        this.access = await this.#nativeAccess();
+      }
+    } else {
+      this.access = await this.#nativeAccess();
+    }
     this.#attach();
     this.access.onstatechange = () => {
       this.#attach();
@@ -73,13 +83,22 @@ export class MidiManager {
     this.onChange();
   }
 
+  #inTauri() {
+    return typeof window !== 'undefined' && !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+  }
+
+  async #nativeAccess() {
+    const { requestNativeMidiAccess } = await import('./nativeMidi.js');
+    return requestNativeMidiAccess();
+  }
+
   #attach() {
     for (const input of this.access.inputs.values()) {
-      input.onmidimessage = (e) => this.#handle(e.data);
+      input.onmidimessage = (e) => this.#handle(e.data, e.port || input.name);
     }
   }
 
-  #handle(data) {
+  #handle(data, portName = '') {
     const [status, d1 = 0, d2 = 0] = data;
     const type = status & 0xf0;
     const ch = (status & 0x0f) + 1;
@@ -101,7 +120,7 @@ export class MidiManager {
 
     this.onControl(key, value, type);
 
-    const msg = { key, value, type, ch, d1, d2 };
+    const msg = { key, value, type, ch, d1, d2, port: portName || '' };
     if (this.onHardware(msg) === true) {
       this.onActivity(key, value);
       return;

@@ -57,8 +57,8 @@ export class MediaLibrary {
   }
 
   cacheAudio(file) {
-    if (kindOf(file) !== 'audio') return;
-    this.cache.put(file).catch((err) => console.warn('Could not cache audio', file.name, err));
+    if (kindOf(file) !== 'audio') return Promise.resolve();
+    return this.cache.put(file).catch((err) => console.warn('Could not cache audio', file.name, err));
   }
 
   async getAudio(name) {

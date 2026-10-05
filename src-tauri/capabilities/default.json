@@ -20,6 +20,19 @@
     "core:window:allow-set-fullscreen-on-monitor",
     "core:window:allow-set-decorations",
     "core:window:allow-show",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "dialog:allow-open",
+    "shell:allow-spawn",
+    "shell:allow-open",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "bin/ffmpeg",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }

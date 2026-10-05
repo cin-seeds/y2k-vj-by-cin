@@ -2,6 +2,8 @@
 // The preview canvas can be any shape the panels leave it; the file is not.
 
 import { paintHudText } from '../ui/Hud.js';
+import { paintLogos } from '../overlay/StingRack.js';
+import { paintScreensaver } from '../overlay/paintScreensaver.js';
 
 const CANDIDATES = [
   { mime: 'video/mp4;codecs=avc1.640033,mp4a.40.2', label: 'MP4 (H.264)', ext: 'mp4' },
@@ -70,7 +72,7 @@ export class Recorder {
    * Copy the WebGL frame into the record canvas and, when the HUD is up,
    * paint its current lines on top. Call once per displayed frame.
    */
-  paint(source, overlay) {
+  paint(source, overlay, logos = null, screensaver = null) {
     if (!this.recording || !source) return;
     const ctx = this.ctx;
     const w = this.canvas.width;
@@ -79,13 +81,19 @@ export class Recorder {
     ctx.fillRect(0, 0, w, h);
     const sw = source.width || source.videoWidth || 0;
     const sh = source.height || source.videoHeight || 0;
+    let box = null;
     if (sw > 0 && sh > 0) {
       const scale = Math.min(w / sw, h / sh);
       const dw = sw * scale;
       const dh = sh * scale;
-      ctx.drawImage(source, (w - dw) / 2, (h - dh) / 2, dw, dh);
+      const dx = (w - dw) / 2;
+      const dy = (h - dh) / 2;
+      ctx.drawImage(source, dx, dy, dw, dh);
+      box = { dx, dy, dw, dh };
     }
+    if (box && logos?.length) paintLogos(ctx, box, logos);
     if (overlay?.lines?.length) this.#drawHud(ctx, w, h, overlay);
+    if (screensaver) paintScreensaver(ctx, w, h, box, screensaver);
     this.track?.requestFrame?.();
   }
 

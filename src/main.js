@@ -28,8 +28,11 @@ import { MacroRouter, sliderOptions } from './midi/Macros.js';
 import { MOMENTARY, MomentaryPads } from './midi/Momentary.js';
 import { Recorder } from './output/Recorder.js';
 import { OutputWindow, listScreens, POPUP_BLOCKED, isTauri } from './output/OutputWindow.js';
+import { bindPictureSend } from './output/PictureSend.js';
+import { bindPictureSources, pictureSources, refreshPictureSources } from './input/PictureRecv.js';
 import { bindRangeReadout } from './ui/NumericSlider.js';
-import { beginDrag, endDrag } from './ui/dragPayload.js';
+import { beginDrag, endDragSoon } from './ui/dragPayload.js';
+import { bindMediaPrep } from './media/mediaPrep.js';
 import { dpiState, formatFactor, pixelsOf, setDpiAuto, setOutputPixels, setPreviewScale } from './ui/dpiScale.js';
 import { OutputMap } from './output/OutputMap.js';
 import { SceneManager } from './scenes/SceneManager.js';
@@ -40,8 +43,9 @@ import { Panel } from './ui/Panel.js';
 import { Diagnostics, flashControl } from './ui/Diagnostics.js';
 import { SceneBar } from './ui/SceneBar.js';
 import { StingRack } from './overlay/StingRack.js';
+import { SCREEN_EM_SHADE, SCREEN_MARK_SHADE, screenShadow } from './overlay/paintScreensaver.js';
 import { ApcView } from './ui/ApcView.js';
-import { ApcLeds, ledMap, nextHudSize } from './midi/ApcMiniMk2.js';
+import { ApcLeds, ledMap } from './midi/ApcMiniMk2.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -268,6 +272,15 @@ const sting = {
   uVid0: { value: 1 },
   uVid1: { value: 1 },
   uVid2: { value: 1 },
+  uMask0: { value: 0 },
+  uMask1: { value: 0 },
+  uMask2: { value: 0 },
+  uFx0: { value: 0 },
+  uFx1: { value: 0 },
+  uFx2: { value: 0 },
+  uFxAmt0: { value: 0 },
+  uFxAmt1: { value: 0 },
+  uFxAmt2: { value: 0 },
 };
 const stingMaterial = new THREE.ShaderMaterial({
   uniforms: sting,
@@ -277,7 +290,21 @@ const stingMaterial = new THREE.ShaderMaterial({
   depthWrite: false,
 });
 const stingRt = new THREE.WebGLRenderTarget(1, 1, STACK_RT);
-const stings = new StingRack($('sting-rack'));
+const stings = new StingRack($('logo-overlay'), { onChange: () => apcView?.refresh() });
+document.querySelectorAll('#live-tools .sting-fire').forEach((btn) => {
+  btn.addEventListener('click', () => stings.trigger(Number(btn.dataset.sting)));
+});
+function openProjectFold(id) {
+  if (deskMode !== 'live') setDeskMode('live');
+  document.body.classList.remove('panel-hidden');
+  setLibraryOpen(true);
+  const fold = $(id);
+  if (fold) fold.open = true;
+  fold?.querySelector('summary')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+$('brand-define')?.addEventListener('click', () => openProjectFold('logo-overlay'));
+$('code-define')?.addEventListener('click', () => openProjectFold('code-overlay'));
+$('screen-define')?.addEventListener('click', () => openProjectFold('screensaver'));
 const outputMap = new OutputMap({
   stage: $('map-stage'),
   svg: $('map-svg'),
@@ -552,6 +579,7 @@ function refreshMediaSelect() {
     camGroup.append(new Option('Web camera', 'cam:'));
   }
   sel.append(camGroup);
+  sel.append(pictureSourceGroup(layer));
   const fileGroup = document.createElement('optgroup');
   fileGroup.label = 'Media library';
   for (const name of library.names) fileGroup.append(new Option(name, clipKey(name)));
@@ -564,6 +592,68 @@ function refreshMediaSelect() {
   sel.value = layer.mediaKey;
 }
 
+function pictureKindLabel() {
+  if (pictureSources.localKind) return pictureSources.localKind;
+  return /Mac|iPhone|iPad/i.test(navigator.userAgent) ? 'Syphon' : 'Spout';
+}
+
+function pictureSourceGroup(layer) {
+  const group = document.createElement('optgroup');
+  group.label = `NDI / ${pictureKindLabel()}`;
+  const key = layer.mediaKey || '';
+  const named = key.startsWith('ndi:') || key.startsWith('spout:');
+  const currentName = named ? key.slice(key.indexOf(':') + 1) : '';
+  const hold = (text) => {
+    if (currentName) group.append(new Option(currentName, key));
+    const opt = new Option(text, 'picture-none');
+    opt.disabled = true;
+    group.append(opt);
+  };
+  if (!isTauri()) {
+    hold('Desktop app');
+    return group;
+  }
+  if (!pictureSources.ready) {
+    hold('Looking...');
+    return group;
+  }
+  for (const name of pictureSources.ndi) group.append(new Option(name, `ndi:${name}`));
+  for (const name of pictureSources.local) group.append(new Option(name, `spout:${name}`));
+  if (currentName) {
+    const listed = key.startsWith('ndi:')
+      ? pictureSources.ndi.includes(currentName)
+      : pictureSources.local.includes(currentName);
+    if (!listed) group.append(new Option(`(gone) ${currentName}`, key));
+  }
+  if (!group.children.length) {
+    const opt = new Option('No senders', 'picture-none');
+    opt.disabled = true;
+    group.append(opt);
+  }
+  return group;
+}
+
+function layerThumb(layer) {
+  const key = layer.mediaKey || 'none';
+  if (key === 'none') return '';
+  const cut = key.indexOf(':');
+  const name = cut >= 0 ? key.slice(cut + 1) : '';
+  if (key.startsWith('file:') || key.startsWith('url:')) {
+    const still = library.mediaItem(name)?.thumbnail;
+    if (still) return still;
+  }
+  const video = layer.input?.video;
+  if (!video || video.readyState < 2 || (video.videoWidth | 0) < 2) return '';
+  const canvas = layerThumb.canvas || (layerThumb.canvas = Object.assign(document.createElement('canvas'), { width: 60, height: 34 }));
+  const ctx = canvas.getContext('2d', { alpha: false });
+  try {
+    ctx.drawImage(video, 0, 0, 60, 34);
+    return canvas.toDataURL('image/jpeg', 0.72);
+  } catch {
+    return '';
+  }
+}
+
 function refreshLayerUi() {
   placePlaybackControls();
   const layer = selectedLayer();
@@ -573,7 +663,9 @@ function refreshLayerUi() {
   $('layer-mirror').checked = layer.mirror;
   $('layer-sync').checked = syncMaster[layer.id] !== false;
   setStatus($('layer-status'), layer.mediaStatus, layer.mediaError);
-  for (const l of layers) panel.setStripMedia(l.id, l.mediaKey === 'none' ? '' : l.mediaLabel);
+  for (const l of layers) {
+    panel.setStripMedia(l.id, l.mediaKey === 'none' ? '' : l.mediaLabel, layerThumb(l));
+  }
   panel.updateVisibility();
   syncVideoTransport();
   refreshLibraryUi();
@@ -845,14 +937,22 @@ function refreshLibraryUi() {
         e.preventDefault();
         return;
       }
-      beginDrag(e, {
+      const itemData = {
         id: item?.id || name,
         name,
         source: 'clip',
         kind: item?.kind || 'video',
-      });
+      };
+      beginDrag(e, itemData);
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('text/plain', JSON.stringify({
+        type: 'SCENE_OR_CLIP',
+        id: itemData.id,
+        name: itemData.name,
+        data: itemData,
+      }));
     });
-    card.addEventListener('dragend', () => endDrag());
+    card.addEventListener('dragend', () => endDragSoon());
     list.append(card);
   }
 
@@ -895,6 +995,10 @@ $('layer-media').addEventListener('change', async (e) => {
     refreshMediaSelect();
     return;
   }
+  if (v === 'picture-none') {
+    refreshMediaSelect();
+    return;
+  }
   if (v === 'cam:') {
     // No device list yet: open the default camera, which also unlocks device labels.
     await setLayerMedia(panel.selected, 'cam:');
@@ -903,8 +1007,20 @@ $('layer-media').addEventListener('change', async (e) => {
   }
   setLayerMedia(panel.selected, v);
 });
-$('layer-media').addEventListener('focus', () => library.refreshCameras().catch(() => {}));
-$('layer-media-refresh').addEventListener('click', () => library.refreshCameras().catch(() => {}));
+let pictureMenuDirty = false;
+$('layer-media').addEventListener('focus', () => {
+  library.refreshCameras().catch(() => {});
+  refreshPictureSources().catch(() => {});
+});
+$('layer-media').addEventListener('blur', () => {
+  if (!pictureMenuDirty) return;
+  pictureMenuDirty = false;
+  refreshMediaSelect();
+});
+$('layer-media-refresh').addEventListener('click', () => {
+  library.refreshCameras().catch(() => {});
+  refreshPictureSources().catch(() => {});
+});
 $('layer-mirror').addEventListener('change', (e) => selectedLayer().setMirror(e.target.checked));
 $('media-add').addEventListener('click', () => {
   assignNextAdd = false;
@@ -922,6 +1038,138 @@ function setOnlineStatus(text, isError = false) {
   el.classList.toggle('error', isError);
 }
 
+const SOURCE_LABEL = {
+  wikimedia: 'Wikimedia',
+  archive: 'Internet Archive',
+};
+
+function libraryName(clip) {
+  let file = 'loop.mp4';
+  try {
+    const leaf = decodeURIComponent(new URL(clip.videoUrl).pathname.split('/').pop() || '');
+    if (/\.(mp4|webm)$/i.test(leaf)) file = leaf;
+  } catch { /* keep the fallback name */ }
+  const ext = file.match(/\.(mp4|webm)$/i)?.[0].toLowerCase() || '.mp4';
+  const stem = file.slice(0, -ext.length).replace(/[\\/:*?"<>|]+/g, '-').slice(0, 48) || clip.id;
+  const name = `${stem}${ext}`;
+  const existing = library.mediaItem(name);
+  if (!existing || existing.url === clip.videoUrl || (existing.file && !existing.url)) return name;
+  return `${clip.source}-${clip.id}${ext}`;
+}
+
+const STOCK_DIR_KEY = 'vj.stockDir';
+let toastTimer = 0;
+
+function showToast(text, isError = false) {
+  const el = $('app-toast');
+  el.textContent = text;
+  el.classList.toggle('error', isError);
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => { el.hidden = true; }, 4200);
+}
+
+function paintStockDir(path) {
+  const input = $('stock-dir');
+  if (!input) return;
+  input.value = path || '';
+  input.title = path || 'Videos folder';
+}
+
+async function ensureStockDir() {
+  let saved = '';
+  try { saved = localStorage.getItem(STOCK_DIR_KEY)?.trim() || ''; } catch { saved = ''; }
+  if (saved) {
+    paintStockDir(saved);
+    return saved;
+  }
+  if (!isTauri()) {
+    paintStockDir('');
+    return '';
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  const dir = await invoke('default_stock_dir');
+  try { localStorage.setItem(STOCK_DIR_KEY, dir); } catch { /* private mode */ }
+  paintStockDir(dir);
+  return dir;
+}
+
+async function fileFromStock(clip) {
+  const filename = libraryName(clip);
+  const type = /\.webm$/i.test(filename) ? 'video/webm' : 'video/mp4';
+  let blob;
+  if (isTauri()) {
+    const saveDir = await ensureStockDir();
+    const { convertFileSrc, invoke } = await import('@tauri-apps/api/core');
+    const path = await invoke('download_video', { url: clip.videoUrl, filename, saveDir });
+    const assetUrl = convertFileSrc(path);
+    const res = await fetch(assetUrl);
+    if (!res.ok) throw new Error('Download failed');
+    blob = await res.blob();
+  } else {
+    const res = await fetch(clip.videoUrl);
+    if (!res.ok) throw new Error('Download failed');
+    blob = await res.blob();
+  }
+  return new File([blob], filename, { type: blob.type || type });
+}
+
+async function downloadClip(clip, card) {
+  if (card.dataset.busy === '1') return;
+  card.dataset.busy = '1';
+  card.classList.add('downloading');
+  card.classList.remove('failed');
+  const source = card.querySelector('i');
+  const previous = source.textContent;
+  source.textContent = 'Downloading...';
+  try {
+    const file = await fileFromStock(clip);
+    const added = library.add([file]);
+    if (!added.length) throw new Error('Download failed');
+    await assignMediaToLayer(added[0], panel.selected);
+    source.textContent = 'In library';
+    setOnlineStatus(`Saved ${added[0]} on layer ${panel.selected}.`);
+    showToast(`Saved ${added[0]}`);
+  } catch (err) {
+    card.classList.add('failed');
+    source.textContent = 'Download failed';
+    setOnlineStatus(err?.message || 'Download failed', true);
+    showToast('Download failed', true);
+    window.setTimeout(() => {
+      if (source.textContent === 'Download failed') source.textContent = previous;
+      card.classList.remove('failed');
+    }, 2400);
+  } finally {
+    card.dataset.busy = '0';
+    card.classList.remove('downloading');
+  }
+}
+
+function renderOnlineResults(clips) {
+  const host = $('online-results');
+  host.innerHTML = '';
+  host.hidden = !clips.length;
+  for (const clip of clips) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'online-hit';
+    card.draggable = false;
+    card.title = clip.title;
+    const img = document.createElement('img');
+    img.alt = '';
+    if (clip.thumbnail) img.src = clip.thumbnail;
+    else img.hidden = true;
+    img.addEventListener('error', () => { img.hidden = true; });
+    const title = document.createElement('b');
+    title.textContent = clip.title;
+    const source = document.createElement('i');
+    source.textContent = SOURCE_LABEL[clip.source] || clip.source;
+    card.append(img, title, source);
+    card.addEventListener('click', () => { downloadClip(clip, card); });
+    host.append(card);
+  }
+}
+
 let onlineBusy = false;
 async function fetchOnline() {
   const prompt = $('online-prompt').value.trim();
@@ -935,19 +1183,14 @@ async function fetchOnline() {
   const job = { label: prompt };
   pendingOnline.unshift(job);
   refreshLibraryUi();
-  setOnlineStatus('Fetching a video loop…');
+  setOnlineStatus('Searching stock video…');
   $('online-fetch').disabled = true;
   try {
-    const loop = await fetchVideoLoop(source, prompt);
-    library.addRemote(loop);
-    await assignMediaToLayer(loop.name, panel.selected);
-    const layer = layerById[panel.selected];
-    if (layer.mediaKey === `url:${loop.name}` && layer.input.kind === 'video') {
-      setOnlineStatus(`Loop on layer ${panel.selected}.`);
-    } else {
-      setOnlineStatus('');
-    }
+    const clips = await fetchVideoLoop(source, prompt);
+    renderOnlineResults(clips);
+    setOnlineStatus(`${clips.length} clip${clips.length === 1 ? '' : 's'}.`);
   } catch (err) {
+    renderOnlineResults([]);
     setOnlineStatus(err?.message || 'Could not fetch a video loop.', true);
   } finally {
     const index = pendingOnline.indexOf(job);
@@ -974,7 +1217,7 @@ window.addEventListener('drop', (e) => {
     e.preventDefault();
     return;
   }
-  if (e.target?.closest?.('#tl-track')) return;
+  if (e.target?.closest?.('#tl-track, #media-prep')) return;
   if (!e.dataTransfer?.files.length) return;
   e.preventDefault();
   addFiles(e.dataTransfer.files, { assign: true });
@@ -989,11 +1232,80 @@ panel.onSelect = (id) => {
   if (id === 'master') return;
   refreshLayerUi();
   syncHudShader();
-  apcView?.refresh();
+  apcView?.followLayer(id);
 };
 
 // ---------------------------------------------------------------- scenes + timeline
 const project = new ProjectState();
+
+const FOLD_LOCKS = ['acc-audio', 'acc-master', 'acc-output', 'code-overlay', 'logo-overlay', 'screensaver'];
+const COMP_LOCKS = ['Color & Texture', 'Distortion & Glitch', 'Motion & Timing'];
+
+function lockButton(id) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'section-lock';
+  btn.dataset.lock = id;
+  btn.textContent = 'Lock';
+  btn.title = 'Lock this section. Its controls stay put and Shuffle skips it.';
+  btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const next = { ...project.locks };
+    if (next[id]) delete next[id];
+    else next[id] = true;
+    project.setLocks(next);
+    applyLocks();
+  });
+  return btn;
+}
+
+function mountLockButtons() {
+  for (const id of FOLD_LOCKS) {
+    const summary = document.querySelector(`#${id} > summary`);
+    if (!summary || summary.querySelector('.section-lock')) continue;
+    summary.append(lockButton(id));
+  }
+  for (const name of COMP_LOCKS) {
+    const block = document.querySelector(`#master-params .fx-block[data-group="${CSS.escape(name)}"]`);
+    const title = block?.querySelector('.fx-toggle');
+    if (!title || block.querySelector('.section-lock')) continue;
+    title.after(lockButton(name));
+  }
+}
+
+function applyLocks() {
+  const locks = project.locks || {};
+  for (const btn of document.querySelectorAll('.section-lock')) {
+    const on = !!locks[btn.dataset.lock];
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  for (const id of FOLD_LOCKS) {
+    const fold = document.getElementById(id);
+    if (!fold) continue;
+    fold.classList.toggle('locked', !!locks[id]);
+    for (const child of fold.children) {
+      if (child.tagName === 'SUMMARY') continue;
+      child.inert = !!locks[id];
+    }
+  }
+  for (const name of COMP_LOCKS) {
+    const block = document.querySelector(`#master-params .fx-block[data-group="${CSS.escape(name)}"]`);
+    if (!block) continue;
+    const on = !!locks[name];
+    block.classList.toggle('locked', on);
+    const body = block.querySelector('.fx-body');
+    if (body) body.inert = on;
+    const shuffle = block.querySelector('button.shuffle');
+    if (shuffle) shuffle.disabled = on;
+  }
+}
+
+panel.isSectionLocked = (layer, group) => layer === 'master' && !!project.locks[group];
+mountLockButtons();
+applyLocks();
 
 function layerRouting() {
   const routing = {};
@@ -1028,6 +1340,7 @@ const scenes = new SceneManager({
   applyMedia: (L, m) => setLayerMedia(L, m.key, { mirror: m.mirror }),
   getRouting: layerRouting,
   applyRouting: applySceneRouting,
+  onSaveError: (text) => showToast(text, true),
 });
 const timeline = new Timeline(project);
 
@@ -1048,17 +1361,14 @@ function setTempo(bpm) {
 function tapTempo() {
   const result = bpmEngine.tap();
   if (!result.accepted) return;
+  setBpmMode('manual');
   if (timeline.playing) timeline.seek(Math.round(timeline.beat));
   if (!timeline.playing) {
     beatClock.beats = bpmEngine.beats;
     beatClock.setBpm(bpmEngine.bpm);
   }
-  if (result.bpmChanged) {
-    setBpmSource('manual');
-    timeline.set('bpm', bpmEngine.bpm);
-  } else {
-    syncTempoUi();
-  }
+  if (result.bpmChanged) timeline.set('bpm', bpmEngine.bpm);
+  else syncTempoUi();
 }
 
 function syncTempoUi() {
@@ -1072,7 +1382,7 @@ function syncTempoUi() {
 }
 timeline.onChange(() => {
   if (Math.abs(timeline.bpm - bpmEngine.bpm) > 0.001) {
-    if (bpmSource !== 'manual') setBpmSource('manual');
+    if (bpmMode !== 'manual') setBpmMode('manual');
     bpmEngine.setBpm(timeline.bpm);
   }
   syncTempoUi();
@@ -1080,43 +1390,64 @@ timeline.onChange(() => {
 syncTempoUi();
 
 $('bpm-slider').addEventListener('input', (e) => {
-  if (bpmSource === 'auto' || e.target.disabled) return;
+  if (bpmMode === 'auto' || e.target.disabled) return;
   setTempo(Number(e.target.value));
 });
 $('bpm-slider').addEventListener('dblclick', () => {
-  if (bpmSource === 'auto') return;
+  if (bpmMode === 'auto') return;
   setTempo(120);
 });
+$('bpm-value').addEventListener('pointerdown', () => {
+  if (bpmMode === 'auto') setBpmMode('manual');
+}, true);
 $('bpm-tap').addEventListener('click', tapTempo);
 $('bpm-double').addEventListener('click', () => {
-  setBpmSource('manual');
+  setBpmMode('manual');
   setTempo(bpmEngine.double());
 });
 $('bpm-half').addEventListener('click', () => {
-  setBpmSource('manual');
+  setBpmMode('manual');
   setTempo(bpmEngine.halve());
 });
 $('bpm-nudge-up').addEventListener('click', () => {
-  setBpmSource('manual');
+  setBpmMode('manual');
   setTempo(bpmEngine.nudge(1));
 });
 $('bpm-nudge-down').addEventListener('click', () => {
-  setBpmSource('manual');
+  setBpmMode('manual');
   setTempo(bpmEngine.nudge(-1));
 });
 
-let bpmSource = 'manual';
-function setBpmSource(src) {
-  bpmSource = src === 'auto' ? 'auto' : 'manual';
-  bpmEngine.setMode(bpmSource);
-  const auto = bpmSource === 'auto';
+let bpmMode = 'manual';
+let bpmNoticeUntil = 0;
+let bpmFlashUntil = 0;
+
+function closeBpmEditor() {
+  const readout = $('bpm-value');
+  const editor = readout?.nextElementSibling;
+  if (readout?.dataset.editing === '1' && editor?.classList.contains('inline-num')) {
+    editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  }
+}
+
+function showBpmNotice(text, ms) {
+  $('bpm-mode').textContent = text;
+  bpmNoticeUntil = performance.now() + ms;
+}
+
+function setBpmMode(src) {
+  bpmMode = src === 'auto' ? 'auto' : 'manual';
+  bpmEngine.setMode(bpmMode);
+  if (bpmMode === 'auto') bpmEngine.beginAnalysis(performance.now() / 1000);
+  const auto = bpmMode === 'auto';
   const btn = $('bpm-mode');
-  btn.textContent = auto ? 'Auto Sync' : 'Manual Lock';
+  bpmNoticeUntil = 0;
+  btn.textContent = auto ? bpmEngine.analyzeLabel() : 'Auto: Read Live';
   btn.classList.toggle('on', auto);
   btn.setAttribute('aria-pressed', auto ? 'true' : 'false');
   btn.title = auto
-    ? 'Auto Sync is listening to the playing audio. The BPM slider is locked.'
-    : 'Manual Lock holds the number. The BPM slider edits it.';
+    ? 'Listening for kicks. The tempo locks in when the beat is clear.'
+    : 'Manual tempo. Click to read the live audio.';
   document.body.classList.toggle('bpm-auto', auto);
   $('bpm-slider').disabled = auto;
   const tlBpm = $('tl-bpm');
@@ -1125,11 +1456,18 @@ function setBpmSource(src) {
   readout?.classList.toggle('locked', !auto);
   readout?.classList.toggle('sync', auto);
   syncTempoUi();
+  const number = $('bpm-value');
+  if (number && number.dataset.editing !== '1') {
+    if (auto) number.style.opacity = '0.5';
+    else if (performance.now() >= bpmFlashUntil) {
+      number.style.opacity = '';
+      number.style.color = '';
+    }
+  }
 }
-$('bpm-mode').addEventListener('click', () => {
-  setBpmSource(bpmSource === 'auto' ? 'manual' : 'auto');
-});
+$('bpm-mode').addEventListener('click', () => setBpmMode('auto'));
 
+let masterSpeed = 1;
 function setMasterSpeed(value) {
   const n = Number(value);
   masterSpeed = Math.min(4, Math.max(0, Number.isFinite(n) ? n : 1));
@@ -1144,12 +1482,8 @@ $('master-speed')?.addEventListener('dblclick', () => setMasterSpeed(1));
 function setUiMode(mode) {
   const live = mode === 'live';
   document.body.classList.toggle('live-mode', live);
-  $('ui-mode').textContent = live ? 'Live Performance Mode' : 'Timeline Mode';
   try { localStorage.setItem('vj.uiMode', live ? 'live' : 'timeline'); } catch { /* ignore */ }
 }
-$('ui-mode').addEventListener('click', () => {
-  setUiMode(document.body.classList.contains('live-mode') ? 'timeline' : 'live');
-});
 
 let isPerformMode = false;
 let performOpenedFullscreen = false;
@@ -1164,12 +1498,14 @@ function setPerformMode(on) {
   isPerformMode = on;
   document.body.classList.toggle('perform-mode', on);
   const btn = $('perform-btn');
-  btn.classList.toggle('on', on);
-  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  btn.title = on
-    ? 'Hold to exit Perform Mode'
-    : 'Lock the desk for a live set. Hold the button to exit.';
-  btn.style.setProperty('--hold', '0');
+  if (btn) {
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.title = on
+      ? 'Hold to exit Perform Mode'
+      : 'Lock the desk for a live set. Hold the button to exit.';
+    btn.style.setProperty('--hold', '0');
+  }
   if (on) {
     document.body.classList.remove('panel-hidden');
     $('screen-menu').hidden = true;
@@ -1194,10 +1530,10 @@ function setPerformMode(on) {
 function paintPerformHold() {
   if (!performHolding) return;
   const t = Math.min(1, (performance.now() - performHoldStart) / PERFORM_HOLD_MS);
-  $('perform-btn').style.setProperty('--hold', String(t));
+  $('perform-btn')?.style.setProperty('--hold', String(t));
 }
 
-$('perform-btn').addEventListener('pointerdown', (e) => {
+$('perform-btn')?.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !isPerformMode) return;
   performHolding = true;
   performHoldStart = performance.now();
@@ -1207,7 +1543,7 @@ window.addEventListener('pointerup', () => {
   if (!performHolding) return;
   const elapsed = performance.now() - performHoldStart;
   performHolding = false;
-  $('perform-btn').style.setProperty('--hold', '0');
+  $('perform-btn')?.style.setProperty('--hold', '0');
   if (isPerformMode && elapsed >= PERFORM_HOLD_MS) {
     performSuppressClick = true;
     setPerformMode(false);
@@ -1217,7 +1553,7 @@ window.addEventListener('pointercancel', () => {
   performHolding = false;
   $('perform-btn')?.style.setProperty('--hold', '0');
 });
-$('perform-btn').addEventListener('click', () => {
+$('perform-btn')?.addEventListener('click', () => {
   if (performSuppressClick) {
     performSuppressClick = false;
     return;
@@ -1226,13 +1562,274 @@ $('perform-btn').addEventListener('click', () => {
 });
 function setLibraryOpen(open) {
   document.body.classList.toggle('sys-collapsed', !open);
-  $('sys-toggle').classList.toggle('on', open);
-  $('sys-toggle').textContent = open ? 'Hide Library' : 'Show Library';
+  const box = $('view-library');
+  if (box) box.checked = !!open;
   try { localStorage.setItem('vj.library', open ? '1' : '0'); } catch { /* ignore */ }
 }
-$('sys-toggle').addEventListener('click', () => {
-  setLibraryOpen(document.body.classList.contains('sys-collapsed'));
-});
+const PANEL_KEY = 'vj.panels';
+const PANEL_TOGGLES = [
+  ['view-timeline', 'hide-timeline'],
+  ['view-inspector', 'hide-inspector'],
+  ['view-layer-a', 'hide-layer-a'],
+  ['view-layer-b', 'hide-layer-b'],
+  ['view-layer-c', 'hide-layer-c'],
+  ['view-composition', 'hide-composition'],
+];
+function bindPanelToggles() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(PANEL_KEY) || '{}') || {}; } catch { /* ignore */ }
+  const write = () => {
+    const next = {};
+    for (const [id] of PANEL_TOGGLES) next[id] = !!$(id)?.checked;
+    try { localStorage.setItem(PANEL_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  };
+  for (const [id, className] of PANEL_TOGGLES) {
+    const box = $(id);
+    if (!box) continue;
+    const on = saved[id] !== false;
+    box.checked = on;
+    document.body.classList.toggle(className, !on);
+    box.addEventListener('change', () => {
+      document.body.classList.toggle(className, !box.checked);
+      write();
+    });
+  }
+  $('view-library')?.addEventListener('change', () => setLibraryOpen($('view-library').checked));
+}
+bindPanelToggles();
+
+const SCREEN_TEXT = 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE FUTURE';
+const SCREEN_FONTS = {
+  desk: 'var(--font)',
+  terminal: '"Courier New", "Lucida Console", monospace',
+  fixedsys: 'Fixedsys, Terminal, "Courier New", monospace',
+  mssans: 'Tahoma, "MS Sans Serif", sans-serif',
+};
+const SCREEN_COLORS = {
+  white: '#f4ffff',
+  cyan: '#7af7ff',
+  magenta: '#ff8ae4',
+  amber: '#ffbf47',
+  green: '#7dffb0',
+};
+const SCREEN_CREDIT = 'OS CC BY-NC-SA // REPO ON GITHUB';
+
+let brandMarkOn = false;
+let brandLayout = null;
+let brandScale = 100;
+let screenText = SCREEN_TEXT;
+let screenFont = 'desk';
+let screenShade = 8;
+let screenBg = 1;
+let screenColor = 'white';
+
+function escapeScreenLine(line) {
+  return line
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\/\//g, '<em>//</em>');
+}
+
+function paintScreenText(mark) {
+  const lines = String(screenText).replace(/\r\n/g, '\n').split('\n');
+  const body = lines.map((line) => {
+    const shown = line.length ? escapeScreenLine(line) : '&nbsp;';
+    return `<span class="brand-line">${shown}</span>`;
+  }).join('');
+  const html = `${body}<span class="brand-notice">OS CC BY-NC-SA // <a href="https://github.com/cin-seeds/y2k-vj-by-cin" target="_blank" rel="noopener noreferrer">REPO ON GITHUB</a></span>`;
+  if (mark.dataset.screen === html) return;
+  mark.innerHTML = html;
+  mark.dataset.screen = html;
+}
+
+function refreshScreen() {
+  brandLayout = null;
+  placeBrandMark(performance.now());
+}
+
+function setBrandMark(on) {
+  brandMarkOn = !!on;
+  const box = $('screen-enable');
+  if (box) box.checked = brandMarkOn;
+  const state = document.querySelector('#live-tools .screen-state');
+  if (state) state.textContent = brandMarkOn ? 'On' : 'Off';
+  try { localStorage.setItem('vj.screenOn', brandMarkOn ? '1' : '0'); } catch { /* ignore */ }
+  refreshScreen();
+}
+
+function setBrandScale(value) {
+  const next = Math.min(220, Math.max(40, Math.round(Number(value) || 100)));
+  brandScale = next;
+  const slider = $('brand-size');
+  if (slider && slider.value !== String(next)) slider.value = String(next);
+  const out = $('brand-size-out');
+  if (out) out.textContent = `${next}%`;
+  try { localStorage.setItem('vj.brandSize', String(next)); } catch { /* ignore */ }
+  refreshScreen();
+}
+
+function setScreenText(value) {
+  screenText = String(value ?? '');
+  const field = $('screen-text');
+  if (field && field.value !== screenText) field.value = screenText;
+  try { localStorage.setItem('vj.screenText', screenText); } catch { /* ignore */ }
+  refreshScreen();
+}
+
+function setScreenFont(value) {
+  screenFont = SCREEN_FONTS[value] ? value : 'desk';
+  const field = $('screen-font');
+  if (field) field.value = screenFont;
+  try { localStorage.setItem('vj.screenFont', screenFont); } catch { /* ignore */ }
+  refreshScreen();
+}
+
+function setScreenShade(value) {
+  screenShade = Math.min(8, Math.max(0, Math.round(Number(value) || 0)));
+  const slider = $('screen-shade');
+  if (slider) slider.value = String(screenShade);
+  const out = $('screen-shade-out');
+  if (out) out.textContent = String(screenShade);
+  try { localStorage.setItem('vj.screenShade', String(screenShade)); } catch { /* ignore */ }
+  refreshScreen();
+}
+
+function setScreenBg(value) {
+  screenBg = Math.min(1, Math.max(0, Number(value) || 0));
+  const slider = $('screen-bg');
+  if (slider) slider.value = String(screenBg);
+  const out = $('screen-bg-out');
+  if (out) out.textContent = screenBg.toFixed(2);
+  try { localStorage.setItem('vj.screenBg', String(screenBg)); } catch { /* ignore */ }
+  refreshScreen();
+}
+
+function setScreenColor(value) {
+  screenColor = SCREEN_COLORS[value] ? value : 'white';
+  const field = $('screen-color');
+  if (field) field.value = screenColor;
+  try { localStorage.setItem('vj.screenColor', screenColor); } catch { /* ignore */ }
+  refreshScreen();
+}
+
+function layoutBrandMark(mark, wrapW, wrapH) {
+  const key = [
+    wrapW, wrapH, brandScale, screenShade, screenFont, screenColor,
+    screenBg.toFixed(2), screenText,
+  ].join('|');
+  if (brandLayout?.key === key) return brandLayout;
+  paintScreenText(mark);
+  const base = Math.min(28, Math.max(16, wrapW / 32));
+  const font = Math.max(8, Math.round(base * brandScale / 100));
+  const showBox = screenBg > 0;
+  mark.style.transform = '';
+  mark.style.width = '';
+  mark.style.whiteSpace = 'nowrap';
+  mark.style.fontSize = `${font}px`;
+  mark.style.fontFamily = SCREEN_FONTS[screenFont];
+  mark.style.color = SCREEN_COLORS[screenColor];
+  mark.style.textShadow = screenShadow(screenShade, SCREEN_MARK_SHADE);
+  mark.style.setProperty('--screen-em-shadow', screenShadow(screenShade, SCREEN_EM_SHADE));
+  mark.classList.toggle('plain', !showBox);
+  mark.style.backgroundColor = showBox ? `rgba(0, 0, 0, ${screenBg})` : 'transparent';
+  const padX = Math.max(10, Math.round(font * 0.7));
+  const padTop = Math.max(6, Math.round(font * 0.36));
+  const padBottom = Math.max(8, Math.round(font * 0.55));
+  mark.style.padding = showBox ? `${padTop}px ${padX}px ${padBottom}px` : '0';
+  if (mark.hidden) mark.hidden = false;
+  let mw = mark.offsetWidth;
+  let mh = mark.offsetHeight;
+  const fitW = Math.max(1, wrapW - 16);
+  const fitH = Math.max(1, wrapH - 16);
+  if ((mw > fitW || mh > fitH) && mw > 0 && mh > 0) {
+    const scale = Math.min(fitW / mw, fitH / mh);
+    mark.style.transform = `scale(${scale})`;
+    mw *= scale;
+    mh *= scale;
+  }
+  brandLayout = { key, mw, mh };
+  return brandLayout;
+}
+
+function brandMarkVisible() {
+  return brandMarkOn;
+}
+
+function placeBrandMark(nowMs) {
+  const mark = $('brand-mark');
+  if (!mark) return;
+  if (!brandMarkVisible()) {
+    if (!mark.hidden) mark.hidden = true;
+    brandLayout = null;
+    return;
+  }
+  const stage = $('stage');
+  const wrap = $('preview-wrap');
+  const sw = stage?.clientWidth || 0;
+  const sh = stage?.clientHeight || 0;
+  const wrapW = wrap?.offsetWidth || 0;
+  const wrapH = wrap?.offsetHeight || 0;
+  if (sw < 2 || sh < 2 || wrapW < 2 || wrapH < 2) {
+    if (!mark.hidden) mark.hidden = true;
+    brandLayout = null;
+    return;
+  }
+  const box = layoutBrandMark(mark, Math.round(wrapW), Math.round(wrapH));
+  if (mark.hidden) mark.hidden = false;
+  const { mw, mh } = box;
+  const originX = (sw - wrapW) / 2;
+  const originY = (sh - wrapH) / 2;
+  const spanX = Math.max(0, Math.min(wrapW * 0.62, wrapW - mw - 16));
+  const spanY = Math.max(0, Math.min(wrapH * 0.28, wrapH - mh - 16));
+  const speed = Math.max(20, wrapW * 0.04);
+  const dist = (nowMs / 1000) * speed;
+  const dx = spanX < 1 ? 0 : dist % (spanX * 2);
+  const dy = spanY < 1 ? 0 : (dist * 0.62) % (spanY * 2);
+  const x = originX + (wrapW - mw - spanX) / 2 + (dx <= spanX ? dx : spanX * 2 - dx);
+  const y = originY + (wrapH - mh - spanY) / 2 + (dy <= spanY ? dy : spanY * 2 - dy);
+  const left = `${x.toFixed(1)}px`;
+  const top = `${y.toFixed(1)}px`;
+  if (mark.style.left !== left) mark.style.left = left;
+  if (mark.style.top !== top) mark.style.top = top;
+}
+
+$('screen-enable')?.addEventListener('change', () => setBrandMark($('screen-enable').checked));
+$('brand-size')?.addEventListener('input', () => setBrandScale($('brand-size').value));
+$('screen-text')?.addEventListener('input', () => setScreenText($('screen-text').value));
+$('screen-font')?.addEventListener('change', () => setScreenFont($('screen-font').value));
+$('screen-shade')?.addEventListener('input', () => setScreenShade($('screen-shade').value));
+$('screen-bg')?.addEventListener('input', () => setScreenBg($('screen-bg').value));
+$('screen-color')?.addEventListener('change', () => setScreenColor($('screen-color').value));
+try {
+  const savedOn = localStorage.getItem('vj.screenOn');
+  setBrandMark(savedOn == null ? localStorage.getItem('vj.brandMark') === '1' : savedOn === '1');
+} catch { /* ignore */ }
+try {
+  const savedText = localStorage.getItem('vj.screenText');
+  if (savedText != null) setScreenText(savedText);
+} catch { /* ignore */ }
+try {
+  const savedFont = localStorage.getItem('vj.screenFont');
+  if (savedFont != null) setScreenFont(savedFont);
+} catch { /* ignore */ }
+try {
+  const savedShade = localStorage.getItem('vj.screenShade');
+  if (savedShade != null) setScreenShade(savedShade);
+} catch { /* ignore */ }
+try {
+  const savedBg = localStorage.getItem('vj.screenBg');
+  if (savedBg != null) setScreenBg(savedBg);
+  else if (localStorage.getItem('vj.brandBack') === '0') setScreenBg(0);
+} catch { /* ignore */ }
+try {
+  const savedColor = localStorage.getItem('vj.screenColor');
+  if (savedColor != null) setScreenColor(savedColor);
+} catch { /* ignore */ }
+try {
+  const savedSize = localStorage.getItem('vj.brandSize');
+  if (savedSize != null) setBrandScale(savedSize);
+} catch { /* ignore */ }
 try {
   if (localStorage.getItem('vj.library') === '0') setLibraryOpen(false);
 } catch { /* ignore */ }
@@ -1252,6 +1849,7 @@ const diag = new Diagnostics($('diag-panel'), (item) => {
   else if (item.layerId) panel.selectLayer(item.layerId);
 });
 $('diag-toggle').addEventListener('click', () => {
+  if (deskMode !== 'live') setDeskMode('live');
   const panelEl = $('diag-panel');
   const showing = panelEl.open && !document.body.classList.contains('sys-collapsed');
   if (showing) {
@@ -1268,16 +1866,19 @@ const LIBRARY_FOLDS = [
   ['diag-panel', false],
   ['acc-media', true],
   ['acc-audio', false],
-  ['acc-midi', false],
-  ['acc-macros', false],
+  ['acc-master', false],
   ['acc-output', false],
   ['code-overlay', false],
+  ['logo-overlay', false],
+  ['screensaver', false],
 ];
 function bindLibraryFolds() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(LIBRARY_FOLD_KEY) || '{}'); } catch { /* ignore */ }
   if (!saved || typeof saved !== 'object') saved = {};
+  let ready = false;
   const write = () => {
+    if (!ready) return;
     const next = {};
     for (const [id] of LIBRARY_FOLDS) next[id] = !!$(id)?.open;
     try { localStorage.setItem(LIBRARY_FOLD_KEY, JSON.stringify(next)); } catch { /* ignore */ }
@@ -1288,6 +1889,7 @@ function bindLibraryFolds() {
     el.open = typeof saved[id] === 'boolean' ? saved[id] : open;
     el.addEventListener('toggle', write);
   }
+  ready = true;
 }
 bindLibraryFolds();
 try {
@@ -1298,6 +1900,52 @@ function triggerScene(id, fade = timeline.fadeSeconds) {
   if (typeof id === 'string' && !scenes.get(id)) return;
   if (fade > 0) snapshotHold();
   scenes.launch(id, fade);
+  scheduleSceneThumb(id);
+}
+
+const programCanvas = $('program-monitor');
+const programCtx = programCanvas?.getContext('2d', { alpha: false });
+const sceneThumbCanvas = document.createElement('canvas');
+sceneThumbCanvas.width = 160;
+sceneThumbCanvas.height = 90;
+const sceneThumbCtx = sceneThumbCanvas.getContext('2d', { alpha: false });
+let programStampMs = 0;
+let programDrawnMs = 0;
+let sceneThumbId = '';
+let sceneThumbDue = 0;
+
+function paintProgramMonitor(nowMs) {
+  if (!programCtx || !document.body.classList.contains('midi-mode')) return;
+  if (nowMs - programStampMs < 1000 / 30) return;
+  programStampMs = nowMs;
+  const aspect = glCanvas.width / Math.max(1, glCanvas.height);
+  const w = 320;
+  const h = Math.max(1, Math.round(w / aspect));
+  if (programCanvas.width !== w || programCanvas.height !== h) {
+    programCanvas.width = w;
+    programCanvas.height = h;
+  }
+  programCtx.drawImage(glCanvas, 0, 0, programCanvas.width, programCanvas.height);
+  programDrawnMs = nowMs;
+}
+
+function scheduleSceneThumb(id) {
+  if (!id) return;
+  sceneThumbId = id;
+  sceneThumbDue = performance.now() + 1000;
+}
+
+function captureSceneThumb(nowMs) {
+  if (!sceneThumbId || nowMs < sceneThumbDue) return;
+  const id = sceneThumbId;
+  sceneThumbId = '';
+  sceneThumbDue = 0;
+  if (!sceneThumbCtx || glCanvas.width < 2 || glCanvas.height < 2) return;
+  try {
+    sceneThumbCtx.drawImage(glCanvas, 0, 0, sceneThumbCanvas.width, sceneThumbCanvas.height);
+    const url = sceneThumbCanvas.toDataURL('image/jpeg', 0.72);
+    if (url) scenes.setThumb(id, url);
+  } catch { /* a tainted frame keeps the previous thumbnail */ }
 }
 
 timeline.onTrigger = (cue, { immediate } = {}) => {
@@ -1323,7 +1971,7 @@ function projectFile() {
     live: { params: params.snapshot(), media: currentMedia() },
     output: { aspect: outputAspect, fit: fitMode, renderScale, uiMode: document.body.classList.contains('live-mode') ? 'live' : 'timeline' },
     outputMap: outputMap.toJSON(),
-    bpmSource,
+    bpmMode,
     midi: midi.mappings,
     macros: macros.toJSON(),
     lfo: lfo.toJSON(),
@@ -1377,7 +2025,7 @@ async function loadProject(file) {
     || Array.isArray(data.timeline?.cues)
   );
   if (!looksLikeProject) {
-    alert('That file is not a Live VJ project.');
+    alert('That file is not a Y2K VJ project.');
     return;
   }
   const doc = coerceDocument(data);
@@ -1407,7 +2055,13 @@ async function loadProject(file) {
     if (data.output.uiMode) setUiMode(data.output.uiMode);
   }
   if (data.outputMap) outputMap.apply(data.outputMap);
-  if (data.bpmSource) setBpmSource(data.bpmSource);
+  if (data.bpmMode || data.bpmSource) setBpmMode(data.bpmMode || data.bpmSource);
+  project.setLocks(doc.locks);
+  applyLocks();
+  {
+    const shown = showRecordOutput(doc.recordOutput);
+    project.setRecordOutput({ code: shown.code, screen: shown.screen });
+  }
   if (data.live?.params) {
     for (const [id, v] of Object.entries(data.live.params)) {
       if (!params.defs.get(id)?.layer) params.set(id, v);
@@ -1420,6 +2074,10 @@ async function loadProject(file) {
 }
 
 function newProject() {
+  project.setLocks({});
+  applyLocks();
+  project.setRecordOutput({ code: !!$('hud-enable')?.checked, screen: false });
+  showRecordOutput(project.recordOutput);
   timeline.stop();
   scenes.replaceAll([]);
   timeline.load({
@@ -1531,6 +2189,8 @@ function syncTransport() {
 }
 
 const masterTransport = { state: 'playing' };
+let audioOverrideStop = false;
+try { audioOverrideStop = localStorage.getItem('vj.audioOverrideStop') === '1'; } catch { /* ignore */ }
 const syncMaster = { audio: true, A: true, B: true, C: true };
 try {
   const saved = JSON.parse(localStorage.getItem('vj.syncMaster') || 'null');
@@ -1554,6 +2214,7 @@ function paintMasterTransport() {
   $('master-pause').setAttribute('aria-pressed', String(state === 'paused'));
   $('master-stop').setAttribute('aria-pressed', String(state === 'stopped'));
   $('audio-sync').checked = syncMaster.audio;
+  $('audio-override-stop').checked = audioOverrideStop;
   $('layer-sync').checked = syncMaster[selectedLayer().id] !== false;
   for (const l of layers) panel.setSyncState(l.id, syncMaster[l.id] !== false);
 }
@@ -1565,13 +2226,23 @@ function clearMasterCanvas() {
   ctx.clear(ctx.COLOR_BUFFER_BIT);
 }
 
+function timelineSeconds() {
+  const bpm = Math.max(1, Number(timeline.bpm) || 120);
+  return (Math.max(0, timeline.beat) * 60) / bpm;
+}
+
+function syncedVideos() {
+  return layers.filter((l) => syncMaster[l.id] && l.input.kind === 'video');
+}
+
 function masterPlay() {
   masterTransport.state = 'playing';
-  for (const l of layers) {
-    if (!syncMaster[l.id] || l.input.kind !== 'video') continue;
+  const at = timelineSeconds();
+  for (const l of syncedVideos()) {
+    l.input.alignTo(at);
     l.input.play();
   }
-  if (syncMaster.audio && audio.buffer && !audio.playing) audio.play(audio.currentTime);
+  if (syncMaster.audio && !audioOverrideStop && audio.buffer && !audio.playing) audio.play(audio.currentTime);
   timeline.play();
   paintMasterTransport();
   syncTransport();
@@ -1580,11 +2251,8 @@ function masterPlay() {
 
 function masterPause() {
   masterTransport.state = 'paused';
-  for (const l of layers) {
-    if (!syncMaster[l.id] || l.input.kind !== 'video') continue;
-    l.input.pause();
-  }
-  if (syncMaster.audio && audio.buffer) audio.pause();
+  for (const l of syncedVideos()) l.input.pause();
+  if (syncMaster.audio && !audioOverrideStop && audio.buffer) audio.pause();
   timeline.pause();
   paintMasterTransport();
   syncTransport();
@@ -1593,16 +2261,19 @@ function masterPause() {
 
 function masterStop() {
   masterTransport.state = 'stopped';
-  for (const l of layers) {
-    if (!syncMaster[l.id] || l.input.kind !== 'video') continue;
-    l.input.pause();
-  }
-  if (syncMaster.audio && audio.buffer) audio.seekTime(0, false);
+  for (const l of syncedVideos()) l.input.stopToStart();
+  if (syncMaster.audio && !audioOverrideStop && audio.buffer) audio.seekTime(0, false);
   timeline.stop();
   clearMasterCanvas();
   paintMasterTransport();
   syncTransport();
   syncVideoTransport();
+}
+
+function setAudioOverrideStop(on) {
+  audioOverrideStop = !!on;
+  try { localStorage.setItem('vj.audioOverrideStop', audioOverrideStop ? '1' : '0'); } catch { /* ignore */ }
+  paintMasterTransport();
 }
 
 function setLayerSync(id, on) {
@@ -1616,7 +2287,7 @@ function setLayerSync(id, on) {
 function setAudioSync(on) {
   syncMaster.audio = !!on;
   saveSyncMaster();
-  if (on && audio.buffer) {
+  if (on && audio.buffer && !audioOverrideStop) {
     if (masterTransport.state === 'stopped') audio.seekTime(0, false);
     else if (masterTransport.state === 'paused') audio.pause();
     else if (!audio.playing) audio.play(audio.currentTime);
@@ -1630,19 +2301,74 @@ $('master-play').addEventListener('click', masterPlay);
 $('master-pause').addEventListener('click', masterPause);
 $('master-stop').addEventListener('click', masterStop);
 $('audio-sync').addEventListener('change', () => setAudioSync($('audio-sync').checked));
+$('audio-override-stop').addEventListener('change', () => setAudioOverrideStop($('audio-override-stop').checked));
 $('layer-sync').addEventListener('change', () => setLayerSync(selectedLayer().id, $('layer-sync').checked));
 paintMasterTransport();
 
 async function useAudioFile(file) {
   setStatus($('audio-status'), 'decoding...');
   showAudioMode('file');
-  await audio.loadFile(file, { autoplay: masterTransport.state === 'playing' || !syncMaster.audio });
+  await audio.loadFile(file, { autoplay: masterTransport.state === 'playing' || !syncMaster.audio || audioOverrideStop });
   audio.setLoop($('audio-loop').checked);
-  library.cacheAudio(file);
+  await library.cacheAudio(file);
+  rememberAudioName(file.name);
   try { localStorage.setItem('vj.audioFile', file.name); } catch { /* ignore */ }
   setStatus($('audio-status'), file.name);
   syncTransport();
+  await paintAudioRecent();
 }
+
+const AUDIO_RECENT_KEY = 'vj.audioRecent';
+
+function readAudioRecent() {
+  try {
+    const list = JSON.parse(localStorage.getItem(AUDIO_RECENT_KEY) || '[]');
+    return Array.isArray(list) ? list.filter((name) => typeof name === 'string' && name) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberAudioName(name) {
+  const next = [name, ...readAudioRecent().filter((item) => item !== name)];
+  try { localStorage.setItem(AUDIO_RECENT_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+}
+
+async function paintAudioRecent() {
+  const list = $('audio-recent');
+  if (!list) return;
+  const current = audio.fileName || localStorage.getItem('vj.audioFile') || '';
+  const names = [];
+  for (const name of readAudioRecent()) {
+    const file = await library.getAudio(name);
+    if (file) names.push(name);
+  }
+  list.replaceChildren();
+  for (const name of names) {
+    const item = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.name = name;
+    btn.textContent = name;
+    btn.title = name;
+    btn.classList.toggle('on', name === current);
+    item.append(btn);
+    list.append(item);
+  }
+  list.hidden = names.length === 0;
+}
+
+$('audio-recent')?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button');
+  if (!btn?.dataset.name) return;
+  const file = await library.getAudio(btn.dataset.name);
+  if (!file) {
+    await paintAudioRecent();
+    return;
+  }
+  try { await useAudioFile(file); }
+  catch (err) { setStatus($('audio-status'), err.message, true); }
+});
 
 $('audio-kind').addEventListener('click', async (e) => {
   const btn = e.target.closest('button');
@@ -1677,6 +2403,10 @@ $('audio-device').addEventListener('change', async (e) => {
     setStatus($('audio-status'), err.message, true);
   }
 });
+audio.onDeviceLost = () => {
+  setStatus($('audio-status'), 'Audio input disconnected - pick the device again', true);
+  syncTransport();
+};
 navigator.mediaDevices?.addEventListener('devicechange', () => {
   if (audioMode === 'device') refreshAudioDevices();
   library.refreshCameras().catch(() => {});
@@ -1820,6 +2550,7 @@ function renderMomentary() {
     b.addEventListener('pointercancel', release);
     root.append(b);
   }
+  syncMidiTags();
 }
 
 function renderMacros() {
@@ -1886,6 +2617,7 @@ function renderMacros() {
     card.append(add);
     root.append(card);
   });
+  syncMidiTags();
 }
 
 macros.onChange = () => renderMacros();
@@ -1916,11 +2648,17 @@ midi.onTrigger = (sceneId) => {
 $('midi-enable').addEventListener('click', async () => {
   try {
     await midi.init();
+    localStorage.setItem('vj.midi.enabled', '1');
     midi.onChange();
   } catch (err) {
     setStatus($('midi-status'), err.message, true);
   }
 });
+if (localStorage.getItem('vj.midi.enabled') === '1') {
+  midi.init()
+    .then(() => midi.onChange())
+    .catch((err) => setStatus($('midi-status'), err.message, true));
+}
 $('midi-learn').addEventListener('click', () => {
   midi.toggleLearn();
   if (midi.learnArmed && !midi.access) {
@@ -1929,6 +2667,8 @@ $('midi-learn').addEventListener('click', () => {
 });
 $('apc-preset').addEventListener('click', () => {
   const arm = async () => {
+    setMidiMap('apc-mini-mk2');
+    setDeskMode('midi');
     if (!midi.access) await midi.init();
     apcLeds.reset();
     const found = midi.outputs.filter((p) => /apc|akai/i.test(p.name || ''));
@@ -2016,6 +2756,7 @@ const HUD_STYLE_KEY = {
   size: 'vj.hudSize',
   mix: 'vj.hudMix',
   bg: 'vj.hudBg',
+  automask: 'vj.hudAutomask',
   leading: 'vj.hudLeading',
   mode: 'vj.hudMode',
 };
@@ -2033,6 +2774,7 @@ function readHudStyle() {
     size: num(HUD_STYLE_KEY.size, 16),
     mix: num(HUD_STYLE_KEY.mix, 0.92),
     bg: num(HUD_STYLE_KEY.bg, 0.72),
+    automask: localStorage.getItem(HUD_STYLE_KEY.automask) === '1',
     leading: num(HUD_STYLE_KEY.leading, 1.45),
     mode: HUD_MODES.includes(localStorage.getItem(HUD_STYLE_KEY.mode))
       ? localStorage.getItem(HUD_STYLE_KEY.mode)
@@ -2049,6 +2791,7 @@ function bindHudChrome() {
   $('hud-leading').value = String(style.leading);
   $('hud-mix').value = String(style.mix);
   $('hud-bg').value = String(style.bg);
+  $('hud-automask').checked = style.automask;
   $('hud-size-out').textContent = String(Math.round(style.size));
   $('hud-leading-out').textContent = style.leading.toFixed(2);
   $('hud-mix-out').textContent = style.mix.toFixed(2);
@@ -2064,6 +2807,7 @@ function bindHudChrome() {
       size: Number($('hud-size').value),
       mix: Number($('hud-mix').value),
       bg: Number($('hud-bg').value),
+      automask: $('hud-automask').checked,
       leading: Number($('hud-leading').value),
     };
     localStorage.setItem(HUD_STYLE_KEY.glyph, next.glyph);
@@ -2071,6 +2815,7 @@ function bindHudChrome() {
     localStorage.setItem(HUD_STYLE_KEY.size, String(next.size));
     localStorage.setItem(HUD_STYLE_KEY.mix, String(next.mix));
     localStorage.setItem(HUD_STYLE_KEY.bg, String(next.bg));
+    localStorage.setItem(HUD_STYLE_KEY.automask, next.automask ? '1' : '0');
     localStorage.setItem(HUD_STYLE_KEY.leading, String(next.leading));
     $('hud-size-out').textContent = String(Math.round(next.size));
     $('hud-leading-out').textContent = next.leading.toFixed(2);
@@ -2082,6 +2827,7 @@ function bindHudChrome() {
   for (const id of ['hud-glyph', 'hud-color', 'hud-size', 'hud-leading', 'hud-mix', 'hud-bg']) {
     $(id).addEventListener('input', persist);
   }
+  $('hud-automask').addEventListener('change', persist);
   $('hud-mode').addEventListener('change', () => {
     setHudDisplay($('hud-mode').value);
     syncPresetSelect();
@@ -2116,13 +2862,145 @@ function setHudDisplay(mode) {
 }
 bindHudChrome();
 
-function setHudEnabled(on) {
-  hud.toggle(!!on);
-  $('hud-enable').checked = hud.visible;
+const HUD_MOTIONS = ['cut', 'fade', 'zoom', 'slide'];
+const HUD_MOTION_KEY = 'vj.hudMotion';
+let hudWant = false;
+const hudMotion = { motion: 'cut', sec: 0.4, reveal: 0, playing: false, dismissing: false };
+
+function hudEase(t) {
+  const x = Math.min(1, Math.max(0, Number(t) || 0));
+  return x * x * (3 - 2 * x);
+}
+
+function applyHudMotion() {
   const frame = $('hud-frame');
-  if (frame) frame.hidden = !hud.visible;
-  localStorage.setItem('vj.hud', hud.visible ? '1' : '0');
+  if (!frame) return;
+  const t = hudMotion.reveal;
+  const ease = hudEase(t);
+  const motion = hudMotion.motion;
+  if (motion === 'zoom') {
+    frame.style.opacity = t <= 0.001 ? '0' : '1';
+    frame.style.transformOrigin = 'center center';
+    frame.style.transform = `scale(${(0.1 + 0.9 * ease).toFixed(4)})`;
+    return;
+  }
+  if (motion === 'slide') {
+    const parentW = frame.parentElement?.clientWidth || 1;
+    const left = hudBox.x * parentW;
+    const width = frame.offsetWidth || parentW * hudBox.w;
+    const dx = -(left + width) * (1 - ease);
+    frame.style.opacity = t <= 0.001 ? '0' : '1';
+    frame.style.transformOrigin = 'left center';
+    frame.style.transform = `translateX(${dx.toFixed(2)}px)`;
+    return;
+  }
+  if (motion === 'fade') {
+    frame.style.opacity = String(ease);
+    frame.style.transform = '';
+    return;
+  }
+  frame.style.opacity = '';
+  frame.style.transform = '';
+}
+
+function finishHudMotion() {
+  hudMotion.playing = false;
+  hudMotion.dismissing = false;
+  hudMotion.reveal = 0;
+  hud.visible = false;
+  if (hud.el) hud.el.hidden = true;
+  const frame = $('hud-frame');
+  if (frame) {
+    frame.hidden = true;
+    frame.style.opacity = '';
+    frame.style.transform = '';
+  }
   pushOverlay(true);
+}
+
+function tickHudMotion(dt) {
+  if (!hudMotion.playing) return;
+  if (hudMotion.motion === 'cut') {
+    if (hudMotion.dismissing) finishHudMotion();
+    else {
+      hudMotion.reveal = 1;
+      applyHudMotion();
+    }
+    return;
+  }
+  const span = Math.min(2, Math.max(0.1, hudMotion.sec));
+  const step = Math.min(0.1, Math.max(0, Number(dt) || 0));
+  const dir = hudMotion.dismissing ? -1 : 1;
+  hudMotion.reveal = Math.min(1, Math.max(0, hudMotion.reveal + dir * (step / span)));
+  if (hudMotion.dismissing && hudMotion.reveal <= 0.001) {
+    finishHudMotion();
+    return;
+  }
+  applyHudMotion();
+}
+
+function bindHudMotion() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HUD_MOTION_KEY) || 'null');
+    if (raw && typeof raw === 'object') {
+      if (HUD_MOTIONS.includes(raw.motion)) hudMotion.motion = raw.motion;
+      const sec = Number(raw.sec);
+      if (Number.isFinite(sec)) hudMotion.sec = Math.min(2, Math.max(0.1, sec));
+    }
+  } catch { /* ignore a bad save */ }
+  const sel = $('hud-motion');
+  const range = $('hud-motion-sec');
+  const out = $('hud-motion-sec-out');
+  if (sel) sel.value = hudMotion.motion;
+  if (range) range.value = String(hudMotion.sec);
+  if (out) out.textContent = hudMotion.sec.toFixed(2);
+  const write = () => {
+    try {
+      localStorage.setItem(HUD_MOTION_KEY, JSON.stringify({ motion: hudMotion.motion, sec: hudMotion.sec }));
+    } catch { /* ignore */ }
+  };
+  sel?.addEventListener('change', () => {
+    hudMotion.motion = HUD_MOTIONS.includes(sel.value) ? sel.value : 'cut';
+    write();
+  });
+  range?.addEventListener('input', () => {
+    hudMotion.sec = Math.min(2, Math.max(0.1, Number(range.value) || 0.4));
+    if (out) out.textContent = hudMotion.sec.toFixed(2);
+    write();
+  });
+}
+
+function setHudEnabled(on) {
+  const next = !!on;
+  hudWant = next;
+  $('hud-enable').checked = next;
+  const hudState = document.querySelector('#live-tools .hud-toggle .hud-state');
+  if (hudState) hudState.textContent = next ? 'On' : 'Off';
+  try { localStorage.setItem('vj.hud', next ? '1' : '0'); } catch { /* ignore */ }
+  const frame = $('hud-frame');
+  if (next) {
+    const resume = hudMotion.playing && hudMotion.dismissing;
+    hud.visible = true;
+    if (hud.el) hud.el.hidden = false;
+    hudMotion.dismissing = false;
+    hudMotion.playing = true;
+    if (!resume) hudMotion.reveal = hudMotion.motion === 'cut' ? 1 : 0;
+    else if (hudMotion.motion === 'cut') hudMotion.reveal = 1;
+    applyHudMotion();
+    if (frame) frame.hidden = false;
+    pushOverlay(true);
+    return;
+  }
+  if (!hudMotion.playing) {
+    hud.visible = false;
+    if (hud.el) hud.el.hidden = true;
+    if (frame) frame.hidden = true;
+    pushOverlay(true);
+    return;
+  }
+  hudMotion.dismissing = true;
+  if (hudMotion.motion === 'cut') finishHudMotion();
+  else pushOverlay(true);
 }
 
 let hudBox = { ...HUD_BOX_DEFAULT };
@@ -2235,6 +3113,7 @@ function setHudPerform(on) {
 }
 loadHudBox();
 bindHudBox();
+bindHudMotion();
 if (localStorage.getItem('vj.hud') === '1') setHudEnabled(true);
 $('hud-enable').addEventListener('change', () => setHudEnabled($('hud-enable').checked));
 setHudPerform(localStorage.getItem('vj.hudPerform') === '1');
@@ -2245,43 +3124,28 @@ $('hud-dpi').addEventListener('change', () => {
   syncDpi();
 });
 
-function stepHudSize() {
-  const el = $('hud-size');
-  el.value = String(nextHudSize(Number(el.value)));
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  apcView?.refresh();
-}
+let deskMode = 'live';
+let midiMap = 'apc-mini-mk2';
 
-function stepHudTheme() {
-  const el = $('hud-color');
-  const values = [...el.options].map((o) => o.value);
-  const i = Math.max(0, values.indexOf(el.value));
-  el.value = values[(i + 1) % values.length];
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  apcView?.refresh();
-}
-
-function swapLayers(a, b) {
-  const keys = LAYER_DEFS.map((d) => d.id);
-  const values = {};
-  for (const key of keys) values[key] = [params.get(layerParam(a, key)), params.get(layerParam(b, key))];
-  for (const key of keys) {
-    params.set(layerParam(a, key), values[key][1]);
-    params.set(layerParam(b, key), values[key][0]);
+function applyMidiSurface() {
+  const mini = midiMap === 'apc-mini-mk2' && deskMode === 'midi';
+  $('apc-view').hidden = !mini;
+  const note = $('midi-map-note');
+  if (note) {
+    note.hidden = midiMap === 'apc-mini-mk2';
+    note.textContent = midiMap === 'apc40-mk2'
+      ? 'APC40 mk2 is selected. Its controls go to MIDI Learn and the saved mappings.'
+      : 'Custom / Generic. Every control goes to MIDI Learn and the saved mappings.';
   }
-  const media = currentMedia();
-  setLayerMedia(a, media[b].key, { mirror: media[b].mirror });
-  setLayerMedia(b, media[a].key, { mirror: media[a].mirror });
-  bus.exchange(a, b);
+  if (mini) apcView?.refresh();
 }
 
-function setPerformanceView(mode) {
-  const apc = mode === 'apc';
-  document.body.classList.toggle('view-apc', apc);
-  $('apc-view').hidden = !apc;
-  if ($('view-mode').value !== (apc ? 'apc' : 'studio')) $('view-mode').value = apc ? 'apc' : 'studio';
-  try { localStorage.setItem('vj.view', apc ? 'apc' : 'studio'); } catch { /* ignore */ }
-  if (apc) apcView?.refresh();
+function setMidiMap(id) {
+  midiMap = id === 'apc40-mk2' || id === 'custom' ? id : 'apc-mini-mk2';
+  const select = $('midi-map');
+  if (select && select.value !== midiMap) select.value = midiMap;
+  try { localStorage.setItem('vj.midi.map', midiMap); } catch { /* ignore */ }
+  applyMidiSurface();
 }
 
 apcView = new ApcView({
@@ -2291,32 +3155,188 @@ apcView = new ApcView({
   bus,
   panel,
   launch: (id) => triggerScene(id),
-  swapLayers,
-  setHud: (on, size) => {
-    if (size != null) {
-      const slider = $('hud-size');
-      slider.value = String(size);
-      slider.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+  setHud: (on) => {
     setHudEnabled(on);
     apcView?.refresh();
   },
-  getHud: () => ({ on: hud.visible, size: Number($('hud-size').value) }),
+  getHud: () => ({ on: hudWant, size: Number($('hud-size').value) }),
   getClips: () => library.names,
   setClip: (layer, name) => setLayerMedia(layer, `file:${name}`),
   getMedia: () => currentMedia(),
   momentary,
-  stepHudSize,
-  stepHudTheme,
+  getPulse: () => beatClock.pulse,
+  actions: {
+    tap: tapTempo,
+    autoBpm: () => setBpmMode('auto'),
+    masterStop,
+    setSpeed: setMasterSpeed,
+    getSpeed: () => masterSpeed,
+    setFade: (value) => timeline.set('fadeSec', value),
+    getFade: () => timeline.fadeSec,
+    setMacro: (index, value) => {
+      macros.setValue(`CC 1:${54 + index}`, value);
+      const macro = macros.macros[index];
+      if (macro) macro.value = value;
+    },
+    getMacro: (index) => {
+      const macro = macros.macros[index];
+      return macro && macro.value != null ? macro.value : 0;
+    },
+    shuffleLayer: () => panel.shuffleSelectedLayer(),
+    toggleCategory: (layer, name) => panel.blocks.get(`${layer}:${name}`)?.mute.click(),
+    shuffleCategory: (layer, name) => panel.shuffleGroup(layer, name),
+    categoryMuted: (layer, name) => panel.muted.has(`${layer}:${name}`),
+    categories: () => [...panel.layerEl.querySelectorAll(':scope > .fx-block')]
+      .filter((el) => el.dataset.layer === panel.selected && !el.hidden)
+      .map((el) => el.dataset.group),
+    setMode: (layer, mode) => params.set(layerParam(layer, 'mode'), mode),
+    sting: (index) => stings.trigger(index),
+    stingOn: (index) => stings.shown(index),
+    logoName: (index) => stings.buttonName(index),
+  },
 });
-midi.onHardware = (msg) => apcView.handleMidi(msg);
-$('view-mode').addEventListener('change', (e) => setPerformanceView(e.target.value));
-if (localStorage.getItem('vj.view') === 'apc') setPerformanceView('apc');
-$('hud-output').checked = outputWin.overlayOn;
+midi.onHardware = (msg) => midiMap === 'apc-mini-mk2' && apcView.handleMidi(msg);
+$('cue-mode-toggle')?.addEventListener('click', () => apcView.toggleCue());
+$('midi-map')?.addEventListener('change', (e) => setMidiMap(e.target.value));
+
+function syncMidiTags() {
+  const place = (el, text) => {
+    if (!el) return;
+    let tag = el.querySelector(':scope > .midi-tag');
+    if (!tag) {
+      tag = document.createElement('i');
+      tag.className = 'midi-tag';
+      el.append(tag);
+    }
+    if (tag.textContent !== text) tag.textContent = text;
+  };
+  for (const [layer, fader, mute, solo] of [
+    ['A', 'F1', '⇧TRK1', '⇧TRK4'],
+    ['B', 'F2', '⇧TRK2', '⇧TRK5'],
+    ['C', 'F3', '⇧TRK3', '⇧TRK6'],
+  ]) {
+    place(document.querySelector(`.strip[data-layer="${layer}"] .strip-mix-wrap`), fader);
+    place(document.querySelector(`.strip[data-layer="${layer}"] .ms.mute`), mute);
+    place(document.querySelector(`.strip[data-layer="${layer}"] .ms.solo`), solo);
+  }
+  place(document.querySelector('[data-midi="master"]'), 'F9');
+  place(document.querySelector('label.master-speed'), 'F4');
+  place(document.querySelector('label.fade-sec'), 'F5');
+  place($('audio-master')?.closest('label'), 'F6');
+  const cards = document.querySelectorAll('#macro-list .macro-head');
+  place(cards[0], 'F7');
+  place(cards[1], 'F8');
+  document.querySelectorAll('#momentary-pads .moment-pad').forEach((pad, i) => place(pad, `TRK${i + 1}`));
+  document.querySelectorAll('#live-tools .sting-fire').forEach((btn, i) => place(btn, `TRK${i + 6}`));
+  place($('shuffle-layer-fx'), '⇧TRK7');
+  place(document.querySelector('label.hud-toggle'), '⇧TRK8');
+  place($('bpm-tap'), 'SCN7');
+  place($('tl-tap'), 'SCN7');
+  place($('bpm-mode'), '⇧SCN7');
+  place($('master-stop'), '⇧SCN8');
+}
+
+function setMidiLabels(on, save = true) {
+  document.body.classList.toggle('midi-labels', !!on);
+  const box = $('midi-labels');
+  if (box) box.checked = !!on;
+  if (save) {
+    try { localStorage.setItem('vj.midi.labels', on ? '1' : '0'); } catch { /* ignore */ }
+  }
+  syncMidiTags();
+}
+$('midi-labels')?.addEventListener('change', (e) => setMidiLabels(e.target.checked));
+setMidiLabels(localStorage.getItem('vj.midi.labels') === '1', false);
+{
+  const storedMap = localStorage.getItem('vj.midi.map');
+  setMidiMap(storedMap || (localStorage.getItem('vj.view') === 'apc' ? 'apc-mini-mk2' : 'apc-mini-mk2'));
+}
 $('hud-output').addEventListener('change', () => {
-  outputWin.setOverlayOn($('hud-output').checked);
+  setCodeRecord($('hud-output').checked);
   pushOverlay();
 });
+$('hud-record')?.addEventListener('click', () => {
+  setCodeRecord(!codeRecordOn);
+  pushOverlay();
+});
+$('screen-record')?.addEventListener('click', () => setScreenRecord(!screenRecordOn));
+
+let codeRecordOn = false;
+let screenRecordOn = false;
+
+function paintRecordButton(id, on) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  const state = btn.querySelector('i');
+  if (state) state.textContent = on ? 'On' : 'Off';
+}
+
+function setCodeRecord(on, save = true) {
+  codeRecordOn = !!on;
+  paintRecordButton('hud-record', codeRecordOn);
+  const box = $('hud-output');
+  if (box && box.checked !== codeRecordOn) box.checked = codeRecordOn;
+  if (outputWin.overlayOn !== codeRecordOn) outputWin.setOverlayOn(codeRecordOn);
+  if (save) project.setRecordOutput({ code: codeRecordOn, screen: screenRecordOn });
+}
+
+function setScreenRecord(on, save = true) {
+  screenRecordOn = !!on;
+  paintRecordButton('screen-record', screenRecordOn);
+  if (save) project.setRecordOutput({ code: codeRecordOn, screen: screenRecordOn });
+}
+
+function showRecordOutput(raw = {}) {
+  const code = typeof raw.code === 'boolean' ? raw.code : !!$('hud-enable')?.checked;
+  const screen = typeof raw.screen === 'boolean' ? raw.screen : false;
+  setCodeRecord(code, false);
+  setScreenRecord(screen, false);
+  return {
+    code,
+    screen,
+    dirty: typeof raw.code !== 'boolean' || typeof raw.screen !== 'boolean',
+  };
+}
+
+{
+  const shown = showRecordOutput(project.recordOutput);
+  if (shown.dirty) project.setRecordOutput({ code: shown.code, screen: shown.screen });
+}
+
+function screenFontFamily() {
+  if (screenFont === 'desk') {
+    const stack = getComputedStyle(document.documentElement).getPropertyValue('--font').trim();
+    return stack || 'monospace';
+  }
+  return SCREEN_FONTS[screenFont] || 'monospace';
+}
+
+function screenRecordSpec(nowMs) {
+  const lines = String(screenText).replace(/\r\n/g, '\n').split('\n').map((text) => ({ text }));
+  lines.push({ text: SCREEN_CREDIT, credit: true });
+  return {
+    lines,
+    fontFamily: screenFontFamily(),
+    color: SCREEN_COLORS[screenColor] || SCREEN_COLORS.white,
+    shade: screenShade,
+    background: screenBg,
+    scale: brandScale,
+    nowMs,
+  };
+}
+function logoIncluded() {
+  return $('logo-output')?.checked !== false;
+}
+{
+  const logoOut = $('logo-output');
+  if (logoOut) {
+    logoOut.checked = localStorage.getItem('vj.logoOutput') !== '0';
+    logoOut.addEventListener('change', () => {
+      try { localStorage.setItem('vj.logoOutput', logoOut.checked ? '1' : '0'); } catch { /* ignore */ }
+    });
+  }
+}
 
 let outputBtnOn = null;
 function syncOutputBtn() {
@@ -2337,8 +3357,6 @@ function placeScreenMenu() {
 }
 $('output-win').addEventListener('click', async (e) => {
   e.stopPropagation();
-  $('file-menu').hidden = true;
-  $('file-menu-btn').setAttribute('aria-expanded', 'false');
   const menu = $('screen-menu');
   if (!menu.hidden) {
     menu.hidden = true;
@@ -2389,15 +3407,35 @@ function openOutputMap(open) {
   syncDpi();
   if (open) requestAnimationFrame(syncDpi);
 }
-$('output-advanced').addEventListener('click', () => openOutputMap($('output-map-modal').hidden));
+$('output-advanced').addEventListener('click', () => {
+  $('file-menu').hidden = true;
+  $('file-menu-btn').setAttribute('aria-expanded', 'false');
+  openOutputMap($('output-map-modal').hidden);
+});
 $('map-close').addEventListener('click', () => openOutputMap(false));
 $('output-map-modal').addEventListener('click', (e) => {
   if (e.target === $('output-map-modal')) openOutputMap(false);
 });
 function openPrefs(open) {
   $('prefs-modal').hidden = !open;
+  if (open) ensureStockDir().catch(() => {});
 }
-$('prefs-btn').addEventListener('click', () => openPrefs($('prefs-modal').hidden));
+$('stock-dir-pick').addEventListener('click', async () => {
+  if (!isTauri()) {
+    showToast('Choose the folder in the desktop app.', true);
+    return;
+  }
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({ directory: true, multiple: false, title: 'Stock Media Download Folder' });
+  if (typeof picked !== 'string' || !picked) return;
+  try { localStorage.setItem(STOCK_DIR_KEY, picked); } catch { /* private mode */ }
+  paintStockDir(picked);
+});
+$('prefs-btn').addEventListener('click', () => {
+  $('file-menu').hidden = true;
+  $('file-menu-btn').setAttribute('aria-expanded', 'false');
+  openPrefs($('prefs-modal').hidden);
+});
 $('prefs-close').addEventListener('click', () => openPrefs(false));
 $('prefs-modal').addEventListener('click', (e) => {
   if (e.target === $('prefs-modal')) openPrefs(false);
@@ -2494,6 +3532,7 @@ window.addEventListener('keydown', (e) => {
 $('fs-btn').addEventListener('click', toggleFullscreen);
 
 window.addEventListener('keydown', (e) => {
+  if (deskMode === 'prep') return;
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target?.matches?.('input[type="text"], input[type="password"], input[type="number"], textarea')) return;
   const k = e.key.toLowerCase();
@@ -2514,7 +3553,7 @@ window.addEventListener('keydown', (e) => {
   } else if (k === 't') tapTempo();
   else if (isPerformMode && (k === 'l' || k === 'h' || k === 'c' || k === 'p')) return;
   else if (k === 'l') setUiMode(document.body.classList.contains('live-mode') ? 'timeline' : 'live');
-  else if (k === 'h') setHudEnabled(!hud.visible);
+  else if (k === 'h') setHudEnabled(!hudWant);
   else if (k === 'c') {
     setHudDisplay(HUD_MODES[(HUD_MODES.indexOf(hud.display) + 1) % HUD_MODES.length]);
   }
@@ -2531,7 +3570,6 @@ window.addEventListener('keydown', (e) => {
 // updates stay on the 30Hz gate below.
 let frameStamp = 0;
 let fps = 60;
-let masterSpeed = 1;
 let shaderTime = 0;
 const meters = [
   ['kick', 'm-kick'],
@@ -2545,9 +3583,24 @@ const meterWidths = ['', '', '', '', ''];
 let fpsLabel = '';
 let recLabel = null;
 let ledOpacity = '';
+let ledHit = false;
 let ledDown = false;
 const place = { scale: 1, x: 0, y: 0, maskX: 1, maskY: 1, maskOn: false };
 const BLEND_SHORT = ['normal', 'multiply', 'screen', 'dodge', 'difference', 'add', 'exclusion', 'overlay'];
+
+let cleanPlate = null;
+function copyCleanPlate() {
+  if (!cleanPlate) {
+    cleanPlate = document.createElement('canvas');
+    cleanPlate.ctx = cleanPlate.getContext('2d', { alpha: false });
+  }
+  if (cleanPlate.width !== glCanvas.width || cleanPlate.height !== glCanvas.height) {
+    cleanPlate.width = Math.max(2, glCanvas.width);
+    cleanPlate.height = Math.max(2, glCanvas.height);
+  }
+  cleanPlate.ctx.drawImage(glCanvas, 0, 0);
+  return cleanPlate;
+}
 
 function frame(stamp) {
   const nowMs = typeof stamp === 'number' && stamp > 0 ? stamp : performance.now();
@@ -2556,30 +3609,58 @@ function frame(stamp) {
   const now = nowMs / 1000;
   fps += (1 / Math.max(dt, 1e-4) - fps) * 0.05;
 
-  timeline.update(dt); // crosses a scene marker -> triggerScene()
-  scenes.update(dt);
+  const visualOn = masterTransport.state === 'playing';
+  timeline.update(visualOn ? dt : 0); // crosses a scene marker -> triggerScene()
+  scenes.update(visualOn ? dt : 0);
   if (!bpmEngine.attached && audio.ctx && audio.graph) {
     audio.connectBpm(bpmEngine.attach(audio.ctx));
   }
   audio.syncPeak(bpmEngine);
   bpmEngine.update(dt, now);
-  if (timeline.playing) {
-    beatClock.sync(timeline.beat);
-    bpmEngine.beats = timeline.beat;
-  } else {
-    beatClock.beats = bpmEngine.beats;
-    beatClock.setBpm(bpmEngine.bpm);
+  if (masterTransport.state === 'playing') {
+    if (timeline.playing) {
+      beatClock.sync(timeline.beat);
+      bpmEngine.beats = timeline.beat;
+    } else {
+      beatClock.beats = bpmEngine.beats;
+      beatClock.setBpm(bpmEngine.bpm);
+    }
   }
-  if (bpmEngine.consumeChange()) timeline.set('bpm', bpmEngine.bpm);
+  const heard = bpmEngine.consumeAnalysis();
+  const tempoChanged = bpmEngine.consumeChange();
+  if (heard === 'locked') {
+    closeBpmEditor();
+    timeline.set('bpm', bpmEngine.bpm);
+    syncTempoUi();
+    const readout = $('bpm-value');
+    if (readout) {
+      readout.textContent = formatBpm(bpmEngine.bpm);
+      readout.style.opacity = '1';
+      readout.style.color = '#3dffb0';
+    }
+    bpmFlashUntil = nowMs + 1000;
+    setBpmMode('manual');
+    showBpmNotice(`Locked: ${formatBpm(bpmEngine.bpm)}`, 2000);
+  } else if (heard === 'timeout') {
+    const readout = $('bpm-value');
+    if (readout) {
+      readout.style.opacity = '';
+      readout.style.color = '';
+    }
+    setBpmMode('manual');
+    showBpmNotice('No clear beat - try again', 2000);
+  } else if (tempoChanged) {
+    timeline.set('bpm', bpmEngine.bpm);
+  }
   shared.uBeat.value = beatClock.pulse;
   shared.uBeatPhase.value = beatClock.phase;
 
   const a = audio.update(dt, now);
-  const motionDt = dt * masterSpeed;
+  const motionDt = visualOn ? dt * masterSpeed : 0;
   shaderTime += motionDt;
   shared.uTime.value = shaderTime;
   if (controls.enabled) controls.update();
-  for (const l of layers) l.tickMedia(dt, renderer, fitMode);
+  for (const l of layers) l.tickMedia(visualOn ? dt : 0, renderer, fitMode);
 
   const live = lfo.update({
     now: shaderTime,
@@ -2645,7 +3726,7 @@ function frame(stamp) {
     place.maskOn = masked;
     if (l.active || particleWants(l.id)) {
       l.applyAudio(a);
-      l.render(renderer, renderCtx, dt, layerById, place);
+      l.render(renderer, renderCtx, visualOn ? dt : 0, layerById, place);
     }
     const shown = l.active && audible && !(blackout && syncMaster[l.id]);
     if (shown) picture = true;
@@ -2703,7 +3784,8 @@ function frame(stamp) {
   renderer.setRenderTarget(composeRt);
   renderer.render(quadScene, camera2d);
 
-  stings.update(renderer);
+  stings.update(renderer, dt);
+  tickHudMotion(dt);
 
   const pins = outputMap.glPins();
   warp.uTex.value = composeRt.texture;
@@ -2717,12 +3799,19 @@ function frame(stamp) {
   warp.uBezel.value = outputMap.bezel;
   quad.material = warpMaterial;
 
+  let bakedPlate = null;
   if (stings.live) {
     renderer.setRenderTarget(stingRt);
     renderer.render(quadScene, camera2d);
+    if (recorder.recording || outputWin.open) {
+      renderer.setRenderTarget(null);
+      if (blackout && !picture) clearMasterCanvas();
+      else renderer.render(quadScene, camera2d);
+      bakedPlate = copyCleanPlate();
+    }
     sting.uBase.value = stingRt.texture;
     sting.uAspect.value = stingRt.width / Math.max(1, stingRt.height);
-    stings.bind(sting);
+    stings.bind(sting, a.kick || 0);
     quad.material = stingMaterial;
     renderer.setRenderTarget(null);
     renderer.render(quadScene, camera2d);
@@ -2732,13 +3821,22 @@ function frame(stamp) {
     else renderer.render(quadScene, camera2d);
   }
 
+  paintProgramMonitor(nowMs);
+  captureSceneThumb(nowMs);
+  pictureSend.tick(nowMs, glCanvas);
+
   sceneBar.updatePlayhead();
 
   const led = $('beat-led');
-  const nextOpacity = (0.15 + 0.85 * beatClock.pulse).toFixed(2);
+  const nextOpacity = (0.4 + 0.6 * beatClock.pulse).toFixed(2);
   if (nextOpacity !== ledOpacity) {
     ledOpacity = nextOpacity;
     led.style.opacity = nextOpacity;
+  }
+  const nextHit = beatClock.pulse > 0.62;
+  if (nextHit !== ledHit) {
+    ledHit = nextHit;
+    led.classList.toggle('hit', nextHit);
   }
   const nextDown = beatClock.beatInBar === 0;
   if (nextDown !== ledDown) {
@@ -2760,11 +3858,23 @@ function frame(stamp) {
       }, dt);
     }
     const bpmReadout = $('bpm-value');
+    const bpmBtn = $('bpm-mode');
+    if (bpmEngine.analyzing) {
+      const label = bpmEngine.analyzeLabel();
+      if (bpmBtn.textContent !== label) bpmBtn.textContent = label;
+    } else if (bpmNoticeUntil && nowMs >= bpmNoticeUntil) {
+      bpmNoticeUntil = 0;
+      if (bpmBtn.textContent !== 'Auto: Read Live') bpmBtn.textContent = 'Auto: Read Live';
+    }
     if (bpmReadout && bpmReadout.dataset.editing !== '1') {
-      const bpmText = formatBpm(bpmEngine.bpm);
+      const flashing = nowMs < bpmFlashUntil;
+      const shown = bpmEngine.analyzing && bpmEngine.previewBpm != null ? bpmEngine.previewBpm : bpmEngine.bpm;
+      const bpmText = formatBpm(shown);
       if (bpmReadout.textContent !== bpmText) bpmReadout.textContent = bpmText;
-      bpmReadout.parentElement.classList.toggle('locked', bpmSource !== 'auto');
-      bpmReadout.parentElement.classList.toggle('sync', bpmSource === 'auto');
+      bpmReadout.style.opacity = bpmEngine.analyzing ? '0.5' : flashing ? '1' : '';
+      bpmReadout.style.color = flashing && !bpmEngine.analyzing ? '#3dffb0' : '';
+      bpmReadout.parentElement.classList.toggle('locked', bpmMode !== 'auto');
+      bpmReadout.parentElement.classList.toggle('sync', bpmMode === 'auto');
     }
     panel.tickLive(live);
     const hudSize = mods.modulate({ min: 10, max: 48 }, Number($('hud-size').value), 'hud.size', a, beatClock.pulse);
@@ -2779,6 +3889,7 @@ function frame(stamp) {
       }
       audio.drawMonitor($('audio-fft'));
     }
+    placeBrandMark(nowMs);
     apcView.tick();
     apcLeds.flush(ledMap(apcView.page, apcView.ledContext()));
     const fpsText = `${fps.toFixed(0)} fps`;
@@ -2859,7 +3970,7 @@ function frame(stamp) {
           resolution: `${res.x}x${res.y}`,
           recording: recorder.recording ? $('rec-time').textContent : '',
           timeline: `${timeline.playing ? '\u25B6' : '\u275A\u275A'} ${$('tl-pos').textContent}  ${timeline.bpm} bpm`,
-          clock: { pulse: beatClock.pulse, text: `${formatBpm(beatClock.bpm)} bpm  ${bpmSource}  beat ${beatClock.beatInBar + 1}/4` },
+          clock: { pulse: beatClock.pulse, text: `${formatBpm(beatClock.bpm)} bpm  ${bpmMode}  beat ${beatClock.beatInBar + 1}/4` },
         },
         now,
       );
@@ -2869,9 +3980,12 @@ function frame(stamp) {
   }
   // Copy the finished WebGL frame after the HUD text has settled, so the recording
   // and the output window do not grab a line that is still scrolling into place.
-  const hudFrame = hud.visible ? hud.recordOverlay() : null;
-  if (recorder.recording) recorder.paint(renderer.domElement, hudFrame);
-  outputWin.mirror(outputWin.overlayOn ? hudFrame : null);
+  const hudFrame = codeRecordOn && hud.visible ? hud.recordOverlay() : null;
+  const frameSource = bakedPlate || renderer.domElement;
+  const logos = logoIncluded() && stings.live ? stings.outputPose() : null;
+  const screensaver = screenRecordOn ? screenRecordSpec(nowMs) : null;
+  if (recorder.recording) recorder.paint(frameSource, hudFrame, logos, screensaver);
+  outputWin.mirror(hudFrame, logos, frameSource, screensaver);
   if (performHolding) paintPerformHold();
 }
 
@@ -2895,13 +4009,14 @@ async function restoreCachedMedia() {
     setStatus($('audio-status'), err.message, true);
   }
 }
-restoreCachedMedia();
+restoreCachedMedia().then(() => paintAudioRecent());
 
 // Focused: requestAnimationFrame, whose timestamp is performance.now().
 // Blurred or hidden: a worker interval, because requestAnimationFrame stalls
 // when this window loses focus and the output mirror would freeze.
 // Only one clock runs. A leftover display callback must not schedule another frame.
 let clockMode = '';
+let gpuLost = false;
 let nextPump = 0;
 let fallbackTimer = 0;
 let rafHandle = 0;
@@ -2939,7 +4054,17 @@ function stopDisplayClock() {
   rafHandle = 0;
 }
 
+function idleFrameClock() {
+  clockMode = 'idle';
+  stopDisplayClock();
+  stopBackgroundClock();
+}
+
 function useDisplayClock() {
+  if (deskMode === 'prep' || gpuLost) {
+    idleFrameClock();
+    return;
+  }
   if (clockMode === 'display') return;
   clockMode = 'display';
   stopBackgroundClock();
@@ -2948,6 +4073,10 @@ function useDisplayClock() {
 }
 
 function useBackgroundClock() {
+  if (deskMode === 'prep' || gpuLost) {
+    idleFrameClock();
+    return;
+  }
   if (clockMode === 'background') return;
   clockMode = 'background';
   stopDisplayClock();
@@ -2958,8 +4087,39 @@ function useBackgroundClock() {
 }
 
 function syncFrameClock() {
+  if (deskMode === 'prep' || gpuLost) {
+    idleFrameClock();
+    return;
+  }
   if (document.hidden || !document.hasFocus()) useBackgroundClock();
   else useDisplayClock();
+}
+
+function setDeskMode(mode) {
+  const next = mode === 'prep' || mode === 'midi' ? mode : 'live';
+  deskMode = next;
+  const prep = next === 'prep';
+  const midiOn = next === 'midi';
+  document.body.classList.toggle('prep-mode', prep);
+  document.body.classList.toggle('midi-mode', midiOn);
+  $('media-prep').hidden = !prep;
+  $('midi-desk').hidden = !midiOn;
+  for (const [id, on] of [['mode-live', next === 'live'], ['mode-prep', prep], ['mode-midi', midiOn]]) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  if (prep || midiOn) {
+    $('file-menu').hidden = true;
+    $('file-menu-btn').setAttribute('aria-expanded', 'false');
+    $('screen-menu').hidden = true;
+  }
+  if (prep) idleFrameClock();
+  else syncFrameClock();
+  applyMidiSurface();
+  apcView?.refresh();
+  try { localStorage.setItem('vj.workspace', next); } catch { /* ignore */ }
 }
 
 document.addEventListener('visibilitychange', syncFrameClock);
@@ -2967,7 +4127,65 @@ window.addEventListener('blur', useBackgroundClock);
 window.addEventListener('focus', () => {
   if (!document.hidden) useDisplayClock();
 });
+
+function reloadAfterGpuLoss() {
+  project.save();
+  location.reload();
+}
+
+function showGpuLostBanner() {
+  if ($('gpu-lost')) return;
+  const banner = document.createElement('div');
+  banner.id = 'gpu-lost';
+  banner.className = 'gpu-lost';
+  banner.setAttribute('role', 'alert');
+  banner.innerHTML = '<b>Picture lost - save and reload</b><button type="button" data-act="save">Save Project</button><button type="button" data-act="reload">Reload</button>';
+  banner.querySelector('[data-act="save"]').addEventListener('click', () => saveProject());
+  banner.querySelector('[data-act="reload"]').addEventListener('click', reloadAfterGpuLoss);
+  document.body.append(banner);
+}
+
+glCanvas.addEventListener('webglcontextlost', (event) => {
+  event.preventDefault();
+  gpuLost = true;
+  idleFrameClock();
+  showGpuLostBanner();
+});
+glCanvas.addEventListener('webglcontextrestored', reloadAfterGpuLoss);
+const pictureSend = bindPictureSend({ isTauri });
+bindPictureSources(() => {
+  const sel = $('layer-media');
+  if (sel && document.activeElement === sel) {
+    pictureMenuDirty = true;
+    return;
+  }
+  pictureMenuDirty = false;
+  refreshMediaSelect();
+}, () => {
+  if (deskMode === 'prep') return false;
+  if (document.activeElement === $('layer-media')) return true;
+  return layers.some((l) => /^(ndi|spout):/.test(l.mediaKey || ''));
+});
 syncFrameClock();
+$('mode-live').addEventListener('click', () => setDeskMode('live'));
+$('mode-prep').addEventListener('click', () => setDeskMode('prep'));
+$('mode-midi').addEventListener('click', () => setDeskMode('midi'));
+{
+  const savedSize = localStorage.getItem('vj.outputSize');
+  const size = $('output-size');
+  if (size && savedSize && [...size.options].some((o) => o.value === savedSize)) size.value = savedSize;
+  size?.addEventListener('change', () => {
+    const [w, h] = size.value.split('x').map(Number);
+    if (w > 8 && h > 8) setMasterOutput({ w, h });
+    try { localStorage.setItem('vj.outputSize', size.value); } catch { /* ignore */ }
+  });
+}
+{
+  const workspace = localStorage.getItem('vj.workspace')
+    || (localStorage.getItem('vj.view') === 'apc' ? 'midi' : 'live');
+  if (workspace === 'prep' || workspace === 'midi') setDeskMode(workspace);
+}
+bindMediaPrep({ library, ensureStockDir, showToast });
 
 function bindHoverTips() {
   const tip = document.createElement('div');

@@ -12,7 +12,9 @@ export function beginDrag(event, item) {
     data: item,
   };
   const packed = JSON.stringify(payload);
-  event.dataTransfer.setData(DRAG_MIME, packed);
+  // WKWebView keeps a drag only when a standard string type is set, and it
+  // keeps the last write. text/plain is set after the custom type on purpose.
+  try { event.dataTransfer.setData(DRAG_MIME, packed); } catch { /* custom type is optional */ }
   event.dataTransfer.setData('text/plain', packed);
   event.dataTransfer.effectAllowed = 'copy';
   window.__vjDragPayload = payload;
@@ -33,6 +35,12 @@ export function endDrag() {
   }
 }
 
+// WKWebView fires dragend before drop. Clearing on dragend would wipe the
+// payload before the timeline can read it, so the clear waits one turn.
+export function endDragSoon() {
+  setTimeout(endDrag, 0);
+}
+
 function parsePayload(raw) {
   if (!raw) return null;
   try {
@@ -45,9 +53,9 @@ function parsePayload(raw) {
 export function readDrag(event) {
   let raw = '';
   let plain = '';
-  try { raw = event.dataTransfer?.getData(DRAG_MIME) || ''; } catch { raw = ''; }
   try { plain = event.dataTransfer?.getData('text/plain') || ''; } catch { plain = ''; }
-  return parsePayload(raw) || parsePayload(plain) || (
+  try { raw = event.dataTransfer?.getData(DRAG_MIME) || ''; } catch { raw = ''; }
+  return parsePayload(plain) || parsePayload(raw) || (
     window.__vjDragPayload?.type === 'SCENE_OR_CLIP' ? window.__vjDragPayload : null
   );
 }

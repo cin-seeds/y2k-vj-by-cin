@@ -39,12 +39,24 @@ export function normalizeMarker(cue) {
   return { id, sceneId: cue.sceneId, beat, bar };
 }
 
+/** Keep only the sections that are actually locked. Missing or empty means unlocked. */
+export function normalizeLocks(locks) {
+  const out = {};
+  if (!locks || typeof locks !== 'object' || Array.isArray(locks)) return out;
+  for (const [key, value] of Object.entries(locks)) {
+    if (typeof key === 'string' && key && value === true) out[key] = true;
+  }
+  return out;
+}
+
 export class ProjectState {
   constructor() {
     this.mediaPool = [];
     this.scenes = [];
     this.timeline = [];
     this.transport = emptyTransport();
+    this.locks = {};
+    this.recordOutput = { code: null, screen: null };
     this.#load();
   }
 
@@ -58,7 +70,22 @@ export class ProjectState {
       scenes: this.scenes,
       timeline: this.timeline,
       transport: this.transport,
+      locks: { ...this.locks },
+      recordOutput: {
+        code: this.recordOutput.code,
+        screen: this.recordOutput.screen,
+      },
     };
+  }
+
+  setLocks(locks) {
+    this.locks = normalizeLocks(locks);
+    this.#write();
+  }
+
+  setRecordOutput(next) {
+    this.recordOutput = normalizeRecordOutput(next);
+    this.#write();
   }
 
   setMediaPool(pool) {
@@ -66,9 +93,15 @@ export class ProjectState {
     this.#write();
   }
 
+  /** Returns false when localStorage refused the write. */
   adoptScenes(scenes) {
     this.scenes = Array.isArray(scenes) ? scenes : [];
-    this.#write();
+    return this.#write();
+  }
+
+  /** Write the current document to localStorage now. Returns false if storage refused it. */
+  save() {
+    return this.#write();
   }
 
   adoptTimeline(markers, transport = {}) {
@@ -84,6 +117,8 @@ export class ProjectState {
     this.scenes = doc.scenes;
     this.timeline = doc.timeline;
     this.transport = doc.transport;
+    this.locks = doc.locks;
+    this.recordOutput = doc.recordOutput;
     this.#write();
     return doc;
   }
@@ -92,14 +127,18 @@ export class ProjectState {
     this.scenes = [];
     this.timeline = [];
     this.transport = emptyTransport();
+    this.locks = {};
+    this.recordOutput = { code: null, screen: null };
     this.#write();
   }
 
   #write() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.toJSON()));
+      return true;
     } catch {
       /* storage full: the session still runs */
+      return false;
     }
   }
 
@@ -112,6 +151,8 @@ export class ProjectState {
         this.scenes = doc.scenes;
         this.timeline = doc.timeline;
         this.transport = doc.transport;
+        this.locks = doc.locks;
+        this.recordOutput = doc.recordOutput;
         return;
       }
     } catch { /* fall through to the older keys */ }
@@ -128,8 +169,18 @@ export class ProjectState {
     this.scenes = doc.scenes;
     this.timeline = doc.timeline;
     this.transport = doc.transport;
+    this.locks = doc.locks;
+    this.recordOutput = doc.recordOutput;
     this.#write();
   }
+}
+
+function normalizeRecordOutput(raw) {
+  const out = { code: null, screen: null };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  if (typeof raw.code === 'boolean') out.code = raw.code;
+  if (typeof raw.screen === 'boolean') out.screen = raw.screen;
+  return out;
 }
 
 /** Accept a vjproj or an older setlist (timeline object with a cues array). */
@@ -155,6 +206,8 @@ export function coerceDocument(data = {}) {
     scenes: Array.isArray(data.scenes) ? data.scenes : [],
     timeline: markers.map(normalizeMarker).filter(Boolean),
     transport,
+    locks: normalizeLocks(data.locks),
+    recordOutput: normalizeRecordOutput(data.recordOutput),
     legacy: data,
   };
 }

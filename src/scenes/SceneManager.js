@@ -19,8 +19,9 @@ export class SceneManager {
    * getMedia(): { A: {key, mirror}, ... }    current per-layer media
    * applyMedia(layerId, {key, mirror})       switch a layer's media
    */
-  constructor({ params, getMedia, applyMedia, getRouting, applyRouting, project }) {
+  constructor({ params, getMedia, applyMedia, getRouting, applyRouting, project, onSaveError }) {
     this.params = params;
+    this.onSaveError = onSaveError || null;
     this.getMedia = getMedia;
     this.applyMedia = applyMedia;
     this.getRouting = getRouting || (() => ({}));
@@ -91,6 +92,14 @@ export class SceneManager {
     return this.scenes.find((s) => s.id === id);
   }
 
+  /** Still of the program output, taken after a launch. Omitted on older scenes. */
+  setThumb(id, url) {
+    const scene = this.get(id);
+    if (!scene || typeof url !== 'string') return;
+    scene.thumb = url;
+    this.#changed();
+  }
+
   replaceAll(scenes) {
     this.scenes = scenes.map((s, i) => ({
       id: s.id || uid(),
@@ -100,6 +109,7 @@ export class SceneManager {
       params: s.params || {},
       media: s.media || {},
       routing: s.routing && typeof s.routing === 'object' ? s.routing : undefined,
+      thumb: typeof s.thumb === 'string' ? s.thumb : undefined,
     }));
     this.activeId = null;
     this.transition = null;
@@ -193,13 +203,16 @@ export class SceneManager {
 
   #persist() {
     if (this.project) {
-      this.project.adoptScenes(this.scenes);
+      if (this.project.adoptScenes(this.scenes) === false) {
+        this.onSaveError?.('Scenes could not be saved - storage is full');
+      }
       return;
     }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.scenes));
     } catch (err) {
       console.warn('Could not save scenes', err);
+      this.onSaveError?.('Scenes could not be saved - storage is full');
     }
   }
 

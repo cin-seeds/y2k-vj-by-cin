@@ -166,6 +166,11 @@ export class Panel {
       const letter = document.createElement('span');
       letter.className = 'strip-letter';
       letter.textContent = L;
+      const thumb = document.createElement('img');
+      thumb.className = 'strip-thumb';
+      thumb.alt = '';
+      thumb.hidden = true;
+      thumb.draggable = false;
       const info = document.createElement('span');
       info.className = 'strip-info';
       const solo = document.createElement('button');
@@ -221,7 +226,7 @@ export class Panel {
         this.onSyncToggle?.(L);
       });
       flags.append(mute, solo, invert, sync);
-      head.append(letter, tab, info, flags);
+      head.append(letter, thumb, info, tab, flags);
 
       const comp = document.createElement('div');
       comp.className = 'strip-comp';
@@ -322,7 +327,7 @@ export class Panel {
       strip.append(head, comp, mod);
       this.mixerEl.append(strip);
       this.strips.set(L, {
-        strip, tab, info, solo, mute, invert, sync, blend, mix, mixOut, mixDrag, engine,
+        strip, tab, thumb, info, solo, mute, invert, sync, blend, mix, mixOut, mixDrag, engine,
         source, lfoBtn, audioBtn, depth, depthOut, depthDrag, gate, gateOut, gateDrag,
       });
     }
@@ -330,9 +335,15 @@ export class Panel {
     for (const d of this.params.defs.values()) {
       if (d.group === 'head') continue;
       if (d.layer && d.group === 'mix') continue;
-      const row = this.#makeRow(d);
+      if (!d.layer && d.id === 'audioGain') continue;
+      const bare = !d.layer && (d.id === 'master' || d.id === 'crtBarrel');
+      const row = this.#makeRow(d, bare ? { bare: true, label: d.id === 'crtBarrel' ? 'Barrel' : undefined } : {});
       const bucket = d.category || d.group;
-      if (d.layer && d.key === 'mode') {
+      if (!d.layer && d.id === 'master') {
+        document.getElementById('brightness-slot')?.append(row.row);
+      } else if (!d.layer && d.id === 'crtBarrel') {
+        document.getElementById('project-barrel')?.append(row.row);
+      } else if (d.layer && d.key === 'mode') {
         const slot = document.createElement('div');
         slot.className = 'shader-slot';
         slot.dataset.midi = d.id;
@@ -377,17 +388,17 @@ export class Panel {
     return host;
   }
 
-  #makeRow(d) {
+  #makeRow(d, { bare = false, label: labelText } = {}) {
     const wrap = document.createElement('div');
     wrap.className = 'param-wrap';
     wrap.dataset.midi = d.id;
 
     const row = document.createElement('div');
     row.className = 'param';
-    if (isAutomatable(d)) row.classList.add('has-auto');
+    if (isAutomatable(d) && !bare) row.classList.add('has-auto');
 
     const label = document.createElement('label');
-    label.textContent = d.friendlyLabel || d.label;
+    label.textContent = labelText || d.friendlyLabel || d.label;
     label.title = 'Double-click to snap back to the zero-effect value';
     label.addEventListener('dblclick', (e) => {
       e.preventDefault();
@@ -449,7 +460,7 @@ export class Panel {
     let amt = null;
     let amtOut = null;
     let bounds = null;
-    if (isAutomatable(d)) {
+    if (isAutomatable(d) && !bare) {
       auto = document.createElement('button');
       auto.type = 'button';
       auto.className = 'auto';
@@ -516,7 +527,7 @@ export class Panel {
       wrap.append(row);
     }
 
-    if (isAutomatable(d) && d.key !== 'audioGain' && d.id !== 'audioGain') {
+    if (!bare && isAutomatable(d) && d.key !== 'audioGain' && d.id !== 'audioGain') {
       wrap.append(createModRow(this.mods, d.id));
     }
 
@@ -558,7 +569,7 @@ export class Panel {
       this.shuffleGroup(layer, group);
     });
     head.addEventListener('click', (e) => {
-      if (e.target.closest('.cat-mute, .shuffle')) return;
+      if (e.target.closest('.cat-mute, .shuffle, .section-lock')) return;
       this.#setFold(el, !el.classList.contains('collapsed'));
     });
     head.append(title, mute, shuffle);
@@ -579,7 +590,7 @@ export class Panel {
     return block;
   }
 
-  /** Layer column only. The Master bus keeps CATEGORY_ORDER. */
+  /** Layer column order. The composition bus ranks Color, Distortion, then Motion. */
   #layerRank(group) {
     if (group === 'Source & Playback') return 0;
     if (group === 'Audio Reactivity') return 2;
@@ -590,10 +601,17 @@ export class Panel {
   }
 
   #orderHost(host) {
+    const masterRank = {
+      'Color & Texture': 0,
+      'Distortion & Glitch': 1,
+      'Motion & Timing': 2,
+    };
     const rank = (el) => {
       if (host === this.layerEl) return this.#layerRank(el.dataset.group);
+      const named = masterRank[el.dataset.group];
+      if (named != null) return named;
       const i = CATEGORY_ORDER.indexOf(el.dataset.group);
-      return i < 0 ? 99 : i;
+      return i < 0 ? 99 : i + 10;
     };
     const kids = [...host.children].filter((el) => el.classList?.contains('fx-block'));
     kids.sort((a, b) => rank(a) - rank(b));
@@ -633,6 +651,7 @@ export class Panel {
   /** Live override: continuous params in a muted category render at their neutral value. */
   isBypassed(def) {
     if (!def || def.options) return false;
+    if (!def.layer && (def.id === 'master' || def.id === 'crtBarrel' || def.id === 'audioGain')) return false;
     const scope = def.layer || 'master';
     return this.muted.has(`${scope}:${def.category}`);
   }
@@ -649,7 +668,12 @@ export class Panel {
   }
 
   /** Pick a new value inside each slider's min/max. Dropdowns stay put. */
+  isSectionLocked() {
+    return false;
+  }
+
   shuffleGroup(layer, group) {
+    if (this.isSectionLocked(layer, group)) return;
     for (const def of this.params.defs.values()) {
       const mine = layer === 'master' ? !def.layer : def.layer === layer;
       if (!mine || def.category !== group || def.options) continue;
@@ -674,6 +698,7 @@ export class Panel {
     }
     const groups = new Set(visible.map((def) => def.category || def.group));
     for (const group of groups) {
+      if (this.isSectionLocked(layer, group)) continue;
       const inGroup = [...this.params.defs.values()].filter((def) => {
         if (def.layer !== layer || def.options || skipKeys.has(def.key)) return false;
         return (def.category || def.group) === group;
@@ -915,9 +940,21 @@ export class Panel {
     for (const L of LAYERS) this.#syncStrip(L);
   }
 
-  setStripMedia(L, text) {
+  setStripMedia(L, text, thumb = '') {
     const s = this.strips.get(L);
     s.mediaText = text;
+    const src = typeof thumb === 'string' ? thumb : '';
+    if (src) {
+      if (s.thumb.dataset.src !== src) {
+        s.thumb.dataset.src = src;
+        s.thumb.src = src;
+      }
+      s.thumb.hidden = false;
+    } else {
+      s.thumb.hidden = true;
+      s.thumb.removeAttribute('src');
+      delete s.thumb.dataset.src;
+    }
     this.#syncStrip(L);
   }
 
@@ -933,7 +970,9 @@ export class Panel {
   focusParam(id, level = 'warn') {
     if (id === 'hud.size') {
       const el = document.getElementById('hud-size');
-      document.getElementById('live-tools')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      const fold = document.getElementById('code-overlay');
+      if (fold) fold.open = true;
+      fold?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
       flashControl(el, level);
       return;
@@ -955,6 +994,15 @@ export class Panel {
     if (def.layer && def.group === 'mix') {
       const card = this.strips.get(def.layer);
       const el = def.key === 'opacity' ? card?.mix : def.key === 'blend' ? card?.blend : card?.invert;
+      el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (el) flashControl(el, level);
+      return;
+    }
+    if (id === 'audioGain') {
+      const fold = document.getElementById('acc-audio');
+      if (fold) fold.open = true;
+      const el = document.getElementById('audio-master');
+      fold?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
       if (el) flashControl(el, level);
       return;

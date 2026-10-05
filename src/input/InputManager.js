@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import vertexShader from '../shaders/fullscreen.vert?raw';
 import mixFrag from '../shaders/mix.frag?raw';
 import { FrameRing } from './FrameRing.js';
+import { pullPicture, unwatchPicture, watchPicture } from './PictureRecv.js';
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|webm|ogv)$/i;
 
@@ -10,6 +11,12 @@ blackPixel.magFilter = blackPixel.minFilter = THREE.LinearFilter;
 blackPixel.generateMipmaps = false;
 blackPixel.wrapS = blackPixel.wrapT = THREE.ClampToEdgeWrapping;
 blackPixel.needsUpdate = true;
+
+let cachedPictureColor;
+function pictureColorSpace() {
+  if (!cachedPictureColor) cachedPictureColor = new THREE.Texture().colorSpace;
+  return cachedPictureColor;
+}
 
 function webStreamUrl(url) {
   return typeof url === 'string'
@@ -93,6 +100,13 @@ export class InputManager {
     this.rejected = [];
     this.direction = 1;
     this.userPaused = false;
+    this.pictureKey = '';
+    this.pictureSeen = 0;
+    this.pictureBusy = false;
+    this.pictureLast = 0;
+    this.pictureToken = 0;
+    this.pictureNote = '';
+    this.pictureError = false;
     this.loopXfadeOn = false;
     this.loopXfadeDur = 0.4;
     this.loopMix = 0;
@@ -148,6 +162,25 @@ export class InputManager {
     video.srcObject = this.stream;
     await video.play();
     this.#setLive(video, 'camera');
+  }
+
+  /** ndi:<name> or spout:<name>. Frames land in the same texture a camera uses. */
+  async usePicture(key) {
+    this.dispose();
+    this.kind = 'picture';
+    this.pictureKey = key;
+    this.texture = blackPixel;
+    this.displayTexture = blackPixel;
+    this.width = 1;
+    this.height = 1;
+    this.pictureNote = 'waiting for picture...';
+    this.pictureError = false;
+    const report = await watchPicture(key);
+    if (this.pictureKey !== key) return;
+    if (!report.ok) {
+      this.pictureNote = report.reason || 'The picture source did not open.';
+      this.pictureError = true;
+    }
   }
 
   async useFile(file) {
@@ -284,7 +317,7 @@ export class InputManager {
   }
 
   play() {
-    if (this.kind !== 'video') return;
+    if (this.kind !== 'video' || !this.video) return;
     this.userPaused = false;
     if (this.direction < 0) return;
     this.video.play().catch(() => {});
@@ -293,8 +326,67 @@ export class InputManager {
   pause() {
     if (this.kind !== 'video') return;
     this.userPaused = true;
-    this.video.pause();
-    this.alt?.pause();
+    this.#safePause(this.video);
+    this.#safePause(this.alt);
+  }
+
+  /** Transport stop: hold the clip and park both elements at the first frame. */
+  stopToStart() {
+    if (this.kind !== 'video' || !this.video) return;
+    this.userPaused = true;
+    this.scrubHold = false;
+    this.direction = 1;
+    this.loopMix = 0;
+    this.revTarget = null;
+    this.ring.clear();
+    this.lastCapTime = -1;
+    this.#safePause(this.video);
+    this.#safePause(this.alt);
+    this.#safeSeek(this.video, 0);
+    this.#safeSeek(this.alt, 0);
+    if (this.texture?.isStableVideo) this.texture.userData.stamp = -1;
+  }
+
+  /**
+   * Park the clip at a show time in seconds, wrapping a looping clip inside its duration.
+   * Play then starts from that frame.
+   */
+  alignTo(seconds) {
+    if (this.kind !== 'video' || !this.video) return;
+    const d = this.duration;
+    let t = Math.max(0, Number(seconds) || 0);
+    if (d > 0) {
+      t = this.playMode === 'once' ? Math.min(t, Math.max(0, d - 0.001)) : t % d;
+    } else {
+      t = 0;
+    }
+    this.direction = 1;
+    this.loopMix = 0;
+    this.revTarget = null;
+    this.ring.clear();
+    this.lastCapTime = -1;
+    this.#safePause(this.alt);
+    this.#safeSeek(this.video, t);
+    this.#safeSeek(this.alt, t);
+    if (this.texture?.isStableVideo) this.texture.userData.stamp = -1;
+    if (this.altTex?.isStableVideo) this.altTex.userData.stamp = -1;
+  }
+
+  #safePause(video) {
+    if (!video) return;
+    try {
+      const pending = video.pause();
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    } catch { /* the element has no frames yet */ }
+  }
+
+  #safeSeek(video, time) {
+    if (!video || !Number.isFinite(time)) return;
+    if ((video.readyState || 0) < 1) return;
+    try {
+      if (Math.abs((video.currentTime || 0) - time) < 0.001) return;
+      video.currentTime = time;
+    } catch { /* not seekable yet */ }
   }
 
   restart() {
@@ -324,6 +416,10 @@ export class InputManager {
    * so bounce can write the ring and the loop mix can blit.
    */
   update(dt, renderer) {
+    if (this.kind === 'picture') {
+      this.#pullPicture(renderer);
+      return;
+    }
     if ((this.kind !== 'video' && this.kind !== 'camera') || !this.video) return;
     this.#syncTexture(this.texture, this.video);
     this.#syncTexture(this.altTex, this.alt);
@@ -360,6 +456,15 @@ export class InputManager {
   }
 
   dispose() {
+    const watched = this.pictureKey;
+    this.pictureToken += 1;
+    this.pictureKey = '';
+    this.pictureBusy = false;
+    this.pictureSeen = 0;
+    this.pictureLast = 0;
+    this.pictureNote = '';
+    this.pictureError = false;
+    if (watched) unwatchPicture(watched);
     if (this.texture && this.texture !== this.slot && this.texture !== blackPixel) this.texture.dispose();
     if (this.altTex && this.altTex !== blackPixel) this.altTex.dispose();
     this.mixRt?.dispose();
@@ -504,7 +609,10 @@ export class InputManager {
   #killVideo(v) {
     if (!v) return;
     v.onerror = null;
-    v.pause();
+    try {
+      const pending = v.pause();
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    } catch { /* already detached */ }
     v.srcObject = null;
     v.src = '';
     v.removeAttribute('src');
@@ -553,7 +661,7 @@ export class InputManager {
 
   #enforceLoop() {
     const v = this.video;
-    if (!v || this.kind !== 'video' || this.direction < 0) return;
+    if (!v || this.userPaused || this.kind !== 'video' || this.direction < 0) return;
     const { inn, out } = this.#bounds();
     if (!(out > inn)) return;
     const t = v.currentTime;
@@ -758,6 +866,84 @@ export class InputManager {
       return;
     }
     if (this.mixRt.width !== w || this.mixRt.height !== h) this.mixRt.setSize(w, h);
+  }
+
+  #pullPicture(renderer) {
+    const key = this.pictureKey;
+    if (!key || this.pictureBusy) return;
+    const now = performance.now();
+    if (now - this.pictureLast < 1000 / 60) return;
+    this.pictureLast = now;
+    this.pictureBusy = true;
+    const token = this.pictureToken;
+    const seen = this.pictureSeen;
+    pullPicture(key, seen).then((frame) => {
+      if (token !== this.pictureToken || this.pictureKey !== key || this.kind !== 'picture') return;
+      this.pictureSeen = frame.seen;
+      const name = key.slice(key.indexOf(':') + 1);
+      if (frame.fault) {
+        this.pictureNote = frame.fault;
+        this.pictureError = true;
+        return;
+      }
+      if (frame.gone) {
+        this.pictureError = false;
+        if (this.width > 2) this.pictureNote = `gone: ${name}`;
+        return;
+      }
+      if (frame.same || !frame.pixels) return;
+      this.pictureError = false;
+      this.#presentPicture(renderer, frame.pixels, frame.width, frame.height);
+      this.pictureNote = `picture ${frame.width}x${frame.height}`;
+    }).catch((err) => {
+      if (token !== this.pictureToken || this.kind !== 'picture') return;
+      this.pictureNote = String(err?.message || err || 'The picture source did not open.');
+      this.pictureError = true;
+    }).finally(() => {
+      if (token === this.pictureToken) this.pictureBusy = false;
+    });
+  }
+
+  #presentPicture(renderer, pixels, w, h) {
+    let tex = this.texture;
+    const same = tex?.isDataTexture && tex.image?.width === w && tex.image?.height === h;
+    if (!same || !renderer) {
+      if (tex && tex !== blackPixel && tex !== this.slot) tex.dispose();
+      const data = new Uint8Array(pixels.length);
+      data.set(pixels);
+      tex = new THREE.DataTexture(data, w, h);
+      tex.flipY = true;
+      tex.colorSpace = pictureColorSpace();
+      tex.generateMipmaps = false;
+      this.#configure(tex);
+      tex.needsUpdate = true;
+      this.texture = tex;
+      this.displayTexture = tex;
+      this.width = w;
+      this.height = h;
+      return;
+    }
+    const glTex = renderer.properties?.get(tex)?.__webglTexture;
+    if (!glTex) {
+      if (tex.image?.data?.set) tex.image.data.set(pixels);
+      tex.needsUpdate = true;
+      this.displayTexture = tex;
+      return;
+    }
+    const gl = renderer.getContext();
+    const prev = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    const flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+    const align = gl.getParameter(gl.UNPACK_ALIGNMENT);
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, align);
+    gl.bindTexture(gl.TEXTURE_2D, prev);
+    this.displayTexture = tex;
+    this.width = w;
+    this.height = h;
   }
 
   #present(renderer) {

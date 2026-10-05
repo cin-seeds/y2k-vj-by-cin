@@ -17,12 +17,20 @@
         "height": 800,
         "resizable": true,
         "fullscreen": false,
+        "dragDropEnabled": false,
         "backgroundThrottling": "disabled",
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": ["$VIDEO/**", "$DOWNLOAD/**", "$HOME/**", "$DOCUMENT/**", "$TEMP/**"],
+          "requireLiteralLeadingDot": false
+        }
+      }
     }
   },
   "bundle": {
@@ -35,6 +43,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "externalBin": ["bin/ffmpeg"],
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

@@ -62,7 +62,7 @@ export function paintHudText(ctx, frameW, frameH, overlay, type) {
   const pad = Math.max(4, fontSize * 0.45);
   const maxLines = Math.max(1, Math.floor((bh - pad) / lineH));
   const lines = (overlay.lines || []).slice(0, maxLines);
-  const bg = Math.min(0.9, Math.max(0, Number(chrome.bg) || 0));
+  const bg = chrome.automask ? 0 : Math.min(0.9, Math.max(0, Number(chrome.bg) || 0));
   const mix = Math.min(1, Math.max(0, Number(chrome.mix) ?? 0.92));
   ctx.save();
   ctx.globalAlpha = mix;
@@ -94,7 +94,7 @@ export function hudStyleVars(style, scale = 1, pixelLeading = false) {
     '--hud-font': style.font || HUD_FONT,
     '--hud-size': `${fontPx}px`,
     '--hud-mix': String(style.mix),
-    '--hud-bg': String(style.bg),
+    '--hud-bg': style.automask ? '0' : String(style.bg),
     '--hud-fg': fg,
     '--hud-glow': glow,
     '--hud-leading': pixelLeading ? `${(fontPx * leading).toFixed(2)}px` : String(leading),
@@ -147,7 +147,7 @@ export class Hud {
     this.valueNodes = [];
     this.glyph = 'ascii';
     this.chrome = {
-      glyph: 'ascii', color: 'green', size: 16, mix: 0.92, bg: 0.72, leading: 1.45, font: HUD_FONT,
+      glyph: 'ascii', color: 'green', size: 16, mix: 0.92, bg: 0.72, automask: false, leading: 1.45, font: HUD_FONT,
       box: { ...HUD_BOX_DEFAULT },
     };
     this.plain = '';
@@ -345,7 +345,7 @@ export class Hud {
 
     const a = state.audio;
     const lines = [
-      `<b>LIVE VJ // ${escapeHtml(state.title)}</b>   ${state.fps.toFixed(0)} fps   ${state.resolution}`,
+      `<b>Y2K VJ // ${escapeHtml(state.title)}</b>   ${state.fps.toFixed(0)} fps   ${state.resolution}`,
       state.recording ? `<span class="rec">\u25CF REC ${state.recording}</span>` : '',
       `TIMELINE ${escapeHtml(state.timeline || '')}`,
       '',

@@ -384,7 +384,7 @@ export class Layer {
   }
 
   /**
-   * key: 'none' | 'cam:<deviceId>' | 'file:<name>'. Calls are queued so a fast sequence of
+   * key: 'none' | 'cam:<deviceId>' | 'file:<name>' | 'ndi:<name>' | 'spout:<name>'. Calls are queued so a fast sequence of
    * scene changes never leaves an orphaned camera stream or video element behind.
    */
   setMedia(key, { library, cameraLabel, mirror, fitMode } = {}) {
@@ -452,6 +452,10 @@ export class Layer {
   /** Capture bounce frames / loop mix, then rebind the texture the shaders actually see. */
   tickMedia(dt, renderer, fitMode) {
     this.input.update(dt, renderer);
+    if (this.input.kind === 'picture' && this.input.pictureNote && this.input.pictureNote !== this.mediaStatus) {
+      this.mediaStatus = this.input.pictureNote;
+      this.mediaError = !!this.input.pictureError;
+    }
     this.#tickEntry(dt);
     this.#bindTexture(fitMode);
   }
@@ -517,6 +521,20 @@ export class Layer {
         this.mediaStatus = `camera ${incoming.width}x${incoming.height}`;
         swapIn();
         this.setMirror(mirror ?? true);
+        this.entryT = 1;
+        this.entrying = false;
+        this.#writeEntry();
+        return;
+      }
+      if (key.startsWith('ndi:') || key.startsWith('spout:')) {
+        const name = key.slice(key.indexOf(':') + 1);
+        this.mediaLabel = name;
+        this.mediaStatus = 'waiting for picture...';
+        await incoming.usePicture(key);
+        if (incoming.pictureNote) this.mediaStatus = incoming.pictureNote;
+        this.mediaError = !!incoming.pictureError;
+        swapIn();
+        this.setMirror(mirror ?? false);
         this.entryT = 1;
         this.entrying = false;
         this.#writeEntry();

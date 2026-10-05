@@ -3,7 +3,7 @@
 //           drag onto the timeline to create a cue
 //   track:  click = seek, drag a cue to move it, double-click / right-click a cue to delete
 
-import { beginDrag, endDrag, isOurDrag, readDrag } from './dragPayload.js';
+import { beginDrag, endDrag, endDragSoon, isOurDrag, readDrag } from './dragPayload.js';
 
 const BANK_SIZE = 8;
 const BANK_KEY = 'vj.sceneBank';
@@ -188,16 +188,20 @@ export class SceneBar {
         this.#openMenu(s.id, e.clientX, e.clientY);
       });
       pad.addEventListener('dragstart', (e) => {
-        const item = { id: s.id, name: s.name, source: 'scene', color: s.color };
-        beginDrag(e, item);
+        const itemData = { id: s.id, name: s.name, source: 'scene', color: s.color };
+        beginDrag(e, itemData);
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('text/plain', s.id);
-        e.dataTransfer.setData('application/json', JSON.stringify({ sceneId: s.id }));
+        e.dataTransfer.setData('text/plain', JSON.stringify({
+          type: 'SCENE_OR_CLIP',
+          id: itemData.id,
+          name: itemData.name,
+          data: itemData,
+        }));
         document.body.classList.add('dragging-scene');
       });
       pad.addEventListener('dragend', () => {
         document.body.classList.remove('dragging-scene');
-        endDrag();
+        endDragSoon();
       });
       this.padsEl.append(pad);
       this.padEls.set(s.id, pad);
@@ -364,27 +368,39 @@ export class SceneBar {
       e.stopPropagation();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     };
+    // Capture so WebView2 sees preventDefault before a child can stop the event.
+    // OS file drops stay on these DOM events. Tauri's tauri://drag-drop listener
+    // only runs while dragDropEnabled is true, and that flag replaces WebView2's
+    // handler (the Windows block cursor). It is left off; Finder/desktop files
+    // arrive here as dataTransfer.files.
     track.addEventListener('dragenter', (e) => {
       allowDrop(e);
       if (!isOurDrag(e) && !fileDrag(e)) return;
       depth += 1;
       track.classList.add('drop-hot');
-    });
+    }, true);
     track.addEventListener('dragover', (e) => {
       allowDrop(e);
       if (!isOurDrag(e) && !fileDrag(e)) return;
       track.classList.add('drop-hot');
       this.#showDrop(this.#beatAt(e.clientX));
-    });
+    }, true);
     track.addEventListener('dragleave', (e) => {
-      allowDrop(e);
+      e.preventDefault();
+      e.stopPropagation();
       if (!isOurDrag(e) && !fileDrag(e) && !track.classList.contains('drop-hot')) return;
       depth = Math.max(0, depth - 1);
       if (depth === 0 && !track.contains(e.relatedTarget)) clearHot();
     });
     track.addEventListener('drop', (e) => {
-      allowDrop(e);
-      this.#onDrop(e, 'timeline');
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      try {
+        this.#onDrop(e, 'timeline');
+      } catch (err) {
+        console.error('Timeline drop failed', err);
+      }
     });
     document.addEventListener('dragend', clearHot);
 
@@ -438,35 +454,43 @@ export class SceneBar {
     document.body.classList.remove('dragging-scene');
     const beat = this.#beatAt(event.clientX);
     const dropped = [...(event.dataTransfer?.files || [])];
-    const payload = readDrag(event);
-    let sceneId = '';
+    let plain = '';
     try {
-      sceneId = event.dataTransfer.getData('text/plain') || JSON.parse(event.dataTransfer.getData('application/json') || '{}').sceneId;
-    } catch { sceneId = ''; }
-    endDrag();
-    if (dropped.length && this.onDropFiles) {
-      const names = this.onDropFiles(dropped) || [];
-      const layerId = trackId === 'B' || trackId === 'C' || trackId === 'A' ? trackId : this.clipLayer();
-      names.forEach((name, index) => {
-        this.timeline.addClip(beat + index, {
-          mediaId: name,
-          mediaName: name,
+      plain = event.dataTransfer?.getData('text/plain') || '';
+    } catch (err) {
+      console.error('Timeline drop payload', err);
+    }
+    const payload = readDrag(event);
+    try {
+      if (dropped.length && this.onDropFiles) {
+        const names = this.onDropFiles(dropped) || [];
+        const layerId = trackId === 'B' || trackId === 'C' || trackId === 'A' ? trackId : this.clipLayer();
+        names.forEach((name, index) => {
+          this.timeline.addClip(beat + index, {
+            mediaId: name,
+            mediaName: name,
+            layerId,
+          });
+        });
+        return;
+      }
+      if (payload?.data?.source === 'clip') {
+        const layerId = trackId === 'B' || trackId === 'C' || trackId === 'A' ? trackId : this.clipLayer();
+        this.timeline.addClip(beat, {
+          mediaId: payload.id,
+          mediaName: payload.name,
           layerId,
         });
-      });
-      return;
+        return;
+      }
+      let sceneId = payload?.data?.source === 'scene' ? payload.id : '';
+      if (!sceneId && plain && !plain.startsWith('{') && !plain.startsWith('[')) sceneId = plain;
+      if (sceneId) this.timeline.addCue(beat, sceneId);
+    } catch (err) {
+      console.error('Timeline drop failed', err);
+    } finally {
+      endDrag();
     }
-    if (payload?.data?.source === 'clip') {
-      const layerId = trackId === 'B' || trackId === 'C' || trackId === 'A' ? trackId : this.clipLayer();
-      this.timeline.addClip(beat, {
-        mediaId: payload.id,
-        mediaName: payload.name,
-        layerId,
-      });
-      return;
-    }
-    if (typeof sceneId === 'string' && sceneId.startsWith('{')) sceneId = '';
-    if (sceneId) this.timeline.addCue(beat, sceneId);
   }
 
   #showDrop(beat) {

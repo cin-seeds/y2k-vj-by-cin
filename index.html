@@ -3,71 +3,127 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LIVE VJ // TOOL</title>
+    <title>Y2K VJ by Cín</title>
   </head>
   <body>
     <div class="app" id="app">
       <header class="topbar">
-        <span class="logo">LIVE&nbsp;VJ<em>//</em>TOOL</span>
         <div class="file-launch">
-          <button id="file-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Save, load, or start a project">File</button>
+          <button id="file-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Project and view">File</button>
           <div id="file-menu" class="file-menu" hidden role="menu">
-            <button id="scenes-export" type="button" role="menuitem">Save Project</button>
-            <button id="scenes-save-new" type="button" role="menuitem">Save New</button>
-            <button id="scenes-import" type="button" role="menuitem">Load Project</button>
+            <p class="menu-label">Project</p>
             <button id="scenes-new" type="button" role="menuitem">New Project</button>
+            <button id="scenes-import" type="button" role="menuitem">Load Project</button>
+            <button id="scenes-export" type="button" role="menuitem">Save</button>
+            <button id="scenes-save-new" type="button" role="menuitem">Save New</button>
+            <button id="prefs-btn" type="button" role="menuitem" title="UI scale">Preferences</button>
             <input id="scenes-import-file" type="file" accept=".vjproj,.json,application/json" hidden />
+            <p class="menu-label">View</p>
+            <label class="menu-check"><input id="view-timeline" type="checkbox" checked /> Timeline</label>
+            <label class="menu-check"><input id="view-library" type="checkbox" checked /> Media Library</label>
+            <label class="menu-check"><input id="view-inspector" type="checkbox" checked /> Inspector</label>
+            <label class="menu-check"><input id="view-layer-a" type="checkbox" checked /> Layer A</label>
+            <label class="menu-check"><input id="view-layer-b" type="checkbox" checked /> Layer B</label>
+            <label class="menu-check"><input id="view-layer-c" type="checkbox" checked /> Layer C</label>
+            <label class="menu-check"><input id="view-composition" type="checkbox" checked /> Composition</label>
           </div>
         </div>
-        <span id="fps" class="fps">-- fps</span>
-        <div class="master-transport" role="group" aria-label="Master transport">
-          <button id="master-play" type="button" class="on" aria-pressed="true" title="Play. Synced video and audio resume, and the timeline starts.">&#x25B6;</button>
-          <button id="master-pause" type="button" aria-pressed="false" title="Pause. Synced video and audio freeze on this frame. The timeline holds.">&#x275A;&#x275A;</button>
-          <button id="master-stop" type="button" aria-pressed="false" title="Stop. Synced video freezes, synced audio returns to the start, and the output goes black.">&#x25A0;</button>
+        <div class="desk-mode" role="group" aria-label="Workspace">
+          <button id="mode-prep" type="button" aria-pressed="false">Media Manager</button>
+          <button id="mode-live" type="button" class="on" aria-pressed="true">Live VJ</button>
+          <button id="mode-midi" type="button" aria-pressed="false">Perform</button>
         </div>
-        <div class="view-switch">
-          <label for="view-mode">View</label>
-          <select id="view-mode" title="Studio keeps the full workspace. APC Mini is the live hardware surface. Both drive the same layers.">
-            <option value="studio">Studio / Full Control</option>
-            <option value="apc">APC Mini / Live Hardware View</option>
-          </select>
-        </div>
-        <div class="view-switch">
-          <label for="preview-format">Preview</label>
-          <select id="preview-format" title="Target frame. The picture keeps this shape when the panels around it resize.">
-            <option value="16:9">16:9 (Landscape)</option>
-            <option value="9:16">9:16 (Vertical/Social)</option>
-            <option value="1:1">1:1 (Square/Diamond LED)</option>
-          </select>
-        </div>
-        <div class="top-tools">
-          <button id="prefs-btn" type="button" title="UI scale">Preferences</button>
-          <button id="perform-btn" type="button" aria-pressed="false" title="Lock the desk for a live set. Hold the button to exit.">
-            <i class="perform-hold"></i>
-            <span>PERFORM</span>
-          </button>
-          <div class="out-launch">
-            <button id="output-win" type="button" class="primary" title="Choose a display and open a borderless master output">Master Output</button>
-            <div id="screen-menu" class="screen-menu" hidden role="menu"></div>
+        <span class="logo">Y2K&nbsp;VJ<em>//</em>BY&nbsp;CÍN</span>
+        <div class="top-status">
+          <span id="fps" class="fps">-- fps</span>
+          <div class="master-transport" role="group" aria-label="Master transport">
+            <button id="master-play" type="button" class="on" aria-pressed="true" title="Play. Synced video resumes from the timeline playhead, and the timeline starts.">&#x25B6;</button>
+            <button id="master-pause" type="button" aria-pressed="false" title="Pause. Synced video holds this frame. The timeline holds.">&#x275A;&#x275A;</button>
+            <button id="master-stop" type="button" aria-pressed="false" title="Stop. Synced video returns to the first frame, the timeline returns to the start, and the output goes black.">&#x25A0;</button>
           </div>
-          <button id="output-advanced" type="button" title="Corner pins and output mask for projection mapping">Advanced Output</button>
-          <button id="fs-btn" type="button">Fullscreen</button>
-          <select id="rec-aspect" title="Frame written into the recording. Native keeps the current render size.">
-            <option value="16:9">16:9</option>
-            <option value="9:16">9:16</option>
-            <option value="1:1">1:1</option>
-            <option value="native">Native</option>
-          </select>
-          <button id="rec-btn" type="button" class="rec">&#x25CF; REC</button>
-          <span id="rec-time" class="status"></span>
-          <button id="sys-toggle" type="button" class="on" title="Show or hide the library sidebar">Hide Library</button>
-          <button id="diag-toggle" type="button" title="Open the routing and performance helper">Diagnostics</button>
-          <button id="ui-mode" type="button" title="Timeline Mode edits cues. Live Performance Mode hides the track and enlarges scene pads.">Timeline Mode</button>
+          <div class="top-tools">
+            <select id="rec-aspect" title="Frame written into the recording. Native keeps the current render size.">
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+              <option value="1:1">1:1</option>
+              <option value="native">Native</option>
+            </select>
+            <button id="rec-btn" type="button" class="rec">&#x25CF; REC</button>
+            <span id="rec-time" class="status"></span>
+            <button id="diag-toggle" type="button" title="Open the routing and performance helper">Diagnostics</button>
+          </div>
         </div>
       </header>
+      <div id="screen-menu" class="screen-menu" hidden role="menu"></div>
+
+      <section id="media-prep" class="media-prep" hidden>
+        <header class="prep-head">
+          <h2>Media Manager</h2>
+          <p>Drop a video. It is fitted to 1920×1080, encoded for smooth WebGL playback, and saved into the media library folder.</p>
+        </header>
+        <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
+          <b>Drop a video here</b>
+          <span>or click to choose a file</span>
+        </div>
+        <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
+        <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
+      </section>
+
+      <section id="midi-desk" class="midi-desk" hidden>
+        <header class="midi-head">
+          <h2>Perform</h2>
+          <label class="menu-field" for="midi-map">Hardware
+            <select id="midi-map" title="Hardware mapping for this workspace">
+              <option value="apc-mini-mk2">APC Mini mk2</option>
+              <option value="apc40-mk2">APC40 mk2</option>
+              <option value="custom">Custom / Generic</option>
+            </select>
+          </label>
+          <span id="midi-status" class="status"></span>
+          <label class="menu-check" for="midi-labels">
+            <input id="midi-labels" type="checkbox" />
+            Show MIDI labels
+          </label>
+        </header>
+        <div class="row">
+          <button id="midi-enable" type="button">Enable MIDI</button>
+          <button id="midi-learn" type="button" title="Arm learn, click a slider or pad, then move a knob or hit a pad">MIDI Learn</button>
+          <button id="apc-preset" type="button" title="Channel 1 map for the APC Mini MK2. Pads, faders, and LEDs bind without MIDI Learn.">APC Mini MK2 Default</button>
+          <button id="midi-clear" type="button">Clear maps</button>
+        </div>
+        <p id="midi-map-note" class="hint" hidden></p>
+        <p class="hint">MIDI Learn highlights the next slider, menu, or pad you click. APC Mini mk2 binds Channel 1 without Learn. Hold Shift (note 122) for the second function on the track and scene buttons.</p>
+        <div class="midi-monitors">
+          <section class="midi-monitor" aria-label="Preview">
+            <header>
+              <h3>Preview</h3>
+              <button id="cue-mode-toggle" type="button" aria-pressed="false" title="Cue mode. A scene pad arms Preview. Press it again, or GO, to launch.">Cue</button>
+            </header>
+            <div class="midi-monitor-stage">
+              <canvas id="cue-preview" width="320" height="180"></canvas>
+              <img id="cue-preview-img" alt="" hidden />
+              <p id="cue-preview-wait" hidden>Not played yet</p>
+            </div>
+            <p id="cue-preview-name"></p>
+            <ul id="cue-preview-layers"></ul>
+          </section>
+          <section class="midi-monitor" aria-label="Program">
+            <header><h3>Program</h3></header>
+            <canvas id="program-monitor" width="320" height="180"></canvas>
+          </section>
+        </div>
+        <div id="apc-view" hidden></div>
+        <details id="acc-macros" class="fold" open>
+          <summary>Macro Knobs</summary>
+          <div id="macro-list" class="macro-list"></div>
+          <button id="macro-add" type="button">Add macro knob</button>
+          <p class="hint">One CC can move several sliders. Depth is how far it travels. Invert flips the direction.</p>
+        </details>
+      </section>
 
       <aside class="library" id="library">
-        <h2 class="col-title">Library</h2>
+        <h2 class="col-title">Project</h2>
+        <div id="project-barrel" class="project-barrel"></div>
         <details id="diag-panel" class="fold diag">
           <summary>Helper / Diagnostics <i id="diag-nominal" class="diag-nominal" hidden>All Systems Nominal</i><i id="diag-badge" class="diag-badge" hidden>0</i></summary>
           <p class="hint">Click a warning to select that layer, open its group, and flash the slider for two seconds.</p>
@@ -93,12 +149,15 @@
           <div id="online-source" class="online-source">
             <label for="online-prompt">Live Text-to-Visual</label>
             <select id="online-mode" title="Source">
-              <option value="pexels">Pexels</option>
+              <option value="all">All sources</option>
+              <option value="wikimedia">Wikimedia Commons</option>
+              <option value="archive">Internet Archive</option>
             </select>
             <div class="row">
               <input id="online-prompt" type="text" placeholder="clouds, neon sunset" autocomplete="off" spellcheck="false" />
               <button id="online-fetch" type="button">Fetch Video Loop</button>
             </div>
+            <div id="online-results" class="online-results" hidden></div>
             <p id="online-status" class="hint"></p>
           </div>
         </details>
@@ -120,6 +179,7 @@
               <input id="audio-file" type="file" accept=".mp3,.wav,.aiff,.aif,audio/mpeg,audio/wav,audio/wave,audio/aiff,audio/x-aiff,audio/*" />
             </div>
             <div id="audio-drop" class="audio-drop">Drop an .mp3, .wav, or .aiff</div>
+            <ul id="audio-recent" hidden></ul>
             <div class="transport">
               <button id="audio-play" type="button" disabled>Play</button>
               <input id="audio-scrub" type="range" min="0" max="1000" step="1" value="0" disabled />
@@ -138,6 +198,9 @@
           </div>
           <label class="check" title="Compressor and makeup gain in front of the FFT, so a quiet interface and a hot file land on the same scale.">
             <input id="audio-agc" type="checkbox" checked /> Auto-Gain
+          </label>
+          <label class="check" title="When on, header Pause and Stop leave the audio file, the live input, and beat analysis running.">
+            <input id="audio-override-stop" type="checkbox" /> Audio Override Stop
           </label>
           <p class="hint">One 4096-point FFT. Sub, low-mid, high-mid, and air are the RMS of those ranges, then shaped by attack and release. A beat is a jump above the last 60 frames, not a loud hold.</p>
           <div class="param audio-gain">
@@ -172,29 +235,42 @@
           </div>
         </details>
 
-        <details id="acc-midi" class="fold">
-          <summary>MIDI <span id="midi-status" class="status"></span></summary>
+        <details id="acc-master" class="fold">
+          <summary>Output</summary>
           <div class="row">
-            <button id="midi-enable" type="button">Enable MIDI</button>
-            <button id="midi-learn" type="button" title="Arm learn, click a slider or pad, then move a knob or hit a pad">MIDI Learn</button>
-            <button id="apc-preset" type="button" title="Channel 1 map for the APC Mini MK2. Pads, faders, and LEDs bind without MIDI Learn.">APC Mini MK2 Default</button>
-            <button id="midi-clear" type="button">Clear maps</button>
+            <label for="preview-format">Preview</label>
+            <select id="preview-format" title="Target frame. The picture keeps this shape when the panels around it resize.">
+              <option value="16:9">16:9 (Landscape)</option>
+              <option value="9:16">9:16 (Vertical/Social)</option>
+              <option value="1:1">1:1 (Square/Diamond LED)</option>
+            </select>
           </div>
-          <p class="hint">MIDI Learn highlights the next slider, menu, or pad you click. APC Mini MK2 Default binds Channel 1 without Learn: pads 0–63, scene buttons 112–113, faders CC 48–50 and master CC 56, track buttons 64–67. Pad LEDs follow the live page.</p>
-        </details>
-
-        <details id="acc-macros" class="fold">
-          <summary>Macro Knobs</summary>
-          <div id="macro-list" class="macro-list"></div>
-          <button id="macro-add" type="button">Add macro knob</button>
-          <p class="hint">One CC can move several sliders. Depth is how far it travels. Invert flips the direction.</p>
+          <div class="row out-size-row">
+            <label for="output-size">NDI / Syphon / SPOUT</label>
+            <select id="output-size" title="Output frame size for NDI, Syphon, and SPOUT">
+              <option value="1920x1080">1920×1080</option>
+              <option value="1280x720">1280×720</option>
+              <option value="1080x1920">1080×1920</option>
+              <option value="1152x1152">1152×1152</option>
+              <option value="3840x2160">3840×2160</option>
+            </select>
+            <button id="output-send" type="button" aria-pressed="false" title="Send the finished picture at the size above. Off until you turn it on.">Send</button>
+          </div>
+          <p id="output-send-status" class="hint" hidden></p>
+          <div class="row">
+            <button id="output-win" type="button" class="primary" title="Choose a display and open a borderless master output">Master Output</button>
+            <button id="output-advanced" type="button" title="Corner pins and output mask for projection mapping">Advanced Output</button>
+          </div>
+          <div class="row">
+            <button id="fs-btn" type="button">Fullscreen</button>
+          </div>
         </details>
 
         <details id="acc-output" class="fold">
-          <summary>Output</summary>
+          <summary>Recordings</summary>
           <div class="row">
             <label>Aspect</label>
-            <select id="aspect" title="Same target frame as Preview Format in the header.">
+            <select id="aspect" title="Same target frame as Preview in Output.">
               <option value="16:9">16:9 (Landscape)</option>
               <option value="9:16">9:16 (Vertical/Social)</option>
               <option value="1:1">1:1 (Square/Diamond LED)</option>
@@ -231,11 +307,137 @@
 
         <details id="code-overlay" class="fold">
           <summary>Code Overlay</summary>
-          <p class="hint">Preset, line height, mix, and output routing sit under HUD Settings on the Composition panel. Drag the box on the preview to place the overlay.</p>
+          <p class="hint">Drag the box on the preview to place it.</p>
+          <label class="hud-field">Motion
+            <select id="hud-motion" title="How the code overlay enters and leaves. Duration is both the entrance and the exit.">
+              <option value="cut" selected>Cut</option>
+              <option value="fade">Fade</option>
+              <option value="zoom">Zoom</option>
+              <option value="slide">Slide</option>
+            </select>
+          </label>
+          <label class="live-slider">Duration
+            <input id="hud-motion-sec" type="range" min="0.1" max="2" step="0.05" value="0.4" title="Seconds to show the overlay, and seconds to dismiss it." />
+            <output id="hud-motion-sec-out">0.40</output>
+          </label>
+          <select id="hud-color" title="Overlay text color">
+            <option value="green">Green</option>
+            <option value="amber">Amber</option>
+            <option value="cyan">Cyan</option>
+            <option value="white">White</option>
+          </select>
+          <div class="live-sliders">
+            <label class="live-slider">Scale
+              <input id="hud-size" type="range" min="10" max="48" step="1" value="16" title="Monospace size. Larger sizes fill the left half of the picture." />
+              <output id="hud-size-out">16</output>
+            </label>
+          </div>
+            <label class="hud-field">Preset
+              <select id="hud-preset" title="Overlay source. This sets the display and the glyph together.">
+                <option value="">Custom</option>
+                <option value="ascii">ASCII</option>
+                <option value="logs">Terminal Logs</option>
+                <option value="matrix">Kinetic Matrix</option>
+                <option value="diag">Live Diagnostics</option>
+                <option value="audio">Audio Reactive Data</option>
+              </select>
+            </label>
+            <label class="hud-field">Display
+              <select id="hud-mode" title="What the code overlay draws over the picture.">
+                <option value="scan">Active Scanner</option>
+                <option value="glsl">Full GLSL Shader Source</option>
+                <option value="matrix">Dynamic Matrix HUD</option>
+                <option value="formula">Compact Math Formula</option>
+                <option value="diag">Live Diagnostics</option>
+                <option value="audio">Audio Reactive Data</option>
+              </select>
+            </label>
+            <label class="hud-field">Glyph
+              <select id="hud-glyph" title="Character set used for the live readouts.">
+                <option value="ramp">Brightness ramp</option>
+                <option value="matrix">Matrix</option>
+                <option value="ascii">ASCII</option>
+              </select>
+            </label>
+            <label class="live-slider">Line
+              <input id="hud-leading" type="range" min="1" max="2" step="0.05" value="1.45" title="Line height." />
+              <output id="hud-leading-out">1.45</output>
+            </label>
+            <div id="hud-size-mod" class="hud-size-mod"></div>
+            <label class="live-slider">Mix
+              <input id="hud-mix" type="range" min="0" max="1" step="0.01" value="0.92" title="Overlay mix." />
+              <output id="hud-mix-out">0.92</output>
+            </label>
+            <label class="live-slider">Back
+              <input id="hud-bg" type="range" min="0" max="1" step="0.01" value="0.62" title="Background opacity." />
+              <output id="hud-bg-out">0.62</output>
+            </label>
+            <label class="check" title="Drop the dark panel so only the code sits on the picture.">
+              <input id="hud-automask" type="checkbox" />
+              Automask
+            </label>
+            <label class="check" title="Copy the code overlay onto the projector. The desk preview can stay clean.">
+              <input id="hud-output" type="checkbox" />
+              Show on Master Output
+            </label>
+            <label class="check" title="Copy the logo onto the recording and the master output, in the same place as the preview.">
+              <input id="logo-output" type="checkbox" checked />
+              Include Logo in Recording/Output
+            </label>
+            <label class="check" title="Keep the code overlay on the preview after Perform mode hides the desk panels.">
+              <input id="hud-perform" type="checkbox" />
+              Show on Perform Mode
+            </label>
+            <label class="check" title="Scale the code overlay with the preview card and the projector resolution. Off keeps the font size and line height at the slider values.">
+              <input id="hud-dpi" type="checkbox" checked />
+              Auto-adjust Overlays for Output DPI
+            </label>
+        </details>
+
+        <details id="logo-overlay" class="fold">
+          <summary>Brand Overlay</summary>
+        </details>
+
+        <details id="screensaver" class="fold">
+          <summary>Screensaver</summary>
+          <label class="hud-field">Text
+            <textarea id="screen-text" rows="4" title="Lines on the drifting mark. The credit stays underneath.">Y2K VJ//BY CÍN
+CUSTOM CODED FOR LATE FUTURE</textarea>
+          </label>
+          <label class="hud-field">Font
+            <select id="screen-font" title="Typeface of the drifting mark.">
+              <option value="desk" selected>Desk</option>
+              <option value="terminal">Terminal</option>
+              <option value="fixedsys">Fixedsys</option>
+              <option value="mssans">MS Sans</option>
+            </select>
+          </label>
+          <label class="live-slider">Shade
+            <input id="screen-shade" type="range" min="0" max="8" step="1" value="8" title="Extruded shadow. 0 is flat text. 8 is the full Win98 extrusion." />
+            <output id="screen-shade-out">8</output>
+          </label>
+          <label class="live-slider">Background
+            <input id="screen-bg" type="range" min="0" max="1" step="0.01" value="1" title="Opacity of the black panel. 0 removes the box." />
+            <output id="screen-bg-out">1.00</output>
+          </label>
+          <label class="hud-field">Color
+            <select id="screen-color" title="Text colour.">
+              <option value="white" selected>White</option>
+              <option value="cyan">Cyan</option>
+              <option value="magenta">Magenta</option>
+              <option value="amber">Amber</option>
+              <option value="green">Green</option>
+            </select>
+          </label>
+          <label class="live-slider">Size
+            <input id="brand-size" type="range" min="40" max="220" step="5" value="100" title="Screensaver size" />
+            <output id="brand-size-out" for="brand-size">100%</output>
+          </label>
         </details>
       </aside>
 
       <main id="stage" class="preview">
+        <div id="brand-mark" class="brand-mark" hidden>Y2K VJ<em>//</em>BY CÍN<span>CUSTOM CODED FOR LATE FUTURE</span><span class="brand-notice">OS CC BY-NC-SA // <a href="https://github.com/cin-seeds/y2k-vj-by-cin" target="_blank" rel="noopener noreferrer">REPO ON GITHUB</a></span></div>
         <div id="preview-wrap" class="preview-wrap">
           <div id="hud-frame" class="hud-frame" hidden title="Drag to move the overlay. Drag a corner to resize. Double-click to swap a column and a landscape bar.">
             <pre id="hud" class="hud"></pre>
@@ -256,7 +458,7 @@
           <h2>Layer <span id="layer-name" class="layer-badge">A</span></h2>
           <div class="row">
             <select id="layer-media" title="Media for this layer"></select>
-            <button id="layer-media-refresh" type="button" title="Refresh cameras">&#x21bb;</button>
+            <button id="layer-media-refresh" type="button" title="Refresh cameras and picture sources">&#x21bb;</button>
           </div>
           <div class="row layer-flags">
             <label class="check"><input id="layer-mirror" type="checkbox" /> Mirror</label>
@@ -289,8 +491,6 @@
           <p id="param-help-body">Hover a slider to read what it changes on the picture.</p>
         </div>
       </aside>
-
-      <div id="apc-view" hidden></div>
 
       <footer id="dock" class="dock">
         <div class="dock-stage">
@@ -341,9 +541,9 @@
             <h2>Composition</h2>
           </header>
           <div class="clock-bar" title="Global tempo. Shaders read it as uBeat / uBeatPhase.">
-            <i id="beat-led" class="beat-led"></i>
+            <i id="beat-led" class="beat-led" title="Flashes on the beat"></i>
             <span class="bpm-readout locked"><b id="bpm-value">120.0</b></span>
-            <button id="bpm-mode" type="button" aria-pressed="false" title="Auto Sync listens to the playing audio. Manual Lock holds the number and enables the slider.">Manual Lock</button>
+            <button id="bpm-mode" type="button" aria-pressed="false" title="Read the tempo from the playing audio.">Auto: Read Live</button>
             <div class="bpm-actions">
               <button id="bpm-tap" type="button" title="Tap a tempo, or tap once on the beat to align phase (T)">Tap/Phase</button>
               <button id="bpm-double" type="button" title="Double the tempo">x2</button>
@@ -358,87 +558,47 @@
             <input id="master-speed" type="range" min="0" max="4" step="0.01" value="1" />
             <output id="master-speed-out">1.00x</output>
           </label>
+          <div id="brightness-slot" class="brightness-slot"></div>
           </div>
           <section id="live-tools" class="live-tools" aria-label="Live performance tools">
             <h3>Live Performance Tools</h3>
             <button id="shuffle-layer-fx" type="button" title="Randomize the visible effect sliders on the selected layer">&#x1F3B2; Shuffle Layer FX</button>
             <div id="momentary-pads" class="momentary-pads"></div>
-            <div class="live-overlay">
-              <label class="moment-pad hud-toggle" title="Draw the code overlay on this monitor.">
-                <input id="hud-enable" type="checkbox" />
-                <b>HUD</b>
-              </label>
-              <select id="hud-color" title="Overlay text color">
-                <option value="green">Green</option>
-                <option value="amber">Amber</option>
-                <option value="cyan">Cyan</option>
-                <option value="white">White</option>
-              </select>
-              <div class="live-sliders">
-                <label class="live-slider">Scale
-                  <input id="hud-size" type="range" min="10" max="48" step="1" value="16" title="Monospace size. Larger sizes fill the left half of the picture." />
-                  <output id="hud-size-out">16</output>
+            <div class="overlay-triggers">
+              <h3>Overlay Triggers</h3>
+              <div class="code-live">
+                <label class="moment-pad hud-toggle" title="Draw the code overlay on this monitor.">
+                  <input id="hud-enable" type="checkbox" />
+                  <b>Code Overlay</b>
+                  <i class="hud-state">Off</i>
                 </label>
+                <button id="code-define" type="button" class="moment-pad" title="Open Code Overlay in the project column."><b>Define in Project</b></button>
+                <button id="hud-record" type="button" class="moment-pad record-out" aria-pressed="false" title="Copy the code overlay into the recording and the master output.">
+                  <b>Record / Output</b>
+                  <i>Off</i>
+                </button>
               </div>
-              <details id="hud-settings" class="hud-settings">
-                <summary>HUD Settings</summary>
-                <label class="hud-field">Preset
-                  <select id="hud-preset" title="Overlay source. This sets the display and the glyph together.">
-                    <option value="">Custom</option>
-                    <option value="ascii">ASCII</option>
-                    <option value="logs">Terminal Logs</option>
-                    <option value="matrix">Kinetic Matrix</option>
-                    <option value="diag">Live Diagnostics</option>
-                    <option value="audio">Audio Reactive Data</option>
-                  </select>
+              <div class="logo-live">
+                <div class="logo-triggers">
+                  <button type="button" class="sting-fire" data-sting="0" hidden><span class="sting-label">Logo 1</span></button>
+                  <button type="button" class="sting-fire" data-sting="1" hidden><span class="sting-label">Logo 2</span></button>
+                  <button type="button" class="sting-fire" data-sting="2" hidden><span class="sting-label">Logo 3</span></button>
+                  <button id="brand-define" type="button" class="moment-pad brand-define" hidden><b>Define in Project</b></button>
+                </div>
+              </div>
+              <div class="code-live">
+                <label class="moment-pad hud-toggle" title="Draw the screensaver on this monitor.">
+                  <input id="screen-enable" type="checkbox" />
+                  <b>Screensaver</b>
+                  <i class="screen-state">Off</i>
                 </label>
-                <label class="hud-field">Display
-                  <select id="hud-mode" title="What the code overlay draws over the picture.">
-                    <option value="scan">Active Scanner</option>
-                    <option value="glsl">Full GLSL Shader Source</option>
-                    <option value="matrix">Dynamic Matrix HUD</option>
-                    <option value="formula">Compact Math Formula</option>
-                    <option value="diag">Live Diagnostics</option>
-                    <option value="audio">Audio Reactive Data</option>
-                  </select>
-                </label>
-                <label class="hud-field">Glyph
-                  <select id="hud-glyph" title="Character set used for the live readouts.">
-                    <option value="ramp">Brightness ramp</option>
-                    <option value="matrix">Matrix</option>
-                    <option value="ascii">ASCII</option>
-                  </select>
-                </label>
-                <label class="live-slider">Line
-                  <input id="hud-leading" type="range" min="1" max="2" step="0.05" value="1.45" title="Line height." />
-                  <output id="hud-leading-out">1.45</output>
-                </label>
-                <div id="hud-size-mod" class="hud-size-mod"></div>
-                <label class="live-slider">Mix
-                  <input id="hud-mix" type="range" min="0" max="1" step="0.01" value="0.92" title="Overlay mix." />
-                  <output id="hud-mix-out">0.92</output>
-                </label>
-                <label class="live-slider">Back
-                  <input id="hud-bg" type="range" min="0" max="1" step="0.01" value="0.62" title="Background opacity." />
-                  <output id="hud-bg-out">0.62</output>
-                </label>
-                <label class="check" title="Copy the code overlay onto the projector. The desk preview can stay clean.">
-                  <input id="hud-output" type="checkbox" />
-                  Show on Master Output
-                </label>
-                <label class="check" title="Keep the code overlay on the preview after Perform mode hides the desk panels.">
-                  <input id="hud-perform" type="checkbox" />
-                  Show on Perform Mode
-                </label>
-                <label class="check" title="Scale the code overlay with the preview card and the projector resolution. Off keeps the font size and line height at the slider values.">
-                  <input id="hud-dpi" type="checkbox" checked />
-                  Auto-adjust Overlays for Output DPI
-                </label>
-              </details>
+                <button id="screen-define" type="button" class="moment-pad" title="Open Screensaver in the project column."><b>Define in Project</b></button>
+                <button id="screen-record" type="button" class="moment-pad record-out" aria-pressed="false" title="Draw the screensaver into the recording and the master output.">
+                  <b>Record / Output</b>
+                  <i>Off</i>
+                </button>
+              </div>
             </div>
-            <details id="sting-rack" class="sting-settings">
-              <summary>Overlay Settings</summary>
-            </details>
           </section>
           <div id="master-params" class="master-params"></div>
           <div id="master-help" class="param-help">
@@ -452,6 +612,7 @@
       <div id="split-dock" class="split split-row" data-pane="dock" title="Drag to resize the mixer"></div>
     </div>
 
+    <div id="app-toast" class="app-toast" hidden></div>
     <div id="prefs-modal" class="map-modal" hidden>
       <div class="map-card" role="dialog" aria-labelledby="prefs-title">
         <header class="map-head">
@@ -464,6 +625,13 @@
           <output id="ui-scale-out">100%</output>
         </div>
         <p class="hint">75% to 125%. Drag the edges between the library, the preview, and the inspector, and the top edge of the mixer, to resize those blocks.</p>
+        <div class="stock-dir-field">
+          <label for="stock-dir">Stock Media Download Folder</label>
+          <div class="row stock-dir-row">
+            <input id="stock-dir" type="text" readonly placeholder="Videos folder" />
+            <button id="stock-dir-pick" type="button">Choose</button>
+          </div>
+        </div>
       </div>
     </div>
 

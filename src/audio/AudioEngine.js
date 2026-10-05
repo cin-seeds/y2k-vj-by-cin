@@ -88,6 +88,7 @@ export class AudioEngine {
     this._fading = false;
     this._analysisHold = 0;
     this.onLevel = null;
+    this.onDeviceLost = null;
     this.analysisGain = null;
     this._agc = true;
     this.gain = 1;
@@ -103,8 +104,6 @@ export class AudioEngine {
     this.lastSnare = 0;
     this.kickOnset = false;
     this.snareOnset = false;
-    this.intervals = [];
-    this.bpmEstimate = 0;
     this.bands = { sub: 0, lowMid: 0, highMid: 0, air: 0, rms: 0 };
     this.rmsCap = 240;
     this.rmsT = new Float32Array(this.rmsCap);
@@ -131,7 +130,7 @@ export class AudioEngine {
   }
 
   /**
-   * Auto Sync listens to the player node. Manual Lock disconnects that tap.
+   * Auto listens to the player node. Manual disconnects that tap.
    * The AudioContext graph created in #ensureContext is left as it is.
    */
   syncPeak(engine) {
@@ -225,6 +224,7 @@ export class AudioEngine {
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
+        latency: 0,
         channelCount: { ideal: 2 },
       },
     });
@@ -232,6 +232,16 @@ export class AudioEngine {
     this.source = this.ctx.createMediaStreamSource(this.stream);
     this.source.connect(this.inputGain);
     this.kind = 'device';
+
+    const stream = this.stream;
+    for (const track of stream.getAudioTracks()) {
+      track.addEventListener('ended', () => {
+        if (this.stream !== stream) return;
+        this.#stopMic();
+        this.kind = 'none';
+        this.onDeviceLost?.();
+      }, { once: true });
+    }
   }
 
   /** Decode a local file with decodeAudioData and play it through the analysis chain. */
@@ -570,13 +580,6 @@ export class AudioEngine {
     this.snareOnset = false;
     let onset = false;
     if (subHit && now - this.lastKick > 0.09) {
-      const interval = now - this.lastKick;
-      if (interval > 0.28 && interval < 1.6) {
-        this.intervals.push(interval);
-        if (this.intervals.length > 8) this.intervals.shift();
-        const sorted = [...this.intervals].sort((x, y) => x - y);
-        this.bpmEstimate = 60 / sorted[Math.floor(sorted.length / 2)];
-      }
       v.kick = 1;
       this.kickOnset = true;
       this.lastKick = now;
