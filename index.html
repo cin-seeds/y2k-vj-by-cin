@@ -6,6 +6,11 @@
     <title>Y2K VJ by Cín</title>
   </head>
   <body>
+    <script>
+      try {
+        if (localStorage.getItem('vj_theme') === 'dark') document.body.classList.add('dark-mode');
+      } catch (e) { /* private mode */ }
+    </script>
     <div class="app" id="app">
       <header class="topbar">
         <div class="file-launch">
@@ -810,6 +815,10 @@ FUTURE</textarea>
             <output id="ui-scale-out">100%</output>
           </div>
           <p class="hint">75% to 125%. Drag the edges between the library, the preview, and the inspector, and the top edge of the mixer, to resize those blocks.</p>
+          <label class="check" for="dark-mode">
+            <input id="dark-mode" type="checkbox" />
+            Dark Mode
+          </label>
           <label class="prefs-open" for="open-in">
             <span>Open in</span>
             <select id="open-in">

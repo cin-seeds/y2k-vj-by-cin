@@ -1,6 +1,7 @@
 // Global Media Library. Files live in the app-data folder (or, in the browser
 // preview, in the IndexedDB cache). A project only keeps the names it pulls in.
 
+import { IS_TAURI, invoke } from '../ipc.js';
 import { isTauri } from '../output/OutputWindow.js';
 import { queueMediaPrep } from './mediaPrep.js';
 
@@ -46,9 +47,8 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
 
   async function catalog() {
     const disk = [];
-    if (isTauri()) {
+    if (IS_TAURI) {
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
         const rows = await invoke('list_global_media', { saveDir: stockSaveDir() });
         if (Array.isArray(rows)) disk.push(...rows);
       } catch (err) {
@@ -355,7 +355,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       }
       if (isTauri() && image && path) {
         const asBrand = brandUpload();
-        import('@tauri-apps/api/core').then(({ invoke }) => invoke('copy_into_global_media', { inputPath: path }))
+        invoke('copy_into_global_media', { inputPath: path })
           .then(() => {
             if (asBrand) addMediaTag(name, 'brand');
             window.dispatchEvent(new CustomEvent('vj-global-media'));
@@ -389,7 +389,6 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         const name = String(path).split(/[\\/]/).pop() || 'media';
         if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null);
         else if (IMAGE_EXT.test(name)) {
-          const { invoke } = await import('@tauri-apps/api/core');
           await invoke('copy_into_global_media', { inputPath: path });
           if (brandUpload()) addMediaTag(name, 'brand');
         }
@@ -656,8 +655,7 @@ async function captureSquare(filePath) {
 }
 
 async function checkDelete(row, snapshot, force) {
-  if (isTauri() && row.path) {
-    const { invoke } = await import('@tauri-apps/api/core');
+  if (IS_TAURI && row.path) {
     return invoke('delete_global_media', {
       path: row.path,
       force,

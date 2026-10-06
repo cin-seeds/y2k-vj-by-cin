@@ -1,7 +1,7 @@
 // Lists NDI and Spout or Syphon senders and pulls the newest frame of one.
 // The layer copies that frame into the texture it already uses for a camera.
 
-import { invoke } from '@tauri-apps/api/core';
+import { IS_TAURI, invoke } from '../ipc.js';
 
 export const pictureSources = {
   ndi: [],
@@ -15,7 +15,7 @@ let stamp = '';
 let notify = () => {};
 
 function desktop() {
-  return typeof window !== 'undefined' && !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+  return IS_TAURI;
 }
 
 function asBytes(bytes) {
@@ -52,7 +52,10 @@ export async function refreshPictureSources() {
 }
 
 export async function watchPicture(source) {
-  if (!desktop()) return { ok: false, reason: 'Picture receive needs the desktop app.' };
+  if (!desktop()) {
+    console.warn('picture_recv_watch needs the desktop app.');
+    return { ok: false, reason: 'Picture receive needs the desktop app.' };
+  }
   try {
     const report = await invoke('picture_recv_watch', { source });
     if (!report?.ok) return { ok: false, reason: report?.reason || 'The picture source did not open.' };
@@ -68,6 +71,9 @@ export function unwatchPicture(source) {
 }
 
 export async function pullPicture(source, seen) {
+  if (!IS_TAURI) {
+    return { same: true, gone: false, fault: '', width: 0, height: 0, pixels: null, seen };
+  }
   const bytes = asBytes(await invoke('picture_recv_frame', { source, seen }));
   if (bytes.length < HEADER) {
     return { same: true, gone: false, fault: '', width: 0, height: 0, pixels: null, seen };

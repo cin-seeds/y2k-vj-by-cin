@@ -2,6 +2,7 @@
 // in the desktop app: FFmpeg is a Tauri sidecar and writes H.264 into the
 // permanent global library (app data / global_media).
 
+import { IS_TAURI, invoke } from '../ipc.js';
 import { isTauri } from '../output/OutputWindow.js';
 import { addMediaTag } from './GlobalLibrary.js';
 
@@ -113,7 +114,6 @@ async function ensureListen() {
 const STAGE_CHUNK = 8 * 1024 * 1024;
 
 async function stageFile(job, saveDir) {
-  const { invoke } = await import('@tauri-apps/api/core');
   const file = job.file;
   const total = file.size;
   let path = '';
@@ -148,9 +148,8 @@ async function importPrepared() {
 }
 
 async function resolveSaveDir(ensureStockDir) {
-  if (isTauri()) {
+  if (IS_TAURI) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       const dir = await invoke('global_media_dir');
       if (dir) return dir;
     } catch { /* the stock folder is the fallback */ }
@@ -172,13 +171,11 @@ async function bypassDirect(job) {
   dropFromQueue(job);
   job.bypass.disabled = true;
   paintJob(job, 'Adding…', 'busy');
-  if (job.transcoding && isTauri()) {
-    const { invoke } = await import('@tauri-apps/api/core');
+  if (job.transcoding && IS_TAURI) {
     await invoke('transcode_cancel', { jobId: job.id }).catch(() => {});
   }
   try {
-    if (job.path && isTauri()) {
-      const { invoke } = await import('@tauri-apps/api/core');
+    if (job.path && IS_TAURI) {
       await invoke('copy_into_global_media', { inputPath: job.path });
       job.settled = true;
       setPercent(job, 100);
@@ -206,7 +203,8 @@ async function bypassDirect(job) {
 
 async function runJob(job, ensureStockDir, showToast) {
   if (job.bypassed || job.settled) return;
-  if (!isTauri()) {
+  if (!IS_TAURI) {
+    console.warn('transcode_media needs the desktop app.');
     paintJob(job, 'Open the desktop app to transcode.', '');
     return;
   }
@@ -222,7 +220,6 @@ async function runJob(job, ensureStockDir, showToast) {
     }
     if (job.bypassed) return;
     paintJob(job, 'Transcoding', 'busy');
-    const { invoke } = await import('@tauri-apps/api/core');
     job.transcoding = true;
     let output;
     try {

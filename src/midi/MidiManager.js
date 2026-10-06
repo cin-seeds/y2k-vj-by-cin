@@ -2,6 +2,8 @@
 // Notes act as momentary controls (velocity on press, 0 on release).
 // Targets named "scene:<id>" are triggers: any non-zero value launches that scene.
 
+import { IS_TAURI } from '../ipc.js';
+
 const STORAGE_KEY = 'vj.midi.mappings';
 
 export class MidiManager {
@@ -85,7 +87,7 @@ export class MidiManager {
   }
 
   #inTauri() {
-    return typeof window !== 'undefined' && !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+    return IS_TAURI;
   }
 
   async #nativeAccess() {

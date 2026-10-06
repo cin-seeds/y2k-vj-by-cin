@@ -2,7 +2,7 @@
 // the desk. The desktop projector has no shared document, so it blits frames
 // the desk posts on this channel.
 
-const native = typeof window !== 'undefined' && !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+import { IS_TAURI as native } from '../ipc.js';
 
 function sameOutput(url) {
   try {

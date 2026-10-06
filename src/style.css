@@ -1,8 +1,13 @@
 :root {
-  --bg: #0c1018;
-  --fg: #d7e3ff;
+  --bg-primary: #07090e;
+  --panel-bg: #0c1018;
+  --border-color: #1c2438;
+  --text-primary: #d7e3ff;
+  --highlight: #00f0ff;
+  --bg: var(--panel-bg);
+  --fg: var(--text-primary);
   --dim: #8b97b5;
-  --accent: #00f0ff;
+  --accent: var(--highlight);
   --accent2: #ff2bd6;
   --live: #39ff88;
   --rec: #ff3355;
@@ -27,12 +32,29 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #07090e;
-  color: var(--fg);
+  background: var(--bg-primary);
+  color: var(--text-primary);
   font-family: var(--font);
   line-height: 1.4;
 }
 body { font-size: 13px; }
+
+html:has(body.dark-mode),
+body.dark-mode {
+  --bg-primary: #0a0a0a;
+  --panel-bg: #121212;
+  --border-color: #262626;
+  --text-primary: #e5e5e5;
+  --dim: #a3a3a3;
+  --highlight: #f5f5f5;
+}
+html:has(body.dark-mode)::-webkit-scrollbar-thumb,
+body.dark-mode::-webkit-scrollbar-thumb {
+  background: #262626;
+  border-color: #404040;
+}
+html:has(body.dark-mode)::-webkit-scrollbar-thumb:hover,
+body.dark-mode::-webkit-scrollbar-thumb:hover { background: #525252; }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -77,7 +99,7 @@ body { font-size: 13px; }
     "header header header"
     "library center bus"
     "library center inspector";
-  background: #07090e;
+  background: var(--bg-primary);
 }
 body.sys-collapsed .app { grid-template-columns: 0 minmax(0, 1fr) var(--inspector-w); }
 body.sys-collapsed .library { visibility: hidden; padding: 0; border: 0; overflow: hidden; }
@@ -138,9 +160,9 @@ body.panel-hidden { cursor: none; }
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  scrollbar-color: #3a4568 transparent;
-  background: #0c1018;
-  border-bottom: 1px solid #1c2438;
+  scrollbar-color: var(--border-color) transparent;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border-color);
 }
 .topbar::-webkit-scrollbar { height: 4px; }
 .topbar::-webkit-scrollbar-track { background: transparent; }
@@ -178,8 +200,8 @@ body.panel-hidden { cursor: none; }
   padding: 6px;
   display: grid;
   gap: 4px;
-  background: #0c1018;
-  border: 1px solid #2a3350;
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
@@ -204,8 +226,8 @@ body.panel-hidden { cursor: none; }
   min-height: 0;
   overflow: auto;
   padding: 8px 12px 16px;
-  background: #0c1018;
-  border-right: 1px solid #1c2438;
+  background: var(--panel-bg);
+  border-right: 1px solid var(--border-color);
 }
 .center {
   grid-area: center;
@@ -213,7 +235,7 @@ body.panel-hidden { cursor: none; }
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #07090e;
+  background: var(--bg-primary);
 }
 .center-lower {
   flex: 1 1 0;
@@ -223,8 +245,8 @@ body.panel-hidden { cursor: none; }
   gap: 4px;
   padding: 4px 8px 8px;
   overflow: hidden;
-  background: #0c1018;
-  border-top: 1px solid #1c2438;
+  background: var(--panel-bg);
+  border-top: 1px solid var(--border-color);
 }
 .timeline-split {
   flex: 1 1 auto;
@@ -743,8 +765,8 @@ body.hide-timeline .timeline-pane {
   min-height: 0;
   overflow: auto;
   padding: 8px 12px 16px;
-  background: #0c1018;
-  border-left: 1px solid #1c2438;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border-color);
 }
 body.orbit #stage canvas { cursor: grab; }
 body.orbit #stage canvas:active { cursor: grabbing; }
@@ -1099,9 +1121,9 @@ h2 {
 
 select, button, input[type='file'] {
   font: inherit;
-  color: #c5d0ea;
-  background: #141a28;
-  border: 1px solid #2a3350;
+  color: var(--text-primary);
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 8px 10px;
   min-height: var(--hit);
@@ -2215,8 +2237,8 @@ button.shuffle:disabled {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   padding: 8px 10px 10px;
-  background: #0c1018;
-  border-top: 1px solid #1c2438;
+  background: var(--panel-bg);
+  border-top: 1px solid var(--border-color);
   z-index: 4;
 }
 .glance-bar {
@@ -4064,8 +4086,8 @@ button.diag-flash-warn { animation: diag-glow-warn 2s ease; }
   max-height: min(92vh, 920px);
   overflow: auto;
   padding: 14px 16px 16px;
-  background: #0c1018;
-  border: 1px solid #2a3350;
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
 }
 .map-head { display: flex; align-items: center; gap: 8px; }

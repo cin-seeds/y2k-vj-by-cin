@@ -8,6 +8,7 @@ import { HUD_COLORS, HUD_FONT, paintHudText } from '../ui/Hud.js';
 import { paintLogos } from '../overlay/StingRack.js';
 import { paintScreensaver } from '../overlay/paintScreensaver.js';
 import { dpiState } from '../ui/dpiScale.js';
+import { IS_TAURI } from '../ipc.js';
 
 const OVERLAY_KEY = 'vj.hudOutput';
 const MASTER_OUTPUT = 'master-output';
@@ -20,7 +21,7 @@ const DESK_BROWSER_ARGS = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenP
 export const POPUP_BLOCKED = 'Please allow pop-ups in your browser address bar to send output to Screen 2.';
 
 export function isTauri() {
-  return typeof window !== 'undefined' && !!(window.__TAURI_INTERNALS__ || window.__TAURI__);
+  return IS_TAURI;
 }
 
 function outputErrorText(err) {

@@ -29,6 +29,7 @@ import { MidiManager } from './midi/MidiManager.js';
 import { MacroRouter, sliderOptions } from './midi/Macros.js';
 import { MOMENTARY, MomentaryPads } from './midi/Momentary.js';
 import { Recorder } from './output/Recorder.js';
+import { IS_TAURI, invoke } from './ipc.js';
 import { OutputWindow, listScreens, POPUP_BLOCKED, isTauri } from './output/OutputWindow.js';
 import { bindPictureSend } from './output/PictureSend.js';
 import { bindPictureSources, pictureSources, refreshPictureSources } from './input/PictureRecv.js';
@@ -1376,7 +1377,6 @@ async function ensureStockDir() {
     paintStockDir('');
     return '';
   }
-  const { invoke } = await import('@tauri-apps/api/core');
   const dir = await invoke('default_stock_dir');
   try { localStorage.setItem(STOCK_DIR_KEY, dir); } catch { /* private mode */ }
   paintStockDir(dir);
@@ -1392,9 +1392,9 @@ function stockErrorText(err, fallback) {
 async function fileFromStock(clip, onPhase) {
   const filename = libraryName(clip);
   const type = /\.webm$/i.test(filename) ? 'video/webm' : 'video/mp4';
-  if (isTauri()) {
+  if (IS_TAURI) {
     const saveDir = await ensureStockDir();
-    const { convertFileSrc, invoke } = await import('@tauri-apps/api/core');
+    const { convertFileSrc } = await import('@tauri-apps/api/core');
     const path = await invoke('download_video', { url: clip.videoUrl, filename, saveDir });
     onPhase?.('Transcoding...');
     let output;
@@ -1417,6 +1417,7 @@ async function fileFromStock(clip, onPhase) {
     if (!leaf) throw new Error('Download failed');
     return { file: new File([blob], leaf, { type: blob.type || 'video/mp4' }), path: output };
   }
+  console.warn('transcode_media needs the desktop app; using the downloaded file as-is.');
   const res = await fetch(clip.videoUrl);
   if (!res.ok) throw new Error('Download failed');
   const blob = await res.blob();
@@ -3096,7 +3097,7 @@ function projectDirJoin(projectPath, rel) {
 const PROJECT_CHUNK = 8 * 1024 * 1024;
 
 async function storeProjectAsset(projectPath, leaf, file, sourcePath) {
-  const { invoke } = await import('@tauri-apps/api/core');
+  if (!IS_TAURI) return '';
   if (sourcePath && absoluteMediaPath(sourcePath)) {
     try {
       return await invoke('copy_project_asset', { projectPath, sourcePath, leaf });
@@ -3267,7 +3268,6 @@ async function storeProjectFile(data, filename) {
   if (typeof picked !== 'string' || !picked) return;
   const path = /\.(vjproj|json)$/i.test(picked) ? picked : `${picked}.vjproj`;
   const bundled = await bundleProjectAssets(data, path);
-  const { invoke } = await import('@tauri-apps/api/core');
   await invoke('write_text_file', { path, contents: JSON.stringify(bundled, null, 2) });
   rememberProjectPath(path);
   audioAssetPath = bundled.desk?.audio?.path || '';
@@ -3326,7 +3326,6 @@ async function reopenLastProject() {
     return;
   }
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
     const text = await invoke('read_text_file', { path });
     const leaf = path.split(/[/\\]/).pop() || 'project.vjproj';
     await loadProject(new File([text], leaf, { type: 'application/json' }), path);
@@ -3492,7 +3491,6 @@ const sceneBar = new SceneBar({
         filters: [{ name: 'Y2K VJ project', extensions: ['vjproj', 'json'] }],
       });
       if (typeof picked !== 'string' || !picked) return true;
-      const { invoke } = await import('@tauri-apps/api/core');
       const text = await invoke('read_text_file', { path: picked });
       const leaf = picked.split(/[/\\]/).pop() || 'project.vjproj';
       rememberProjectPath(picked);
@@ -3762,11 +3760,11 @@ function mountXdj() {
 }
 
 function initProDjLink() {
-  if (!isTauri()) return;
-  Promise.all([
-    import('@tauri-apps/api/core'),
-    import('@tauri-apps/api/event'),
-  ]).then(async ([{ invoke }, { listen }]) => {
+  if (!IS_TAURI) {
+    console.warn('start_pro_dj_link needs the desktop app.');
+    return;
+  }
+  import('@tauri-apps/api/event').then(async ({ listen }) => {
     await invoke('start_pro_dj_link');
     await listen('prolink-beat', (event) => {
       const deck = event.payload?.deck;
@@ -4069,8 +4067,8 @@ async function saveStockAudio(hit, button) {
   const previous = button.textContent;
   button.textContent = 'Downloading…';
   try {
-    if (isTauri()) {
-      const { invoke, convertFileSrc } = await import('@tauri-apps/api/core');
+    if (IS_TAURI) {
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
       const path = await invoke('download_audio', { url: hit.url, filename: hit.title });
       window.dispatchEvent(new CustomEvent('vj-global-media'));
       globalLibrary?.refresh();
@@ -4082,6 +4080,7 @@ async function saveStockAudio(hit, button) {
       await useAudioFile(new File([blob], leaf, { type: 'audio/wav' }));
       showToast(`Saved ${leaf} to Media Manager`);
     } else {
+      console.warn('download_audio needs the desktop app; playing the file in this session.');
       const res = await fetch(hit.url);
       if (!res.ok) throw new Error('Download failed');
       const blob = await res.blob();
@@ -5362,6 +5361,27 @@ function setOpenIn(mode) {
   try { localStorage.setItem('vj.openIn', next); } catch { /* ignore */ }
   paintMachinePrefs();
 }
+
+const THEME_KEY = 'vj_theme';
+
+function savedTheme() {
+  try { return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; }
+  catch { return 'light'; }
+}
+
+function applyTheme(theme) {
+  const dark = theme === 'dark';
+  document.body.classList.toggle('dark-mode', dark);
+  const box = $('dark-mode');
+  if (box) box.checked = dark;
+}
+
+applyTheme(savedTheme());
+$('dark-mode')?.addEventListener('change', (e) => {
+  const theme = e.target.checked ? 'dark' : 'light';
+  try { localStorage.setItem(THEME_KEY, theme); } catch { /* private mode */ }
+  applyTheme(theme);
+});
 
 $('open-in')?.addEventListener('change', (e) => setOpenIn(e.target.value));
 $('reopen-project')?.addEventListener('change', (e) => {

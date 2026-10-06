@@ -2,8 +2,7 @@
 // MidiManager can attach the same way it does in a browser. Windows keeps
 // requestMIDIAccess. Linux uses this path because requestMIDIAccess is missing.
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { IS_TAURI, invoke } from '../ipc.js';
 
 let opening = null;
 
@@ -12,6 +11,15 @@ function asList(value) {
 }
 
 export function requestNativeMidiAccess() {
+  if (!IS_TAURI) {
+    console.warn('midi_open needs the desktop app.');
+    return Promise.resolve({
+      inputs: new Map(),
+      outputs: new Map(),
+      sysexEnabled: false,
+      onstatechange: null,
+    });
+  }
   if (!opening) {
     opening = openNative().catch((err) => {
       opening = null;
@@ -22,6 +30,7 @@ export function requestNativeMidiAccess() {
 }
 
 async function openNative() {
+  const { listen } = await import('@tauri-apps/api/event');
   const inputs = new Map();
   const outputs = new Map();
   const access = {

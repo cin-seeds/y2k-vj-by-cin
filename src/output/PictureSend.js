@@ -2,7 +2,7 @@
 // hands it to the desktop senders. Off until the Send button is pressed.
 // A frame is skipped when the previous send is still running.
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../ipc.js';
 
 const MIN_GAP_MS = 1000 / 60;
 
@@ -153,6 +153,7 @@ export function bindPictureSend({ isTauri }) {
     send.last = 0;
     paintButton();
     if (!isTauri()) {
+      console.warn('picture_send_start needs the desktop app.');
       send.ready = true;
       paint('Send needs the desktop app.', true);
       return;
