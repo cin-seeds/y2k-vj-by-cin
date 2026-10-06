@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig({
+  // GitHub Pages serves the preview under /y2k-vj-by-cin/. Desktop builds leave this unset.
+  base: process.env.PAGES_BASE || '/',
   server: {
     // localhost counts as a secure context, which getUserMedia and Web MIDI require.
     host: 'localhost',
