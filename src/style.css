@@ -3970,17 +3970,17 @@ button.diag-flash-warn { animation: diag-glow-warn 2s ease; }
 .global-drop.over { border-color: var(--accent); color: var(--accent); }
 #media-prep,
 #global-library {
-  --gallery-min: 148px;
+  --thumb-size: 100px;
 }
-#media-prep[data-scale="compact"],
-#global-library[data-scale="compact"] { --gallery-min: 92px; }
+#media-prep[data-scale="small"],
+#global-library[data-scale="small"] { --thumb-size: 60px; }
 #media-prep[data-scale="medium"],
-#global-library[data-scale="medium"] { --gallery-min: 148px; }
+#global-library[data-scale="medium"] { --thumb-size: 100px; }
 #media-prep[data-scale="large"],
-#global-library[data-scale="large"] { --gallery-min: 240px; }
+#global-library[data-scale="large"] { --thumb-size: 160px; }
 .global-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--gallery-min, 148px)), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--thumb-size, 80px), 1fr));
   gap: 6px;
   align-content: start;
   overflow: auto;
@@ -3999,6 +3999,27 @@ button.diag-flash-warn { animation: diag-glow-warn 2s ease; }
   border-radius: 3px;
   background: #070a14;
   cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--thumb-size, 80px);
+}
+.global-card .global-meta {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 1;
+  max-width: calc(100% - 18px);
+  padding: 0 3px;
+  font-style: normal;
+  font-size: 8px;
+  line-height: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #041016;
+  background: var(--accent);
+  pointer-events: none;
 }
 .global-card img {
   display: block;
@@ -4433,7 +4454,13 @@ body.prep-mode .split { display: none !important; }
 .media-prep > .prep-empty,
 .media-prep > .prep-gallery-bar,
 .media-prep > .prep-tag-filters,
+.media-prep > .gallery-find,
 .media-prep > .gallery-sources { flex: 0 0 auto; }
+.gallery-find input[type="search"] {
+  width: 100%;
+  height: 28px;
+  min-height: 28px;
+}
 body.prep-mode .media-prep { display: flex; }
 
 body.midi-mode .app {

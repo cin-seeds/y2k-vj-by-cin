@@ -12,11 +12,13 @@ const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
 const AUDIO_EXT = /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i;
 const SOURCE_KEY = 'vj.mediaSource';
 const SCALE_KEY = 'vj.galleryScale';
-const GALLERY_SCALES = ['compact', 'medium', 'large'];
+const GALLERY_SCALES = ['small', 'medium', 'large'];
+const SCALE_ALIAS = { compact: 'small', small: 'small', medium: 'medium', large: 'large' };
 const SOURCE_EMPTY = {
   all: 'No media stored yet. Drop a video or image above.',
+  video: 'No videos in the library yet.',
+  image: 'No images in the library yet.',
   fetch: 'No fetched clips yet. Use Live Text-to-Visual to download a loop.',
-  user: 'No uploaded clips yet. Drop a video or image above.',
   audio: 'No audio stored yet. Load a track or download stock audio.',
 };
 
@@ -41,6 +43,18 @@ function isAudioRow(row) {
   return AUDIO_EXT.test(row?.name || '') || AUDIO_EXT.test(row?.path || '');
 }
 
+function rowKind(row) {
+  if (isAudioRow(row) || row.kind === 'audio') return 'audio';
+  if (IMAGE_EXT.test(row?.name || '') || IMAGE_EXT.test(row?.path || '')) return 'image';
+  return 'video';
+}
+
+function kindLabel(kind) {
+  if (kind === 'audio') return 'Audio';
+  if (kind === 'image') return 'Image';
+  return 'Video';
+}
+
 export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSnapshot, showToast }) {
   const modal = document.getElementById('global-library');
   const grid = document.getElementById('prep-grid');
@@ -55,6 +69,8 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   let mediaTags = readMediaTags();
   let tagFilter = '';
   let sourceFilter = 'all';
+  let query = '';
+  let thumbObserver = null;
   const block = document.getElementById('global-delete');
   const preview = document.createElement('video');
   preview.className = 'gallery-preview';
@@ -123,7 +139,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     const waiting = [...selected].filter((name) => !inBin(name));
     if (send) {
       send.disabled = waiting.length === 0;
-      send.textContent = waiting.length ? `Send ${waiting.length} to Project Media` : 'Send to Project Media';
+      send.textContent = waiting.length ? `Add ${waiting.length} to Project` : 'Add to Project';
     }
   }
 
@@ -180,23 +196,29 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     return '';
   }
 
+  function rowVisible(row) {
+    if (sourceFilter === 'fetch' && rowSource(row) !== 'fetch') return false;
+    if ((sourceFilter === 'video' || sourceFilter === 'audio' || sourceFilter === 'image') && rowKind(row) !== sourceFilter) return false;
+    if (tagFilter && !tagsFor(row.name).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase())) return false;
+    if (!query) return true;
+    const hay = `${row.name} ${tagsFor(row.name).join(' ')} ${kindLabel(rowKind(row))}`.toLowerCase();
+    return hay.includes(query);
+  }
+
   function paint(rows) {
     latest = rows;
     const live = new Set(rows.map((row) => row.name));
     for (const name of [...selected]) if (!live.has(name)) selected.delete(name);
-    const visible = rows.filter((row) => {
-      if (sourceFilter !== 'all' && rowSource(row) !== sourceFilter) return false;
-      if (!tagFilter) return true;
-      return tagsFor(row.name).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase());
-    });
+    const visible = rows.filter((row) => rowVisible(row));
     stopPreview();
     grid.innerHTML = '';
     if (empty) {
       empty.hidden = visible.length > 0;
       const noneOf = SOURCE_EMPTY[sourceFilter] || SOURCE_EMPTY.all;
-      empty.textContent = rows.length && !visible.length
-        ? (tagFilter ? `No clips tagged ${tagFilter}.` : noneOf)
-        : noneOf;
+      const filtered = query
+        ? 'No clips match that search.'
+        : (tagFilter ? `No clips tagged ${tagFilter}.` : noneOf);
+      empty.textContent = rows.length && !visible.length ? filtered : noneOf;
     }
     for (const row of visible) {
       const card = document.createElement('div');
@@ -208,15 +230,22 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       card.role = 'button';
       card.title = present ? `${row.name} is in this project` : `Select ${row.name}`;
       card.setAttribute('aria-pressed', selected.has(row.name) ? 'true' : 'false');
-      const audio = isAudioRow(row);
+      const audio = isAudioRow(row) || row.kind === 'audio';
+      const kind = rowKind(row);
       const img = document.createElement('img');
+      img.className = 'global-thumb';
       img.alt = '';
+      img.hidden = true;
       const cached = audio ? '' : (row.thumbnail || thumbs.get(row.path || row.name) || '');
-      if (cached) img.src = cached;
-      else img.hidden = true;
+      if (cached) img._thumb = cached;
       const label = document.createElement('span');
       label.className = 'global-name';
       label.textContent = present ? `${row.name} · in project` : row.name;
+      const meta = document.createElement('i');
+      meta.className = 'global-meta';
+      const fetched = rowSource(row) === 'fetch';
+      meta.textContent = fetched ? 'Fetched' : kindLabel(kind);
+      meta.title = fetched && kind !== 'audio' ? `Fetched ${kindLabel(kind).toLowerCase()}` : kindLabel(kind);
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'global-delete';
@@ -233,15 +262,17 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       tags.textContent = tagged.join(' · ');
       tags.title = tagged.join(', ');
       if (!tagged.length) tags.hidden = true;
+      card.dataset.name = row.name;
+      card.dataset.path = row.path || '';
       if (audio) {
         card.classList.add('is-audio');
         const mark = document.createElement('i');
         mark.className = 'audio-mark';
         mark.textContent = '\u266A';
         mark.title = 'Audio';
-        card.append(mark, tags, label, remove);
+        card.append(meta, mark, tags, label, remove);
       } else {
-        card.append(img, tags, label, remove);
+        card.append(meta, img, tags, label, remove);
       }
       card.addEventListener('click', () => toggleSelect(row.name));
       card.addEventListener('keydown', (event) => {
@@ -252,7 +283,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         if (preview.parentElement === card) stopPreview();
       });
       grid.append(card);
-      if (!audio && !cached && row.path) queueThumb(row, img);
+      if (!audio) watchThumb(card);
     }
     paintSend();
     paintTagFilters();
@@ -353,6 +384,32 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     paint(latest);
   }
 
+  function watchThumb(card) {
+    if (!thumbObserver) {
+      thumbObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          thumbObserver.unobserve(entry.target);
+          revealThumb(entry.target);
+        }
+      }, { root: grid.closest('.prep-gallery-scroll'), rootMargin: '240px 0px' });
+    }
+    thumbObserver.observe(card);
+  }
+
+  function revealThumb(card) {
+    const img = card.querySelector('img.global-thumb');
+    if (!img || img.dataset.ready === '1') return;
+    if (img._thumb) {
+      img.src = img._thumb;
+      img.hidden = false;
+      img.dataset.ready = '1';
+      return;
+    }
+    const path = card.dataset.path || '';
+    if (path) queueThumb({ path, name: card.dataset.name || '' }, img);
+  }
+
   function queueThumb(row, img) {
     thumbChain = thumbChain.then(() => captureSquare(row.path).then((url) => {
       if (!url) return;
@@ -360,6 +417,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       if (!img.isConnected) return;
       img.src = url;
       img.hidden = false;
+      img.dataset.ready = '1';
     }).catch(() => {}));
   }
 
@@ -384,7 +442,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       showToast?.('Those clips are already in this project');
       return;
     }
-    showToast?.(sent === 1 ? `Sent ${picked[0].name} to Project Media` : `Sent ${sent} clips to Project Media`);
+    showToast?.(sent === 1 ? `Added ${picked[0].name} to the project` : `Added ${sent} clips to the project`);
   }
 
   function show() {
@@ -572,7 +630,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   render();
   const prep = document.getElementById('media-prep');
   function applyScale(scale) {
-    const next = GALLERY_SCALES.includes(scale) ? scale : 'medium';
+    const next = GALLERY_SCALES.includes(SCALE_ALIAS[scale]) ? SCALE_ALIAS[scale] : 'medium';
     prep?.setAttribute('data-scale', next);
     modal?.setAttribute('data-scale', next);
     for (const button of document.querySelectorAll('[data-gallery-scale]')) {
@@ -599,6 +657,11 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   for (const button of document.querySelectorAll('[data-gallery-source]')) {
     button.addEventListener('click', () => applySource(button.dataset.gallerySource));
   }
+  const search = document.getElementById('prep-search');
+  search?.addEventListener('input', () => {
+    query = search.value.trim().toLowerCase();
+    if (latest.length || query) paint(latest);
+  });
 
   return { open: show, refresh: render, ingest, close };
 }

@@ -64,12 +64,12 @@
           <div class="prep-head-row">
             <h2>Media Manager</h2>
             <div class="gallery-scale" role="group" aria-label="Thumbnail size">
-              <button type="button" data-gallery-scale="compact" aria-pressed="false">Compact</button>
+              <button type="button" data-gallery-scale="small" aria-pressed="false">Small</button>
               <button type="button" data-gallery-scale="medium" aria-pressed="true">Medium</button>
               <button type="button" data-gallery-scale="large" aria-pressed="false">Large</button>
             </div>
           </div>
-          <p>Drop a video or image to store it here. Tag a logo <b>brand</b>, then send it to Project Media. Every file keeps a thumbnail.</p>
+          <p>Drop a video or image to store it in the library. Tag a logo <b>brand</b>, then add it to the open project. The project keeps a reference, not a second copy.</p>
         </header>
         <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
           <b>Drop a video or image</b>
@@ -86,15 +86,19 @@
           <div class="prep-tag-tools">
             <input id="prep-tag-input" type="text" maxlength="24" placeholder="trees" spellcheck="false" autocomplete="off" aria-label="Tag for the selected clips" />
             <button id="prep-tag-add" type="button" disabled title="Tag the selected clips">Tag</button>
-            <button id="prep-send" type="button" disabled>Send to Project Media</button>
+            <button id="prep-send" type="button" disabled>Add to Project</button>
           </div>
         </div>
         <div id="prep-tag-filters" class="prep-tag-filters" hidden></div>
-        <div class="gallery-sources" role="tablist" aria-label="Media source">
-          <button type="button" role="tab" data-gallery-source="all" aria-selected="true">All Media</button>
-          <button type="button" role="tab" data-gallery-source="fetch" aria-selected="false">Fetched / Downloads</button>
-          <button type="button" role="tab" data-gallery-source="user" aria-selected="false">User Clips</button>
-          <button type="button" role="tab" data-gallery-source="audio" aria-selected="false">Audio / Stems</button>
+        <div class="gallery-find">
+          <input id="prep-search" type="search" placeholder="Search name or tag" spellcheck="false" autocomplete="off" aria-label="Search the library" />
+        </div>
+        <div class="gallery-sources" role="tablist" aria-label="Media type">
+          <button type="button" role="tab" data-gallery-source="all" aria-selected="true">All</button>
+          <button type="button" role="tab" data-gallery-source="video" aria-selected="false">Video</button>
+          <button type="button" role="tab" data-gallery-source="audio" aria-selected="false">Audio</button>
+          <button type="button" role="tab" data-gallery-source="image" aria-selected="false">Images</button>
+          <button type="button" role="tab" data-gallery-source="fetch" aria-selected="false">Fetched</button>
         </div>
         <div class="prep-gallery-scroll">
           <div id="prep-grid" class="global-grid prep-grid"></div>
@@ -190,13 +194,13 @@
           <summary>Project Media</summary>
           <div class="row bin-row">
             <button id="media-add" type="button" class="bin-add" title="Open Media Manager">+</button>
-            <span class="hint">Clips sent from Media Manager</span>
+            <span class="hint">Add clips from the library</span>
             <input id="media-files" type="file" multiple hidden
               accept="image/*,video/*,.mp4,.mov,.m4v,.webm" />
           </div>
           <div id="media-list" class="media-grid"></div>
           <p id="media-missing" class="status error" hidden></p>
-          <p class="hint">Only the clips you sent from Media Manager for this project. Hover a clip and send it to a layer.</p>
+          <p class="hint">Only clips added from the library can go on a layer. The project stores a reference to each file.</p>
           <div id="online-source" class="online-source">
             <label for="online-prompt">Live Text-to-Visual</label>
             <select id="online-mode" title="Source">
@@ -731,7 +735,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           <button id="global-upload" type="button">Upload</button>
           <button id="global-close" type="button">Close</button>
         </header>
-        <p class="hint">Stored clips. Select them in Media Manager and send them to Project Media.</p>
+        <p class="hint">Stored clips. Select them in Media Manager and add them to the project.</p>
         <div id="global-drop" class="global-drop" tabindex="0">Drop media here, or click to choose files</div>
         <div id="global-grid" class="global-grid"></div>
         <p id="global-empty" class="hint">No media stored yet.</p>
@@ -771,8 +775,8 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             </li>
             <li>
               <h3>Media Manager</h3>
-              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264. Tag a logo <b>Brand asset</b> before it is stored. The gallery is kept across restarts. Select clips, tag them, then <b>Send to Project Media</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app.</p>
-              <p><b>Project Media</b> lists only the clips sent to this project. Click <b>+</b> to open <b>Media Manager</b>. On a card, <b>A</b>, <b>B</b>, or <b>C</b> assigns that clip. Removing a clip from the project drops it from this show. If a layer is playing it, that layer returns to the test pattern.</p>
+              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264 into the library. Tag a logo <b>Brand asset</b> before it is stored. The gallery is kept across restarts. Select clips, tag them, then <b>Add to Project</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app.</p>
+              <p><b>Project Media</b> lists only the clips added to this project. Each one is a reference to the library file. Click <b>+</b> to open <b>Media Manager</b>. On a card, <b>A</b>, <b>B</b>, or <b>C</b> assigns that clip. Removing a clip from the project drops it from this show. If a layer is playing it, that layer returns to the test pattern.</p>
             </li>
             <li>
               <h3>Audio</h3>

@@ -317,30 +317,24 @@ export class OutputWindow {
       }
     }
 
-    const win = new WebviewWindow(MASTER_OUTPUT, this.#projectionOptions(monitor, outputPageUrl()));
+    const win = new WebviewWindow(MASTER_OUTPUT, this.#projectionOptions(outputPageUrl()));
     await this.#waitForWindow(win);
     return this.#placeProjection(win, monitor);
   }
 
-  #projectionOptions(monitor, url) {
-    const scale = monitor.scaleFactor || 1;
-    const pos = monitor.position.toLogical(scale);
-    const size = monitor.size.toLogical(scale);
+  #projectionOptions(url) {
     const options = {
       url,
       title: 'Y2K VJ by Cín - MASTER OUTPUT',
       decorations: false,
+      alwaysOnTop: true,
       shadow: false,
       resizable: false,
       fullscreen: false,
-      focus: true,
-      visible: true,
+      focus: false,
+      visible: false,
       backgroundThrottling: 'disabled',
       center: false,
-      x: Math.round(pos.x),
-      y: Math.round(pos.y),
-      width: Math.max(320, Math.round(size.width)),
-      height: Math.max(240, Math.round(size.height)),
     };
     // Windows WebViews with different additionalBrowserArgs need different data
     // directories. Match the desk args and keep the projector on its own profile.
@@ -367,24 +361,18 @@ export class OutputWindow {
 
   async #placeProjection(win, monitor) {
     const { PhysicalPosition, PhysicalSize } = await import('@tauri-apps/api/dpi');
+    const origin = new PhysicalPosition(monitor.position.x, monitor.position.y);
     this.nativeSize = {
       w: Math.max(2, Math.round(monitor.size.width)),
       h: Math.max(2, Math.round(monitor.size.height)),
     };
     this.#publishDpi();
-    await win.setPosition(new PhysicalPosition(monitor.position.x, monitor.position.y));
+    await win.setPosition(origin);
     await win.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
+    try { await win.setDecorations(false); } catch { /* already undecorated */ }
+    try { await win.setAlwaysOnTop(true); } catch { /* the window config already asks for this */ }
     await win.show();
-    const origin = new PhysicalPosition(monitor.position.x, monitor.position.y);
-    try {
-      await win.setFullscreenOnMonitor(origin);
-    } catch {
-      try {
-        await win.setFullscreen(true);
-      } catch {
-        // Borderless window stays where it was placed.
-      }
-    }
+    await win.setFullscreen(true);
     try {
       await win.setFocus();
     } catch { /* shown window still counts as open */ }

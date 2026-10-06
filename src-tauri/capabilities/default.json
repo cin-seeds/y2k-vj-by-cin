@@ -18,6 +18,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-fullscreen",
     "core:window:allow-set-fullscreen-on-monitor",
+    "core:window:allow-set-always-on-top",
     "core:window:allow-set-decorations",
     "core:window:allow-show",
     "core:window:allow-close",

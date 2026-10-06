@@ -1100,6 +1100,7 @@ bindLoopThumb('loop-out-thumb', 'out');
 
 function assignMediaToLayer(mediaId, layerId, { history = true } = {}) {
   const name = String(mediaId).replace(/^(?:file|url):/, '');
+  if (!project.mediaPool.some((item) => item.name === name)) return Promise.resolve();
   return setLayerMedia(layerId, clipKey(name), { history });
 }
 
@@ -1446,8 +1447,8 @@ async function downloadClip(clip, card) {
     addToBin({ name: added[0], path: saved.path || '' });
     window.dispatchEvent(new CustomEvent('vj-global-media'));
     source.textContent = 'In project';
-    setOnlineStatus(`Sent ${added[0]} to Project Media.`);
-    showToast(`Sent ${added[0]} to Project Media`);
+    setOnlineStatus(`Added ${added[0]} to the project.`);
+    showToast(`Added ${added[0]} to the project`);
   } catch (err) {
     card.classList.add('failed');
     const transcode = !!err?.transcode;
@@ -1755,16 +1756,21 @@ function addToBin(entry) {
   const name = entry?.name;
   if (!name) return false;
   if (project.mediaPool.some((item) => item.name === name)) return false;
+  const rawPath = typeof entry.path === 'string' ? entry.path : '';
+  const path = rawPath && isTauri() ? libraryReference(name) : rawPath;
   project.setMediaPool(project.mediaPool.concat([{
     id: name,
     name,
     kind: entry.kind === 'image' || entry.kind === 'video' || entry.kind === 'audio' ? entry.kind : mediaKind(name),
-    path: typeof entry.path === 'string' ? entry.path : '',
+    path,
   }]));
-  if (mediaKind(name) !== 'audio' && entry.path && isTauri() && !library.has(name)) {
-    import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
-      library.addRemote({ name, url: convertFileSrc(entry.path) });
-    });
+  if (mediaKind(name) !== 'audio' && rawPath && isTauri() && !library.has(name)) {
+    const playable = absoluteMediaPath(rawPath) ? rawPath : '';
+    if (playable) {
+      import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
+        library.addRemote({ name, url: convertFileSrc(playable) });
+      });
+    }
   }
   refreshLibraryUi();
   refreshMediaSelect();
@@ -1791,11 +1797,13 @@ async function removeFromBin(name) {
 async function hydrateProjectMedia() {
   await library.ensureCached(project.mediaPool.map((item) => item.name));
   if (!isTauri()) return;
+  await ensureGlobalMediaRoot();
   const { convertFileSrc } = await import('@tauri-apps/api/core');
   for (const item of project.mediaPool) {
     if (item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
-    if (!item.path || library.has(item.name)) continue;
-    library.addRemote({ name: item.name, url: convertFileSrc(item.path) });
+    const path = resolveLibraryPath(item.path);
+    if (!path || !absoluteMediaPath(path) || library.has(item.name)) continue;
+    library.addRemote({ name: item.name, url: convertFileSrc(path) });
   }
 }
 
@@ -2877,7 +2885,7 @@ function captureSceneThumb(nowMs) {
 
 timeline.onTrigger = (cue, { immediate } = {}) => {
   if (cue.kind === 'clip') {
-    if (library.has(cue.mediaName)) assignMediaToLayer(cue.mediaName, cue.layerId || 'A', { history: false });
+    if (project.mediaPool.some((item) => item.name === cue.mediaName)) assignMediaToLayer(cue.mediaName, cue.layerId || 'A', { history: false });
     return;
   }
   triggerScene(cue.sceneId, immediate ? 0 : timeline.fadeSeconds);
@@ -3255,6 +3263,42 @@ function absoluteMediaPath(path) {
   return /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('\\\\') || path.startsWith('/');
 }
 
+function normMediaPath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function libraryReference(name) {
+  const leaf = String(name || '').split(/[\\/]/).pop();
+  return leaf ? `library/${leaf}` : '';
+}
+
+function isLibraryReference(path) {
+  return normMediaPath(path).startsWith('library/');
+}
+
+let globalMediaRoot = '';
+
+async function ensureGlobalMediaRoot() {
+  if (globalMediaRoot || !IS_TAURI) return globalMediaRoot;
+  try { globalMediaRoot = (await invoke('global_media_dir')) || ''; } catch { globalMediaRoot = ''; }
+  return globalMediaRoot;
+}
+
+function resolveLibraryPath(path) {
+  if (!isLibraryReference(path)) return path || '';
+  if (!globalMediaRoot) return '';
+  const leaf = String(path).replace(/\\/g, '/').slice('library/'.length);
+  const sep = globalMediaRoot.includes('\\') ? '\\' : '/';
+  return `${globalMediaRoot.replace(/[\\/]+$/, '')}${sep}${leaf}`;
+}
+
+function isInsideGlobalLibrary(path, root) {
+  if (!path || !root || !absoluteMediaPath(path)) return false;
+  const file = normMediaPath(path);
+  const base = normMediaPath(root);
+  return file === base || file.startsWith(`${base}/`);
+}
+
 function projectDirJoin(projectPath, rel) {
   const dir = projectPath.replace(/[/\\][^/\\]+$/, '');
   const sep = projectPath.includes('\\') ? '\\' : '/';
@@ -3294,10 +3338,22 @@ async function bundleProjectAssets(data, projectPath) {
   if (!isTauri() || !projectPath) return data;
   const saved = JSON.parse(JSON.stringify(data));
   const missed = [];
+  const root = await ensureGlobalMediaRoot();
+  let vault = new Set();
+  try {
+    const rows = await invoke('list_global_media', { saveDir: '' });
+    vault = new Set((Array.isArray(rows) ? rows : []).map((row) => row.name));
+  } catch { /* a file we cannot see in the vault is copied beside the project */ }
   for (const item of saved.mediaPool || []) {
     if (!item?.name) continue;
+    const path = typeof item.path === 'string' ? item.path : '';
+    const abs = isLibraryReference(path) ? resolveLibraryPath(path) : path;
+    if (isLibraryReference(path) || vault.has(item.name) || isInsideGlobalLibrary(abs, root)) {
+      item.path = libraryReference(item.name);
+      continue;
+    }
     try {
-      const rel = await storeProjectAsset(projectPath, item.name, library.get(item.name), item.path);
+      const rel = await storeProjectAsset(projectPath, item.name, library.get(item.name), path);
       if (rel) item.path = rel;
     } catch (err) {
       missed.push(item.name);
@@ -3336,8 +3392,9 @@ async function bundleProjectAssets(data, projectPath) {
 async function pointProjectAtFolder(projectPath) {
   if (!isTauri() || !projectPath) return;
   const { convertFileSrc } = await import('@tauri-apps/api/core');
+  await ensureGlobalMediaRoot();
   const pool = project.mediaPool.map((item) => {
-    if (!item.path || absoluteMediaPath(item.path)) return item;
+    if (!item.path || absoluteMediaPath(item.path) || isLibraryReference(item.path)) return item;
     return { ...item, path: projectDirJoin(projectPath, item.path) };
   });
   project.setMediaPool(pool);
@@ -4241,12 +4298,17 @@ navigator.mediaDevices?.addEventListener('devicechange', () => {
 
 async function useProjectAudio(entry) {
   showAudioMode('file');
-  if (entry?.path && isTauri()) {
+  let audioPath = entry?.path || '';
+  if (isLibraryReference(audioPath)) {
+    await ensureGlobalMediaRoot();
+    audioPath = resolveLibraryPath(audioPath);
+  }
+  if (audioPath && absoluteMediaPath(audioPath) && isTauri()) {
     const { convertFileSrc } = await import('@tauri-apps/api/core');
-    const res = await fetch(convertFileSrc(entry.path));
+    const res = await fetch(convertFileSrc(audioPath));
     if (!res.ok) throw new Error('Could not read that audio file');
     const blob = await res.blob();
-    audioAssetPath = entry.path;
+    audioAssetPath = audioPath;
     await useAudioFile(new File([blob], entry.name, { type: blob.type || 'audio/wav' }));
     return;
   }
@@ -5281,7 +5343,9 @@ apcView = new ApcView({
     apcView?.refresh();
   },
   getHud: () => ({ on: hudWant, size: Number($('hud-size').value) }),
-  getClips: () => library.names,
+  getClips: () => project.mediaPool
+    .filter((item) => item?.name && item.kind !== 'audio' && mediaKind(item.name) !== 'audio' && !isBrandVisual(item))
+    .map((item) => item.name),
   setClip: (layer, name) => setLayerMedia(layer, `file:${name}`, { history: true }),
   getMedia: () => currentMedia(),
   momentary,
@@ -6672,7 +6736,7 @@ globalLibrary = bindGlobalLibrary({
   onAdd: (entry, { quiet } = {}) => {
     const added = addToBin(entry);
     if (!quiet) {
-      showToast(added ? `Sent ${entry.name} to Project Media` : `${entry.name} is already in this project`);
+      showToast(added ? `Added ${entry.name} to the project` : `${entry.name} is already in this project`);
       globalLibrary?.refresh();
     }
     return !!added;
