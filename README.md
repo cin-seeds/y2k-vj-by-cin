@@ -2,7 +2,7 @@
 
 A live VJ desk with a late-90s, early-2000s look. Mix three video layers, make them move to the music, and play the whole show from an Akai APC Mini MK2.
 
-![Y2K VJ by Cín, Live VJ workspace](docs/img/hero.png)
+[Open the browser preview](https://cin-seeds.github.io/y2k-vj-by-cin/) of the desk. File transcoding, project saving, and NDI / Spout / Syphon stay in the desktop app.
 
 ## Download
 
@@ -15,6 +15,7 @@ Pick the file for your computer:
 | Windows | The file ending in `_x64-setup.exe` |
 | Mac with Apple Silicon (M1, M2, M3, M4) | The file ending in `_aarch64.dmg` |
 | Mac with Intel | The file ending in `_x64.dmg` |
+| Linux | The files ending in `.deb`, `.rpm`, or `.AppImage` |
 
 Windows also gets an `.msi` file. Use it if your IT setup needs MSI. Otherwise use the `-setup.exe`.
 
