@@ -1,6 +1,8 @@
 // One full-band analyser. Band energy, onsets, and envelopes are computed here
 // so the AnalyserNode stays lightly smoothed and the musical response stays tight.
 
+import { attachAudioContext } from './outputSink.js';
+
 const FFT_SIZE = 4096;
 const HISTORY = 60;
 const FLUX_RATIO = 1.5;
@@ -266,6 +268,12 @@ export class AudioEngine {
     else this.playing = false;
   }
 
+  /** Start or resume the graph from a click, before a preview or a file load. */
+  async wake() {
+    await this.#ensureContext();
+    if (this.ctx?.state === 'suspended') await this.ctx.resume();
+  }
+
   play(offset = this.playOffset) {
     if (!this.buffer || !this.ctx) return;
     if (!(this._analysisHold > 0)) this._analysisHold = this._volume > 0 ? this._volume : 0.5;
@@ -357,6 +365,7 @@ export class AudioEngine {
   async #ensureContext() {
     this.ctx ??= new AudioContext({ latencyHint: 'interactive' });
     await this.ctx.resume();
+    await attachAudioContext(this.ctx);
     if (this.graph) return;
     const ctx = this.ctx;
 

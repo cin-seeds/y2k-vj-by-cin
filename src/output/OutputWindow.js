@@ -9,6 +9,7 @@ import { paintLogos } from '../overlay/StingRack.js';
 import { paintScreensaver } from '../overlay/paintScreensaver.js';
 import { dpiState } from '../ui/dpiScale.js';
 import { IS_TAURI } from '../ipc.js';
+import { applyMediaSink } from '../audio/outputSink.js';
 
 const OVERLAY_KEY = 'vj.hudOutput';
 const MASTER_OUTPUT = 'master-output';
@@ -237,6 +238,7 @@ export class OutputWindow {
       doc.body.append(el);
     }
     if (el.srcObject !== next) el.srcObject = next;
+    applyMediaSink(el);
     el.play?.().catch(() => {});
   }
 

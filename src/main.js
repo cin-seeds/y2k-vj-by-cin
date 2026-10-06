@@ -20,6 +20,7 @@ import { MediaLibrary } from './media/MediaLibrary.js';
 import { fetchVideoLoop } from './media/onlineFetch.js';
 import { searchStockAudio } from './media/stockAudio.js';
 import { AudioEngine } from './audio/AudioEngine.js';
+import { applyDocumentSink, applyMediaSink, setAudioSink } from './audio/outputSink.js';
 import { ModMatrix, createModRow } from './audio/ModMatrix.js';
 import { BeatClock } from './clock/BeatClock.js';
 import { BpmEngine } from './clock/BpmEngine.js';
@@ -36,7 +37,7 @@ import { bindPictureSources, pictureSources, refreshPictureSources } from './inp
 import { bindRangeReadout } from './ui/NumericSlider.js';
 import { beginDrag, endDragSoon } from './ui/dragPayload.js';
 import { bindMediaPrep } from './media/mediaPrep.js';
-import { addMediaTag, bindGlobalLibrary, hasMediaTag } from './media/GlobalLibrary.js';
+import { addMediaTag, bindGlobalLibrary, hasMediaTag, rememberMediaSource } from './media/GlobalLibrary.js';
 import { dpiState, formatFactor, pixelsOf, setDpiAuto, setOutputPixels, setPreviewScale } from './ui/dpiScale.js';
 import { OutputMap } from './output/OutputMap.js';
 import { SceneManager } from './scenes/SceneManager.js';
@@ -47,7 +48,7 @@ import { Panel } from './ui/Panel.js';
 import { Diagnostics, flashControl } from './ui/Diagnostics.js';
 import { SceneBar } from './ui/SceneBar.js';
 import { StingRack } from './overlay/StingRack.js';
-import { SCREEN_EM_SHADE, SCREEN_MARK_SHADE, screenShadow } from './overlay/paintScreensaver.js';
+import { SCREEN_EM_SHADE, SCREEN_MARK_SHADE, screenShadow, wrapScreenLines } from './overlay/paintScreensaver.js';
 import { ApcView } from './ui/ApcView.js';
 import { ApcLeds, ledMap } from './midi/ApcMiniMk2.js';
 
@@ -1314,6 +1315,7 @@ $('media-add').addEventListener('click', () => {
 $('media-files').addEventListener('change', (e) => {
   const files = [...(e.target.files || [])];
   library.add(files);
+  for (const file of files) rememberMediaSource(file.name, 'user');
   if ($('prep-brand')?.checked) {
     for (const file of files) addMediaTag(file.name, 'brand');
   }
@@ -1418,7 +1420,7 @@ async function fileFromStock(clip, onPhase) {
     return { file: new File([blob], leaf, { type: blob.type || 'video/mp4' }), path: output };
   }
   console.warn('transcode_media needs the desktop app; using the downloaded file as-is.');
-  const res = await fetch(clip.videoUrl);
+  const res = await fetch(clip.videoUrl, { mode: 'cors', headers: { Accept: '*/*' } });
   if (!res.ok) throw new Error('Download failed');
   const blob = await res.blob();
   return { file: new File([blob], filename, { type: blob.type || type }), path: '' };
@@ -1440,6 +1442,7 @@ async function downloadClip(clip, card) {
     const saved = await fileFromStock(clip, (text) => { source.textContent = text; });
     const added = library.add([saved.file]);
     if (!added.length) throw new Error('Download failed');
+    rememberMediaSource(added[0], 'fetch');
     addToBin({ name: added[0], path: saved.path || '' });
     window.dispatchEvent(new CustomEvent('vj-global-media'));
     source.textContent = 'In project';
@@ -2110,7 +2113,8 @@ function bindPanelToggles() {
 }
 bindPanelToggles();
 
-const SCREEN_TEXT = 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE\nFUTURE';
+const SCREEN_TEXT = 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE FUTURE';
+const SCREEN_TEXT_WAS = 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE\nFUTURE';
 const SCREEN_FONTS = {
   desk: 'var(--font)',
   terminal: '"Courier New", "Lucida Console", monospace',
@@ -2149,6 +2153,11 @@ let screenFont = 'fixedsys';
 let screenShade = 0;
 let screenBg = 0.65;
 let screenColor = 'white';
+let screenBoxW = 0;
+let screenBoxH = 0;
+let screenPad = 12;
+let screenRadius = 0;
+let screenBorder = 2;
 
 function escapeScreenLine(line) {
   return line
@@ -2158,8 +2167,29 @@ function escapeScreenLine(line) {
     .replace(/\/\//g, '<em>//</em>');
 }
 
+function screenMeasure(mark) {
+  const probe = document.createElement('span');
+  probe.setAttribute('aria-hidden', 'true');
+  probe.style.position = 'absolute';
+  probe.style.whiteSpace = 'pre';
+  probe.style.visibility = 'hidden';
+  mark.append(probe);
+  return {
+    width(text) {
+      probe.textContent = text;
+      return probe.offsetWidth;
+    },
+    remove() { probe.remove(); },
+  };
+}
+
 function paintScreenText(mark) {
-  const lines = String(screenText).replace(/\r\n/g, '\n').split('\n');
+  const measure = screenMeasure(mark);
+  const lines = wrapScreenLines(
+    String(screenText).replace(/\r\n/g, '\n').split('\n').map((text) => ({ text })),
+    measure.width,
+  ).map((line) => line.text);
+  measure.remove();
   const body = lines.map((line) => {
     const shown = line.length ? escapeScreenLine(line) : '&nbsp;';
     return `<span class="brand-line">${shown}</span>`;
@@ -2386,6 +2416,71 @@ function setScreenBg(value) {
   persistDesk();
 }
 
+function boxSizeLabel(value) {
+  return value <= 0 ? 'Auto' : `${value}%`;
+}
+
+function radiusLabel(value) {
+  if (value <= 0) return 'Sharp';
+  if (value >= 100) return 'Pill';
+  return String(value);
+}
+
+function setScreenBoxW(value) {
+  screenBoxW = Math.min(100, Math.max(0, Math.round(Number(value) || 0)));
+  const slider = $('screen-box-w');
+  if (slider && slider.value !== String(screenBoxW)) slider.value = String(screenBoxW);
+  const out = $('screen-box-w-out');
+  if (out) out.textContent = boxSizeLabel(screenBoxW);
+  try { localStorage.setItem('vj.screenBoxW', String(screenBoxW)); } catch { /* ignore */ }
+  refreshScreen();
+  persistDesk();
+}
+
+function setScreenBoxH(value) {
+  screenBoxH = Math.min(100, Math.max(0, Math.round(Number(value) || 0)));
+  const slider = $('screen-box-h');
+  if (slider && slider.value !== String(screenBoxH)) slider.value = String(screenBoxH);
+  const out = $('screen-box-h-out');
+  if (out) out.textContent = boxSizeLabel(screenBoxH);
+  try { localStorage.setItem('vj.screenBoxH', String(screenBoxH)); } catch { /* ignore */ }
+  refreshScreen();
+  persistDesk();
+}
+
+function setScreenPad(value) {
+  screenPad = Math.min(64, Math.max(0, Math.round(Number(value) || 0)));
+  const slider = $('screen-pad');
+  if (slider && slider.value !== String(screenPad)) slider.value = String(screenPad);
+  const out = $('screen-pad-out');
+  if (out) out.textContent = String(screenPad);
+  try { localStorage.setItem('vj.screenPad', String(screenPad)); } catch { /* ignore */ }
+  refreshScreen();
+  persistDesk();
+}
+
+function setScreenRadius(value) {
+  screenRadius = Math.min(100, Math.max(0, Math.round(Number(value) || 0)));
+  const slider = $('screen-radius');
+  if (slider && slider.value !== String(screenRadius)) slider.value = String(screenRadius);
+  const out = $('screen-radius-out');
+  if (out) out.textContent = radiusLabel(screenRadius);
+  try { localStorage.setItem('vj.screenRadius', String(screenRadius)); } catch { /* ignore */ }
+  refreshScreen();
+  persistDesk();
+}
+
+function setScreenBorder(value) {
+  screenBorder = Math.min(12, Math.max(0, Math.round(Number(value) || 0)));
+  const slider = $('screen-border');
+  if (slider && slider.value !== String(screenBorder)) slider.value = String(screenBorder);
+  const out = $('screen-border-out');
+  if (out) out.textContent = String(screenBorder);
+  try { localStorage.setItem('vj.screenBorder', String(screenBorder)); } catch { /* ignore */ }
+  refreshScreen();
+  persistDesk();
+}
+
 function setScreenColor(value) {
   screenColor = SCREEN_COLORS[value] ? value : 'white';
   const field = $('screen-color');
@@ -2399,14 +2494,15 @@ function layoutBrandMark(mark, wrapW, wrapH) {
   const key = [
     wrapW, wrapH, brandScale, screenShade, screenFont, screenColor,
     screenBg.toFixed(2), screenText, screenCredit ? 1 : 0,
+    screenBoxW, screenBoxH, screenPad, screenRadius, screenBorder,
   ].join('|');
   if (brandLayout?.key === key) return brandLayout;
-  paintScreenText(mark);
   const base = Math.min(28, Math.max(16, wrapW / 32));
   const font = Math.max(8, Math.round(base * brandScale / 100));
   const showBox = screenBg > 0;
   mark.style.transform = '';
   mark.style.width = '';
+  mark.style.height = '';
   mark.style.whiteSpace = 'nowrap';
   mark.style.fontSize = `${font}px`;
   mark.style.fontFamily = SCREEN_FONTS[screenFont];
@@ -2415,11 +2511,17 @@ function layoutBrandMark(mark, wrapW, wrapH) {
   mark.style.setProperty('--screen-em-shadow', screenShadow(screenShade, SCREEN_EM_SHADE));
   mark.classList.toggle('plain', !showBox);
   mark.style.backgroundColor = showBox ? `rgba(0, 0, 0, ${screenBg})` : 'transparent';
-  const padX = Math.max(10, Math.round(font * 0.7));
-  const padTop = Math.max(6, Math.round(font * 0.36));
-  const padBottom = Math.max(8, Math.round(font * 0.55));
-  mark.style.padding = showBox ? `${padTop}px ${padX}px ${padBottom}px` : '0';
+  mark.style.padding = `${screenPad}px`;
+  mark.style.borderWidth = showBox ? `${screenBorder}px` : '0';
+  mark.style.borderRadius = screenRadius <= 0 ? '0' : `${screenRadius / 2}%`;
   if (mark.hidden) mark.hidden = false;
+  paintScreenText(mark);
+  if (screenBoxW > 0) {
+    mark.style.width = `${Math.max(mark.offsetWidth, Math.round(wrapW * screenBoxW / 100))}px`;
+  }
+  if (screenBoxH > 0) {
+    mark.style.height = `${Math.max(mark.offsetHeight, Math.round(wrapH * screenBoxH / 100))}px`;
+  }
   let mw = mark.offsetWidth;
   let mh = mark.offsetHeight;
   const fitW = Math.max(1, wrapW - 16);
@@ -2468,8 +2570,10 @@ function placeBrandMark(nowMs) {
   const dist = (nowMs / 1000) * speed;
   const dx = spanX < 1 ? 0 : dist % (spanX * 2);
   const dy = spanY < 1 ? 0 : (dist * 0.62) % (spanY * 2);
-  const x = originX + (wrapW - mw - spanX) / 2 + (dx <= spanX ? dx : spanX * 2 - dx);
-  const y = originY + (wrapH - mh - spanY) / 2 + (dy <= spanY ? dy : spanY * 2 - dy);
+  const swingX = (dx <= spanX ? dx : spanX * 2 - dx) - spanX / 2;
+  const swingY = (dy <= spanY ? dy : spanY * 2 - dy) - spanY / 2;
+  const x = originX + (wrapW - mw) / 2 + swingX;
+  const y = originY + (wrapH - mh) / 2 + swingY;
   const left = `${x.toFixed(1)}px`;
   const top = `${y.toFixed(1)}px`;
   if (mark.style.left !== left) mark.style.left = left;
@@ -2522,6 +2626,36 @@ $('screen-bg')?.addEventListener('input', () => {
   params.history?.edit('screenBg', prev, screenBg, (v) => setScreenBg(v), 'drag');
 });
 $('screen-bg')?.addEventListener('change', () => params.history?.commit());
+$('screen-box-w')?.addEventListener('input', () => {
+  const prev = screenBoxW;
+  setScreenBoxW($('screen-box-w').value);
+  params.history?.edit('screenBoxW', prev, screenBoxW, (v) => setScreenBoxW(v), 'drag');
+});
+$('screen-box-w')?.addEventListener('change', () => params.history?.commit());
+$('screen-box-h')?.addEventListener('input', () => {
+  const prev = screenBoxH;
+  setScreenBoxH($('screen-box-h').value);
+  params.history?.edit('screenBoxH', prev, screenBoxH, (v) => setScreenBoxH(v), 'drag');
+});
+$('screen-box-h')?.addEventListener('change', () => params.history?.commit());
+$('screen-pad')?.addEventListener('input', () => {
+  const prev = screenPad;
+  setScreenPad($('screen-pad').value);
+  params.history?.edit('screenPad', prev, screenPad, (v) => setScreenPad(v), 'drag');
+});
+$('screen-pad')?.addEventListener('change', () => params.history?.commit());
+$('screen-radius')?.addEventListener('input', () => {
+  const prev = screenRadius;
+  setScreenRadius($('screen-radius').value);
+  params.history?.edit('screenRadius', prev, screenRadius, (v) => setScreenRadius(v), 'drag');
+});
+$('screen-radius')?.addEventListener('change', () => params.history?.commit());
+$('screen-border')?.addEventListener('input', () => {
+  const prev = screenBorder;
+  setScreenBorder($('screen-border').value);
+  params.history?.edit('screenBorder', prev, screenBorder, (v) => setScreenBorder(v), 'drag');
+});
+$('screen-border')?.addEventListener('change', () => params.history?.commit());
 $('screen-color')?.addEventListener('change', () => {
   const prev = screenColor;
   setScreenColor($('screen-color').value);
@@ -2534,7 +2668,10 @@ try {
 } catch { /* ignore */ }
 try {
   const savedText = localStorage.getItem('vj.screenText');
-  if (savedText != null) setScreenText(savedText);
+  if (savedText != null) {
+    const stored = savedText.replace(/\r\n/g, '\n');
+    setScreenText(stored === SCREEN_TEXT_WAS ? SCREEN_TEXT : savedText);
+  }
 } catch { /* ignore */ }
 try {
   const savedCredit = localStorage.getItem('vj.screenCredit');
@@ -2560,6 +2697,26 @@ try {
 try {
   const savedSize = localStorage.getItem('vj.brandSize');
   if (savedSize != null) setBrandScale(savedSize);
+} catch { /* ignore */ }
+try {
+  const savedBoxW = localStorage.getItem('vj.screenBoxW');
+  if (savedBoxW != null) setScreenBoxW(savedBoxW);
+} catch { /* ignore */ }
+try {
+  const savedBoxH = localStorage.getItem('vj.screenBoxH');
+  if (savedBoxH != null) setScreenBoxH(savedBoxH);
+} catch { /* ignore */ }
+try {
+  const savedPad = localStorage.getItem('vj.screenPad');
+  if (savedPad != null) setScreenPad(savedPad);
+} catch { /* ignore */ }
+try {
+  const savedRadius = localStorage.getItem('vj.screenRadius');
+  if (savedRadius != null) setScreenRadius(savedRadius);
+} catch { /* ignore */ }
+try {
+  const savedBorder = localStorage.getItem('vj.screenBorder');
+  if (savedBorder != null) setScreenBorder(savedBorder);
 } catch { /* ignore */ }
 try {
   if (localStorage.getItem('vj.library') === '0') setLibraryOpen(false);
@@ -2763,6 +2920,11 @@ function captureDesk() {
       bg: screenBg,
       color: screenColor,
       size: brandScale,
+      boxW: screenBoxW,
+      boxH: screenBoxH,
+      pad: screenPad,
+      radius: screenRadius,
+      border: screenBorder,
     },
     audio: {
       mode: audioMode,
@@ -2858,6 +3020,11 @@ function applyDesk(desk) {
     setScreenBg(next.screen.bg);
     setScreenColor(next.screen.color);
     setBrandScale(next.screen.size);
+    setScreenBoxW(next.screen.boxW);
+    setScreenBoxH(next.screen.boxH);
+    setScreenPad(next.screen.pad);
+    setScreenRadius(next.screen.radius);
+    setScreenBorder(next.screen.border);
     setBrandMark(next.screen.on);
     audioAssetPath = next.audio.path || '';
     showAudioMode(next.audio.mode);
@@ -3570,6 +3737,69 @@ async function refreshAudioDevices() {
   }
 }
 
+const AUDIO_OUTPUT_KEY = 'vj.audioOutput';
+let audioOutputId = '';
+
+function normalizeOutputId(id) {
+  if (!id || id === 'default' || id === 'communications') return '';
+  return id;
+}
+
+async function listAudioOutputs({ ask = false } = {}) {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  let devices = await navigator.mediaDevices.enumerateDevices();
+  const outputsOf = (list) => list.filter((d) => {
+    if (d.kind !== 'audiooutput') return false;
+    return normalizeOutputId(d.deviceId) !== '';
+  });
+  let outputs = outputsOf(devices);
+  const unnamed = !outputs.length || outputs.every((d) => !d.label);
+  if (ask && unnamed) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      devices = await navigator.mediaDevices.enumerateDevices();
+      outputs = outputsOf(devices);
+    } catch { /* names stay blank until the browser is allowed to listen */ }
+  }
+  return outputs;
+}
+
+async function setAudioOutput(deviceId) {
+  audioOutputId = normalizeOutputId(deviceId);
+  try { localStorage.setItem(AUDIO_OUTPUT_KEY, audioOutputId); } catch { /* ignore */ }
+  const sel = $('audio-output');
+  if (sel && [...sel.options].some((opt) => opt.value === audioOutputId) && sel.value !== audioOutputId) {
+    sel.value = audioOutputId;
+  }
+  await setAudioSink(audioOutputId);
+  await applyDocumentSink(document, audioOutputId);
+  try { await applyDocumentSink(outputWin.win?.document, audioOutputId); } catch { /* popup closed */ }
+}
+
+async function refreshAudioOutputs({ ask = false } = {}) {
+  const sel = $('audio-output');
+  if (!sel) return;
+  const outputs = await listAudioOutputs({ ask });
+  const keep = outputs.some((d) => d.deviceId === audioOutputId);
+  const next = keep ? audioOutputId : '';
+  sel.replaceChildren(new Option('System Default', ''));
+  outputs.forEach((device, index) => {
+    sel.add(new Option(device.label || `Output ${index + 1}`, device.deviceId));
+  });
+  sel.value = next;
+  await setAudioOutput(next);
+}
+
+try { audioOutputId = normalizeOutputId(localStorage.getItem(AUDIO_OUTPUT_KEY) || ''); } catch { /* ignore */ }
+$('audio-output')?.addEventListener('change', () => {
+  setAudioOutput($('audio-output').value).catch((err) => console.warn('Could not switch audio output', err));
+});
+navigator.mediaDevices?.addEventListener('devicechange', () => {
+  refreshAudioOutputs().catch((err) => console.warn('Audio output list failed', err));
+});
+refreshAudioOutputs().catch((err) => console.warn('Audio output list failed', err));
+
 function syncTransport() {
   const t = audio.transport;
   $('audio-play').disabled = !t.ready;
@@ -3899,11 +4129,14 @@ $('layer-sync').addEventListener('change', () => setLayerSync(selectedLayer().id
 paintMasterTransport();
 
 async function useAudioFile(file) {
+  await audio.wake();
   setStatus($('audio-status'), 'decoding...');
   showAudioMode('file');
   await audio.loadFile(file, { autoplay: masterTransport.state === 'playing' || !syncMaster.audio || audioOverrideStop });
   audio.setLoop($('audio-loop').checked);
   await library.cacheAudio(file);
+  rememberMediaSource(file.name, 'audio');
+  globalLibrary?.refresh();
   rememberAudioName(file.name);
   try { localStorage.setItem('vj.audioFile', file.name); } catch { /* ignore */ }
   setStatus($('audio-status'), file.name);
@@ -4023,12 +4256,48 @@ async function useProjectAudio(entry) {
   await useAudioFile(cached);
 }
 
+const AUDIO_ERR = {
+  1: 'MEDIA_ERR_ABORTED',
+  2: 'MEDIA_ERR_NETWORK',
+  3: 'MEDIA_ERR_DECODE',
+  4: 'MEDIA_ERR_SRC_NOT_SUPPORTED',
+};
+const stockPreviewUrls = new Set();
+
+function logAudioElementError(player, url) {
+  const code = player.error?.code;
+  const name = AUDIO_ERR[code] || 'MEDIA_ERR_UNKNOWN';
+  console.warn(`Audio preview failed (${name})`, url || player.currentSrc || '', player.error || '');
+}
+
+function releaseStockPreviews() {
+  for (const node of $('stock-audio-results')?.querySelectorAll('audio') || []) node.pause();
+  for (const url of stockPreviewUrls) URL.revokeObjectURL(url);
+  stockPreviewUrls.clear();
+}
+
+async function pullAudioBlob(url, title) {
+  try {
+    const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+    if (!res.ok) throw new Error(String(res.status));
+    return await res.blob();
+  } catch (err) {
+    if (!IS_TAURI) throw err;
+    console.warn('Direct audio fetch was blocked; downloading through the desktop client.', err);
+    const path = await invoke('download_audio', { url, filename: title || 'sample' });
+    const { convertFileSrc } = await import('@tauri-apps/api/core');
+    const res = await fetch(convertFileSrc(path));
+    if (!res.ok) throw new Error('Download failed');
+    return await res.blob();
+  }
+}
+
 function openStockAudio(on) {
   const modal = $('stock-audio-modal');
   if (!modal) return;
   modal.hidden = !on;
   if (!on) {
-    for (const node of $('stock-audio-results').querySelectorAll('audio')) node.pause();
+    releaseStockPreviews();
     return;
   }
   $('stock-audio-prompt')?.focus();
@@ -4036,6 +4305,7 @@ function openStockAudio(on) {
 
 function paintStockAudio(hits) {
   const list = $('stock-audio-results');
+  releaseStockPreviews();
   list.replaceChildren();
   for (const hit of hits) {
     const row = document.createElement('li');
@@ -4046,17 +4316,68 @@ function paintStockAudio(hits) {
     title.textContent = hit.title;
     title.title = hit.title;
     const time = document.createElement('span');
-    time.textContent = hit.duration || '';
+    time.textContent = [hit.duration, hit.source === 'archive' ? 'Internet Archive' : 'Wikimedia'].filter(Boolean).join(' · ');
     meta.append(title, time);
     const player = document.createElement('audio');
-    player.controls = true;
     player.preload = 'none';
+    player.crossOrigin = 'anonymous';
     player.src = hit.url;
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.textContent = 'Download';
-    save.addEventListener('click', () => saveStockAudio(hit, save));
-    row.append(meta, player, save);
+    applyMediaSink(player);
+    const actions = document.createElement('div');
+    actions.className = 'stock-audio-actions';
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.textContent = 'Play';
+    play.title = 'Preview this clip';
+    const load = document.createElement('button');
+    load.type = 'button';
+    load.textContent = 'Load to Deck / Stems';
+    load.title = 'Download this clip and play it on the audio deck';
+    const markPlaying = (on) => {
+      play.textContent = on ? 'Pause' : 'Play';
+      play.setAttribute('aria-pressed', on ? 'true' : 'false');
+    };
+    player.addEventListener('play', () => {
+      for (const node of list.querySelectorAll('audio')) {
+        if (node !== player) node.pause();
+      }
+      markPlaying(true);
+    });
+    player.addEventListener('pause', () => markPlaying(false));
+    player.addEventListener('ended', () => markPlaying(false));
+    player.addEventListener('error', () => {
+      logAudioElementError(player, hit.url);
+      if (player.dataset.fallback === '1') return;
+      player.dataset.fallback = '1';
+      pullAudioBlob(hit.url, hit.title).then((blob) => {
+        const objectUrl = URL.createObjectURL(blob);
+        stockPreviewUrls.add(objectUrl);
+        player.src = objectUrl;
+        if (play.dataset.want === '1') player.play().catch(() => markPlaying(false));
+      }).catch((err) => {
+        console.warn('Audio preview could not fall back to a downloaded copy', hit.url, err);
+        markPlaying(false);
+      });
+    });
+    play.addEventListener('click', () => {
+      audio.wake().catch((err) => console.warn('Audio context did not resume', err));
+      if (!player.paused) {
+        play.dataset.want = '0';
+        player.pause();
+        return;
+      }
+      play.dataset.want = '1';
+      player.play().catch((err) => {
+        console.warn('Audio preview did not start', hit.url, err);
+        markPlaying(false);
+      });
+    });
+    load.addEventListener('click', () => {
+      audio.wake().catch((err) => console.warn('Audio context did not resume', err));
+      saveStockAudio(hit, load);
+    });
+    actions.append(play, load);
+    row.append(meta, actions, player);
     list.append(row);
   }
 }
@@ -4081,10 +4402,8 @@ async function saveStockAudio(hit, button) {
       showToast(`Saved ${leaf} to Media Manager`);
     } else {
       console.warn('download_audio needs the desktop app; playing the file in this session.');
-      const res = await fetch(hit.url);
-      if (!res.ok) throw new Error('Download failed');
-      const blob = await res.blob();
-      const file = new File([blob], hit.title, { type: blob.type || 'audio/ogg' });
+      const blob = await pullAudioBlob(hit.url, hit.title);
+      const file = new File([blob], hit.title, { type: blob.type || 'audio/mpeg' });
       await useAudioFile(file);
       showToast('Playing in this session. The desktop app also saves it into Media Manager.');
     }
@@ -4107,7 +4426,7 @@ async function runStockAudioSearch() {
   status.textContent = 'Searching stock audio…';
   $('stock-audio-results').replaceChildren();
   try {
-    const hits = await searchStockAudio(prompt);
+    const hits = await searchStockAudio(prompt, $('stock-audio-source')?.value || 'all');
     paintStockAudio(hits);
     status.textContent = hits.length ? `${hits.length} clips` : 'Nothing matched that search.';
   } catch (err) {
@@ -5205,6 +5524,11 @@ function screenRecordSpec(nowMs) {
     shade: screenShade,
     background: screenBg,
     scale: brandScale,
+    boxWidth: screenBoxW,
+    boxHeight: screenBoxH,
+    pad: screenPad,
+    radius: screenRadius,
+    border: screenBorder,
     nowMs,
   };
 }
@@ -5295,6 +5619,7 @@ function openPrefs(open) {
   if (open) {
     openGuide(false);
     ensureStockDir().catch(() => {});
+    refreshAudioOutputs({ ask: true }).catch((err) => console.warn('Audio output list failed', err));
   }
 }
 $('stock-dir-pick').addEventListener('click', async () => {

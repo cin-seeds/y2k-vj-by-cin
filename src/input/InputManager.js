@@ -3,6 +3,7 @@ import vertexShader from '../shaders/fullscreen.vert?raw';
 import mixFrag from '../shaders/mix.frag?raw';
 import { FrameRing } from './FrameRing.js';
 import { pullPicture, unwatchPicture, watchPicture } from './PictureRecv.js';
+import { applyMediaSink } from '../audio/outputSink.js';
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|webm|ogv)$/i;
 
@@ -530,6 +531,7 @@ export class InputManager {
     v.setAttribute('webkit-playsinline', '');
     v.setAttribute('crossorigin', 'anonymous');
     v.disablePictureInPicture = true;
+    applyMediaSink(v);
     videoHost().append(v);
     return v;
   }

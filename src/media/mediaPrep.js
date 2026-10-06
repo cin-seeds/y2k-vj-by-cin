@@ -4,7 +4,7 @@
 
 import { IS_TAURI, invoke } from '../ipc.js';
 import { isTauri } from '../output/OutputWindow.js';
-import { addMediaTag } from './GlobalLibrary.js';
+import { addMediaTag, rememberMediaSource } from './GlobalLibrary.js';
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
@@ -257,6 +257,7 @@ async function pump(ensureStockDir, showToast) {
 }
 
 function enqueue(name, path, file, ensureStockDir, showToast) {
+  rememberMediaSource(name, 'user');
   addJob(name, path, file);
   pump(ensureStockDir, showToast);
 }

@@ -211,6 +211,7 @@ async fn download_video(
   }
   let client = reqwest::Client::builder()
     .timeout(std::time::Duration::from_secs(180))
+    .user_agent("Y2KVJ/2.0 (https://github.com/cin-seeds/y2k-vj-by-cin; stock-video)")
     .build()
     .map_err(|err| err.to_string())?;
   let response = client.get(parsed).send().await.map_err(|_| "Download failed".to_string())?;
@@ -240,7 +241,12 @@ async fn download_video(
 
 fn audio_download_host(url: &reqwest::Url) -> bool {
   let host = url.host_str().unwrap_or("").to_ascii_lowercase();
-  host == "upload.wikimedia.org" || host.ends_with(".wikimedia.org")
+  host == "upload.wikimedia.org"
+    || host.ends_with(".wikimedia.org")
+    || host == "archive.org"
+    || host.ends_with(".archive.org")
+    || host == "freesound.org"
+    || host.ends_with(".freesound.org")
 }
 
 fn safe_audio_leaf(filename: &str) -> String {
@@ -274,7 +280,7 @@ async fn download_audio(app: tauri::AppHandle, url: String, filename: String) ->
     return Err("That audio link is not a download address.".into());
   }
   if !audio_download_host(&parsed) {
-    return Err("Stock audio only downloads from Wikimedia.".into());
+    return Err("That audio host cannot be downloaded.".into());
   }
   let dir = global_media_root(&app)?;
   allow_media_dir(&app, &dir)?;
@@ -288,7 +294,7 @@ async fn download_audio(app: tauri::AppHandle, url: String, filename: String) ->
   let part = incoming.join(format!("{leaf}.part"));
   let client = reqwest::Client::builder()
     .timeout(std::time::Duration::from_secs(180))
-    .user_agent("Y2KVJ/0.1 (https://github.com/cin-seeds/y2k-vj-by-cin; stock-audio)")
+    .user_agent("Y2KVJ/2.0 (https://github.com/cin-seeds/y2k-vj-by-cin; stock-audio)")
     .build()
     .map_err(|err| err.to_string())?;
   let response = client.get(parsed).send().await.map_err(|_| "Download failed".to_string())?;

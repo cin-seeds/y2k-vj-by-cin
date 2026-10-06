@@ -75,6 +75,7 @@ function captureImage(file) {
 }
 
 function waitFor(el, event, ms) {
+  if (event === 'loadeddata' && el.readyState >= 2) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
@@ -90,6 +91,56 @@ function waitFor(el, event, ms) {
     el.addEventListener(event, onOk);
     el.addEventListener('error', onErr);
   });
+}
+
+function afterPresent() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+/** A grabbed frame of near-black, the usual result of reading a video at time 0. */
+export function frameIsBlank(source, sw, sh) {
+  if ((sw | 0) < 2 || (sh | 0) < 2) return true;
+  const canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 18;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: false });
+  ctx.drawImage(source, 0, 0, 32, 18);
+  const { data } = ctx.getImageData(0, 0, 32, 18);
+  let lit = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] > 16 || data[i + 1] > 16 || data[i + 2] > 16) lit += 1;
+  }
+  return lit < 8;
+}
+
+export function thumbnailIsBlank(url) {
+  if (typeof url !== 'string' || !url.startsWith('data:image')) return Promise.resolve(false);
+  const img = new Image();
+  return new Promise((resolve) => {
+    img.onload = () => resolve(frameIsBlank(img, img.naturalWidth, img.naturalHeight));
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
+}
+
+function contentTime(duration) {
+  if (!(duration > 0)) return 0.5;
+  const fivePercent = duration * 0.05;
+  const pick = Math.max(0.5, fivePercent);
+  if (pick < duration - 0.04) return pick;
+  return Math.max(0, Math.min(fivePercent, duration * 0.5));
+}
+
+async function seekTo(video, time) {
+  if (!(time > 0.03) || Math.abs((video.currentTime || 0) - time) < 0.03) return;
+  const seeked = waitFor(video, 'seeked', 8000);
+  video.currentTime = time;
+  await seeked;
+  if (video.readyState < 2) {
+    try { await waitFor(video, 'loadeddata', 2000); } catch { /* seeked already presented a frame */ }
+  }
 }
 
 function releaseProbe(video, url) {
@@ -114,23 +165,25 @@ async function captureVideo(file) {
   video.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:180px;opacity:0;pointer-events:none';
   document.body.append(video);
   video.src = url;
-  const mp4mov = /\.(mp4|mov)$/i.test(file.name) || file.type === 'video/mp4' || file.type === 'video/quicktime';
   try {
-    await waitFor(video, 'loadedmetadata', 8000);
-    const dur = video.duration;
-    let target = mp4mov ? 0.5 : 1;
-    if (!Number.isFinite(dur) || dur <= 0) target = 0;
-    else if (dur <= target) target = Math.max(0, dur * 0.5);
-    else target = Math.min(target, Math.max(0, dur - 0.04));
-    if (target > 0.001) {
-      const seeked = waitFor(video, 'seeked', 8000);
-      video.currentTime = target;
-      await seeked;
+    await waitFor(video, 'loadeddata', 8000);
+    const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const later = contentTime(dur);
+    const targets = [0];
+    if (later > 0.03) targets.push(later);
+    if (dur > later + 0.2) targets.push(Math.min(dur * 0.2, dur - 0.04));
+    let last = null;
+    for (const target of targets) {
+      if (target > 0) await seekTo(video, target);
+      await afterPresent();
+      const sw = video.videoWidth | 0;
+      const sh = video.videoHeight | 0;
+      if (sw < 2 || sh < 2) continue;
+      const blank = frameIsBlank(video, sw, sh);
+      last = paintFrame(video, sw, sh);
+      if (!blank) return last;
     }
-    const sw = video.videoWidth | 0;
-    const sh = video.videoHeight | 0;
-    if (sw < 2 || sh < 2) return fallbackThumb();
-    return paintFrame(video, sw, sh);
+    return last || fallbackThumb();
   } catch {
     return fallbackThumb();
   } finally {

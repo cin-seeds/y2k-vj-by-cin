@@ -61,7 +61,14 @@
 
       <section id="media-prep" class="media-prep" hidden>
         <header class="prep-head">
-          <h2>Media Manager</h2>
+          <div class="prep-head-row">
+            <h2>Media Manager</h2>
+            <div class="gallery-scale" role="group" aria-label="Thumbnail size">
+              <button type="button" data-gallery-scale="compact" aria-pressed="false">Compact</button>
+              <button type="button" data-gallery-scale="medium" aria-pressed="true">Medium</button>
+              <button type="button" data-gallery-scale="large" aria-pressed="false">Large</button>
+            </div>
+          </div>
           <p>Drop a video or image to store it here. Tag a logo <b>brand</b>, then send it to Project Media. Every file keeps a thumbnail.</p>
         </header>
         <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
@@ -83,8 +90,16 @@
           </div>
         </div>
         <div id="prep-tag-filters" class="prep-tag-filters" hidden></div>
-        <div id="prep-grid" class="global-grid prep-grid"></div>
-        <p id="prep-gallery-empty" class="hint">No media stored yet. Drop a video above.</p>
+        <div class="gallery-sources" role="tablist" aria-label="Media source">
+          <button type="button" role="tab" data-gallery-source="all" aria-selected="true">All Media</button>
+          <button type="button" role="tab" data-gallery-source="fetch" aria-selected="false">Fetched / Downloads</button>
+          <button type="button" role="tab" data-gallery-source="user" aria-selected="false">User Clips</button>
+          <button type="button" role="tab" data-gallery-source="audio" aria-selected="false">Audio / Stems</button>
+        </div>
+        <div class="prep-gallery-scroll">
+          <div id="prep-grid" class="global-grid prep-grid"></div>
+          <p id="prep-gallery-empty" class="hint">No media stored yet. Drop a video above.</p>
+        </div>
       </section>
 
       <section id="midi-desk" class="midi-desk" hidden>
@@ -454,8 +469,7 @@
           <summary>Screensaver</summary>
           <label class="hud-field">Text
             <textarea id="screen-text" rows="4" title="Lines on the drifting mark.">Y2K VJ//BY CÍN
-CUSTOM CODED FOR LATE
-FUTURE</textarea>
+CUSTOM CODED FOR LATE FUTURE</textarea>
             <button id="screen-query" type="button" class="screen-query" title="Replace the screensaver text with a question.">? Query System</button>
           </label>
           <label class="check" title="Show the license line under the screensaver text.">
@@ -478,6 +492,26 @@ FUTURE</textarea>
             <input id="screen-bg" type="range" min="0" max="1" step="0.01" value="0.65" title="Opacity of the black panel. 0 removes the box." />
             <output id="screen-bg-out">0.65</output>
           </label>
+          <label class="live-slider">Box width
+            <input id="screen-box-w" type="range" min="0" max="100" step="1" value="0" title="Width of the screensaver box, as a percent of the picture. 0 fits the text." />
+            <output id="screen-box-w-out">Auto</output>
+          </label>
+          <label class="live-slider">Box height
+            <input id="screen-box-h" type="range" min="0" max="100" step="1" value="0" title="Height of the screensaver box, as a percent of the picture. 0 fits the text." />
+            <output id="screen-box-h-out">Auto</output>
+          </label>
+          <label class="live-slider">Padding
+            <input id="screen-pad" type="range" min="0" max="64" step="1" value="12" title="Space between the screensaver text and the box edge." />
+            <output id="screen-pad-out">12</output>
+          </label>
+          <label class="live-slider">Corner
+            <input id="screen-radius" type="range" min="0" max="100" step="1" value="0" title="Corner radius. 0 is sharp. 100 is a pill." />
+            <output id="screen-radius-out">Sharp</output>
+          </label>
+          <label class="live-slider">Border
+            <input id="screen-border" type="range" min="0" max="12" step="1" value="2" title="Thickness of the screensaver box stroke." />
+            <output id="screen-border-out">2</output>
+          </label>
           <label class="hud-field">Color
             <select id="screen-color" title="Text colour.">
               <option value="white" selected>White</option>
@@ -496,7 +530,7 @@ FUTURE</textarea>
 
       <div class="center">
       <main id="stage" class="preview">
-        <div id="brand-mark" class="brand-mark" hidden>Y2K VJ<em>//</em>BY CÍN<span class="brand-line">CUSTOM CODED FOR LATE</span><span class="brand-line">FUTURE</span></div>
+        <div id="brand-mark" class="brand-mark" hidden><span class="brand-line">Y2K VJ<em>//</em>BY CÍN</span><span class="brand-line">CUSTOM CODED FOR LATE FUTURE</span></div>
         <div id="preview-wrap" class="preview-wrap">
           <div id="hud-frame" class="hud-frame" hidden title="Drag to move the overlay. Drag a corner to resize. Double-click to swap a column and a landscape bar.">
             <pre id="hud" class="hud"></pre>
@@ -676,8 +710,13 @@ FUTURE</textarea>
           <h2 id="stock-audio-title">Search Stock Audio</h2>
           <button id="stock-audio-close" type="button">Close</button>
         </header>
-        <p class="hint">Public-domain and Creative Commons audio from Wikimedia Commons. Preview a row, then download it into Media Manager.</p>
+        <p class="hint">MP3, WAV, FLAC, and OGG from Wikimedia Commons and the Internet Archive. Preview a row, then load it onto the audio deck.</p>
         <div class="row">
+          <select id="stock-audio-source" title="Audio source">
+            <option value="all">All sources</option>
+            <option value="wikimedia">Wikimedia</option>
+            <option value="archive">Internet Archive</option>
+          </select>
           <input id="stock-audio-prompt" type="text" placeholder="kick, vinyl, rain" autocomplete="off" spellcheck="false" />
           <button id="stock-audio-search" type="button">Search</button>
         </div>
@@ -832,6 +871,16 @@ FUTURE</textarea>
             Reopen the last project
           </label>
           <p class="hint">The desktop app loads the last project saved on this computer. A missing file starts empty.</p>
+        </section>
+        <section class="prefs-block" aria-labelledby="prefs-audio-out">
+          <h3 id="prefs-audio-out">Audio</h3>
+          <label class="stock-dir-field" for="audio-output">
+            Audio Output Device
+            <select id="audio-output" title="Where the mix is heard. System Default follows the computer.">
+              <option value="">System Default</option>
+            </select>
+          </label>
+          <p class="hint">System Default follows the computer. The list updates when headphones or an interface are plugged in.</p>
         </section>
         <section class="prefs-block" aria-labelledby="prefs-media">
           <h3 id="prefs-media">Media</h3>

@@ -6,7 +6,7 @@
 // element or a WebGL texture. Those are created only when a layer is assigned the clip.
 
 import { kindOf, MediaCache } from './MediaCache.js';
-import { captureThumbnail, isImageFile } from './thumbnail.js';
+import { captureThumbnail, isImageFile, isVideoFile, thumbnailIsBlank } from './thumbnail.js';
 
 const MEDIA_EXT = /\.(mp4|mov|m4v|webm|ogv|png|jpe?g|gif|webp|bmp|avif)$/i;
 
@@ -27,10 +27,11 @@ export class MediaLibrary {
   async #hydrate() {
     try {
       const stored = await this.cache.entries('visual');
-      for (const row of stored) this.#remember(row.file, row.thumbnail);
-      for (const item of this.items.values()) {
-        if (!item.thumbnail && item.file) this.#enqueueThumb(item.name);
+      for (const row of stored) {
+        const item = this.#remember(row.file, row.thumbnail);
+        item.thumbRev = row.thumbRev || 0;
       }
+      for (const item of this.items.values()) this.#queueThumb(item);
       this.#loadRemote();
       if (this.items.size) this.#emit();
     } catch (err) {
@@ -49,8 +50,8 @@ export class MediaLibrary {
         && prev.thumbnail;
       const item = this.#remember(f, same ? prev.thumbnail : null);
       added.push(f.name);
-      this.cache.put(f, { thumbnail: item.thumbnail }).catch((err) => console.warn('Could not cache', f.name, err));
-      if (!item.thumbnail) this.#enqueueThumb(f.name);
+      this.cache.put(f, { thumbnail: item.thumbnail, thumbRev: item.thumbRev || 0 }).catch((err) => console.warn('Could not cache', f.name, err));
+      this.#queueThumb(item);
     }
     if (added.length) this.#emit();
     return added;
@@ -82,8 +83,9 @@ export class MediaLibrary {
       if (!name || this.items.has(name)) continue;
       const entry = await this.cache.getEntry(name);
       if (!entry?.file) continue;
-      this.#remember(entry.file, entry.thumbnail);
-      if (!entry.thumbnail) this.#enqueueThumb(entry.file.name);
+      const item = this.#remember(entry.file, entry.thumbnail);
+      item.thumbRev = entry.thumbRev || 0;
+      this.#queueThumb(item);
       added += 1;
     }
     if (added) this.#emit();
@@ -163,6 +165,26 @@ export class MediaLibrary {
     return item;
   }
 
+  #queueThumb(item) {
+    if (!item?.file) return;
+    if (!item.thumbnail) {
+      this.#enqueueThumb(item.name);
+      return;
+    }
+    if (!isVideoFile(item.file) || (item.thumbRev || 0) >= 2) return;
+    thumbnailIsBlank(item.thumbnail).then((blank) => {
+      const current = this.items.get(item.name);
+      if (!current || current.file !== item.file || !current.thumbnail) return;
+      if (!blank) {
+        current.thumbRev = 2;
+        this.cache.put(current.file, { thumbnail: current.thumbnail, thumbRev: 2 }).catch(() => {});
+        return;
+      }
+      current.thumbnail = null;
+      this.#enqueueThumb(current.name);
+    }).catch(() => {});
+  }
+
   #enqueueThumb(name) {
     this.#thumbQueue.push(name);
     this.#drainThumbs();
@@ -171,22 +193,27 @@ export class MediaLibrary {
   async #drainThumbs() {
     if (this.#thumbBusy) return;
     this.#thumbBusy = true;
-    while (this.#thumbQueue.length) {
-      const name = this.#thumbQueue.shift();
-      const item = this.items.get(name);
-      if (!item || item.thumbnail) continue;
-      try {
-        const thumbnail = await captureThumbnail(item.file);
-        const current = this.items.get(name);
-        if (!current || current.file !== item.file || !thumbnail) continue;
-        current.thumbnail = thumbnail;
-        this.cache.put(current.file, { thumbnail }).catch(() => {});
-        this.#emit();
-      } catch (err) {
-        console.warn('Could not thumbnail', name, err);
+    try {
+      while (this.#thumbQueue.length) {
+        const name = this.#thumbQueue.shift();
+        const item = this.items.get(name);
+        if (!item || item.thumbnail) continue;
+        try {
+          const thumbnail = await captureThumbnail(item.file);
+          const current = this.items.get(name);
+          if (!current || current.file !== item.file || !thumbnail) continue;
+          current.thumbnail = thumbnail;
+          current.thumbRev = 2;
+          this.cache.put(current.file, { thumbnail, thumbRev: 2 }).catch(() => {});
+          this.#emit();
+        } catch (err) {
+          console.warn('Could not thumbnail', name, err);
+        }
       }
+    } finally {
+      this.#thumbBusy = false;
+      if (this.#thumbQueue.length) this.#drainThumbs();
     }
-    this.#thumbBusy = false;
   }
 
   #emit() {

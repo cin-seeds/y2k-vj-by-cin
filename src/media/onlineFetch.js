@@ -35,15 +35,70 @@ function clipOf({ id, title, thumbnail, videoUrl, source, alts }) {
   };
 }
 
+const APP_UA = 'Y2KVJ/2.0 (https://github.com/cin-seeds/y2k-vj-by-cin; stock-video)';
+
 async function getJson(url, ms = 12000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
+    const headers = { Accept: 'application/json' };
+    if (/wikimedia\.org/i.test(url)) headers['Api-User-Agent'] = APP_UA;
+    const res = await fetch(url, { signal: ctrl.signal, headers });
     if (!res.ok) throw new Error(String(res.status));
     return await res.json();
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function commonsFileUrl(info) {
+  const raw = String(info?.url || info?.iurl || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'upload.wikimedia.org' || host.endsWith('.wikimedia.org')) {
+      return `${parsed.origin}${parsed.pathname}`;
+    }
+  } catch { /* keep the address imageinfo returned */ }
+  return raw;
+}
+
+function commonsClip(page) {
+  const info = page?.imageinfo?.[0];
+  const mime = String(info?.mime || '');
+  const kind = String(info?.mediatype || '').toUpperCase();
+  if (mime && mime !== 'video/mp4' && mime !== 'video/webm') return null;
+  if (kind && kind !== 'VIDEO') return null;
+  return clipOf({
+    id: page.pageid || page.title,
+    title: page.title,
+    thumbnail: info?.thumburl,
+    videoUrl: commonsFileUrl(info),
+    source: 'wikimedia',
+  });
+}
+
+async function attachCommonsFiles(pages) {
+  const missing = pages.filter((page) => page?.title && !page?.imageinfo?.[0]?.url && !page?.imageinfo?.[0]?.iurl);
+  if (!missing.length) return;
+  const params = new URLSearchParams({
+    action: 'query',
+    format: 'json',
+    origin: '*',
+    titles: missing.slice(0, 15).map((page) => page.title).join('|'),
+    prop: 'imageinfo',
+    iiprop: 'url|mime|thumburl|size|mediatype',
+    iiurlwidth: '320',
+  });
+  const data = await getJson(`https://commons.wikimedia.org/w/api.php?${params}`);
+  const byTitle = new Map();
+  for (const page of Object.values(data?.query?.pages || {})) {
+    if (page?.title && page.imageinfo) byTitle.set(page.title, page.imageinfo);
+  }
+  for (const page of missing) {
+    const info = byTitle.get(page.title);
+    if (info) page.imageinfo = info;
   }
 }
 
@@ -58,23 +113,16 @@ async function fetchWikimedia(prompt) {
       gsrnamespace: '6',
       gsrlimit: '15',
       prop: 'imageinfo',
-      iiprop: 'url|mime|thumburl',
+      iiprop: 'url|mime|thumburl|size|mediatype',
       iiurlwidth: '320',
     });
     const data = await getJson(`https://commons.wikimedia.org/w/api.php?${params}`);
-    const pages = Object.values(data?.query?.pages || {});
+    const pages = Object.values(data?.query?.pages || {})
+      .sort((a, b) => (a.index || 0) - (b.index || 0));
+    await attachCommonsFiles(pages);
     const clips = [];
     for (const page of pages) {
-      const info = page?.imageinfo?.[0];
-      const mime = String(info?.mime || '');
-      if (mime && mime !== 'video/mp4' && mime !== 'video/webm') continue;
-      const clip = clipOf({
-        id: page.pageid || page.title,
-        title: page.title,
-        thumbnail: info?.thumburl,
-        videoUrl: info?.url,
-        source: 'wikimedia',
-      });
+      const clip = commonsClip(page);
       if (clip) clips.push(clip);
       if (clips.length >= 8) break;
     }
@@ -116,16 +164,35 @@ async function archiveClip(doc) {
   });
 }
 
+function archiveTokens(prompt) {
+  return String(prompt || '')
+    .replace(/[+\-!(){}[\]^"~*?:\\/&|]/g, ' ')
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length > 1)
+    .slice(0, 6);
+}
+
+function archiveQuery(prompt, mediatype) {
+  const tokens = archiveTokens(prompt);
+  const fields = (tokens.length ? tokens : ['video']).map((token) => (
+    `(title:${token} OR subject:${token} OR description:${token})`
+  )).join(' AND ');
+  const type = mediatype === 'audio' ? 'audio' : 'movies';
+  const format = type === 'audio' ? '' : ' AND (format:"h.264" OR format:"512Kb MPEG4")';
+  return `${fields} AND mediatype:(${type})${format}`;
+}
+
 async function fetchArchive(prompt) {
   try {
-    const q = `${prompt} AND mediatype:movies AND (format:"h.264" OR format:"512Kb MPEG4")`;
     const params = new URLSearchParams({
-      q,
+      q: archiveQuery(prompt, 'movies'),
       output: 'json',
       rows: '8',
     });
     params.append('fl[]', 'identifier');
     params.append('fl[]', 'title');
+    params.append('sort[]', '-downloads');
     const data = await getJson(`https://archive.org/advancedsearch.php?${params}`);
     const docs = Array.isArray(data?.response?.docs) ? data.response.docs : [];
     const settled = await Promise.allSettled(docs.map((doc) => archiveClip(doc)));

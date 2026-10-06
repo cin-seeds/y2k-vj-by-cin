@@ -4,10 +4,38 @@
 import { IS_TAURI, invoke } from '../ipc.js';
 import { isTauri } from '../output/OutputWindow.js';
 import { queueMediaPrep } from './mediaPrep.js';
+import { frameIsBlank } from './thumbnail.js';
+import { applyMediaSink } from '../audio/outputSink.js';
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
 const AUDIO_EXT = /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i;
+const SOURCE_KEY = 'vj.mediaSource';
+const SCALE_KEY = 'vj.galleryScale';
+const GALLERY_SCALES = ['compact', 'medium', 'large'];
+const SOURCE_EMPTY = {
+  all: 'No media stored yet. Drop a video or image above.',
+  fetch: 'No fetched clips yet. Use Live Text-to-Visual to download a loop.',
+  user: 'No uploaded clips yet. Drop a video or image above.',
+  audio: 'No audio stored yet. Load a track or download stock audio.',
+};
+
+function readSources() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SOURCE_KEY) || '{}');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+export function rememberMediaSource(name, source) {
+  if (!name || (source !== 'fetch' && source !== 'user' && source !== 'audio')) return;
+  const map = readSources();
+  if (map[name] === source) return;
+  map[name] = source;
+  try { localStorage.setItem(SOURCE_KEY, JSON.stringify(map)); } catch { /* private mode */ }
+}
 
 function isAudioRow(row) {
   return AUDIO_EXT.test(row?.name || '') || AUDIO_EXT.test(row?.path || '');
@@ -26,6 +54,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   const tagFilters = document.getElementById('prep-tag-filters');
   let mediaTags = readMediaTags();
   let tagFilter = '';
+  let sourceFilter = 'all';
   const block = document.getElementById('global-delete');
   const preview = document.createElement('video');
   preview.className = 'gallery-preview';
@@ -33,6 +62,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   preview.loop = true;
   preview.playsInline = true;
   preview.preload = 'auto';
+  applyMediaSink(preview);
   let previewUrl = '';
   let previewToken = 0;
   let thumbChain = Promise.resolve();
@@ -60,13 +90,33 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     for (const name of library.names) {
       if (seen.has(name)) continue;
       const item = library.mediaItem(name);
+      seen.add(name);
       local.push({
         name,
         path: '',
         thumbnail: item?.thumbnail || '',
+        url: item?.url || '',
       });
     }
-    return [...disk, ...local];
+    const audio = [];
+    try {
+      const stored = await library.cache.entries('audio');
+      for (const row of stored) {
+        const name = row.file?.name;
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        audio.push({ name, path: '', thumbnail: '', kind: 'audio' });
+      }
+    } catch { /* the audio cache is optional */ }
+    return [...disk, ...local, ...audio];
+  }
+
+  function rowSource(row) {
+    if (isAudioRow(row) || row.kind === 'audio') return 'audio';
+    const saved = readSources()[row.name];
+    if (saved === 'fetch' || saved === 'audio') return saved;
+    if (row.url) return 'fetch';
+    return 'user';
   }
 
   function paintSend() {
@@ -134,16 +184,19 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     latest = rows;
     const live = new Set(rows.map((row) => row.name));
     for (const name of [...selected]) if (!live.has(name)) selected.delete(name);
-    const visible = tagFilter
-      ? rows.filter((row) => tagsFor(row.name).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase()))
-      : rows;
+    const visible = rows.filter((row) => {
+      if (sourceFilter !== 'all' && rowSource(row) !== sourceFilter) return false;
+      if (!tagFilter) return true;
+      return tagsFor(row.name).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase());
+    });
     stopPreview();
     grid.innerHTML = '';
     if (empty) {
       empty.hidden = visible.length > 0;
+      const noneOf = SOURCE_EMPTY[sourceFilter] || SOURCE_EMPTY.all;
       empty.textContent = rows.length && !visible.length
-        ? `No clips tagged ${tagFilter}.`
-        : 'No media stored yet. Drop a video or image above.';
+        ? (tagFilter ? `No clips tagged ${tagFilter}.` : noneOf)
+        : noneOf;
     }
     for (const row of visible) {
       const card = document.createElement('div');
@@ -346,7 +399,15 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       const name = file.name || 'media';
       const video = file.type.startsWith('video/') || VIDEO_EXT.test(name);
       const image = file.type.startsWith('image/') || IMAGE_EXT.test(name);
+      const audioFile = file.type.startsWith('audio/') || AUDIO_EXT.test(name);
+      if (audioFile) {
+        library.cacheAudio(file);
+        rememberMediaSource(name, 'audio');
+        queued += 1;
+        continue;
+      }
       if (!video && !image) continue;
+      rememberMediaSource(name, 'user');
       const path = pathFrom(file, event);
       if (isTauri() && video) {
         queueMediaPrep(name, path, path ? null : file);
@@ -387,6 +448,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       const paths = Array.isArray(picked) ? picked : [picked];
       for (const path of paths) {
         const name = String(path).split(/[\\/]/).pop() || 'media';
+        if (VIDEO_EXT.test(name) || IMAGE_EXT.test(name)) rememberMediaSource(name, 'user');
         if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null);
         else if (IMAGE_EXT.test(name)) {
           await invoke('copy_into_global_media', { inputPath: path });
@@ -508,6 +570,36 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   });
 
   render();
+  const prep = document.getElementById('media-prep');
+  function applyScale(scale) {
+    const next = GALLERY_SCALES.includes(scale) ? scale : 'medium';
+    prep?.setAttribute('data-scale', next);
+    modal?.setAttribute('data-scale', next);
+    for (const button of document.querySelectorAll('[data-gallery-scale]')) {
+      const on = button.dataset.galleryScale === next;
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    try { localStorage.setItem(SCALE_KEY, next); } catch { /* private mode */ }
+  }
+  let savedScale = 'medium';
+  try { savedScale = localStorage.getItem(SCALE_KEY) || 'medium'; } catch { /* ignore */ }
+  applyScale(savedScale);
+  for (const button of document.querySelectorAll('[data-gallery-scale]')) {
+    button.addEventListener('click', () => applyScale(button.dataset.galleryScale));
+  }
+  function applySource(source) {
+    sourceFilter = SOURCE_EMPTY[source] ? source : 'all';
+    for (const button of document.querySelectorAll('[data-gallery-source]')) {
+      const on = button.dataset.gallerySource === sourceFilter;
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+    if (latest.length) paint(latest);
+  }
+  for (const button of document.querySelectorAll('[data-gallery-source]')) {
+    button.addEventListener('click', () => applySource(button.dataset.gallerySource));
+  }
+
   return { open: show, refresh: render, ingest, close };
 }
 
@@ -627,6 +719,10 @@ async function captureSquare(filePath) {
   video.preload = 'auto';
   video.src = src;
   await new Promise((resolve, reject) => {
+    if (video.readyState >= 2) {
+      resolve();
+      return;
+    }
     const timer = setTimeout(() => reject(new Error('thumb')), 8000);
     video.onloadeddata = () => {
       clearTimeout(timer);
@@ -637,16 +733,27 @@ async function captureSquare(filePath) {
       reject(new Error('thumb'));
     };
   });
-  const at = Number.isFinite(video.duration) ? Math.min(0.25, Math.max(0, video.duration * 0.1)) : 0;
-  if (at > 0) {
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const sw = video.videoWidth | 0;
+  const sh = video.videoHeight | 0;
+  const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+  const later = dur > 0
+    ? Math.min(Math.max(0.5, dur * 0.05), Math.max(0, dur - 0.04))
+    : 0.5;
+  if ((sw < 2 || sh < 2 || frameIsBlank(video, sw, sh)) && later > 0.03) {
     await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 1500);
+      const timer = setTimeout(resolve, 2500);
       video.onseeked = () => {
         clearTimeout(timer);
         resolve();
       };
-      video.currentTime = at;
+      try { video.currentTime = later; }
+      catch {
+        clearTimeout(timer);
+        resolve();
+      }
     });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
   const url = paintCover(video, video.videoWidth, video.videoHeight);
   video.removeAttribute('src');

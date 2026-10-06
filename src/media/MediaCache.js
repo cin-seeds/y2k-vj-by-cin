@@ -56,6 +56,7 @@ export class MediaCache {
       kind,
       blob: file,
       thumbnail: typeof extra.thumbnail === 'string' ? extra.thumbnail : null,
+      thumbRev: Number.isFinite(Number(extra.thumbRev)) ? Number(extra.thumbRev) : 0,
     };
     await this.#req((store) => store.put(rec));
   }
@@ -72,6 +73,7 @@ export class MediaCache {
     return {
       file: toFile(rec),
       thumbnail: typeof rec.thumbnail === 'string' ? rec.thumbnail : null,
+      thumbRev: Number.isFinite(Number(rec.thumbRev)) ? Number(rec.thumbRev) : 0,
     };
   }
 
@@ -93,6 +95,7 @@ export class MediaCache {
       .map((r) => ({
         file: toFile(r),
         thumbnail: typeof r.thumbnail === 'string' ? r.thumbnail : null,
+        thumbRev: Number.isFinite(Number(r.thumbRev)) ? Number(r.thumbRev) : 0,
       }))
       .filter((r) => r.file);
   }
