@@ -1,13 +1,13 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Y2K VJ by Cín",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "identifier": "com.livevj.desk",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run setup && npm run build"
   },
   "app": {
     "windows": [
@@ -44,6 +44,9 @@
       "icons/icon.ico"
     ],
     "externalBin": ["bin/ffmpeg"],
+    "macOS": {
+      "infoPlist": "Info.plist"
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

@@ -174,7 +174,9 @@ export function paintScreensaver(ctx, frameW, frameH, picture, spec) {
   const shade = spec.shade | 0;
   lines.forEach((line, i) => {
     const y = padTop + i * (lineH + gap);
-    drawLine(ctx, line, padX, y, color, shade);
+    const w = pieceWidth(ctx, line.text, line.credit);
+    const x = padX + (widest - w) / 2;
+    drawLine(ctx, line, x, y, color, shade);
   });
   ctx.restore();
 }

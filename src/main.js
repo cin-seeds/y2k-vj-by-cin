@@ -35,7 +35,7 @@ import { bindPictureSources, pictureSources, refreshPictureSources } from './inp
 import { bindRangeReadout } from './ui/NumericSlider.js';
 import { beginDrag, endDragSoon } from './ui/dragPayload.js';
 import { bindMediaPrep } from './media/mediaPrep.js';
-import { bindGlobalLibrary } from './media/GlobalLibrary.js';
+import { addMediaTag, bindGlobalLibrary, hasMediaTag } from './media/GlobalLibrary.js';
 import { dpiState, formatFactor, pixelsOf, setDpiAuto, setOutputPixels, setPreviewScale } from './ui/dpiScale.js';
 import { OutputMap } from './output/OutputMap.js';
 import { SceneManager } from './scenes/SceneManager.js';
@@ -316,25 +316,22 @@ const stings = new StingRack($('logo-overlay'), {
   },
   onAssign: (slot, file) => library.cacheBlob(slot.cacheKey, file, 'logo'),
   onPersist: () => persistDesk(),
+  brandMedia: () => brandProjectClips(),
+  onPick: (name) => fileForProjectClip(name),
 });
 function paintLogoPick() {
   const pick = $('logo-slot-pick');
   const logoBtn = $('logos-trigger');
   if (!pick) return;
-  const filled = stings.slots
-    .map((slot, index) => ({ index, on: !!(slot.ready || slot.name) }))
-    .filter((row) => row.on);
-  const prev = pick.value;
-  pick.replaceChildren();
-  if (!filled.length) {
-    pick.hidden = true;
-    if (logoBtn) logoBtn.title = 'Open Brand Overlay';
-    return;
-  }
+  const prev = ['0', '1', '2'].includes(pick.value) ? pick.value : '0';
   pick.hidden = false;
-  for (const row of filled) pick.add(new Option(String(row.index + 1), String(row.index)));
-  pick.value = filled.some((row) => String(row.index) === prev) ? prev : String(filled[0].index);
-  if (logoBtn) logoBtn.title = `Open Logo ${Number(pick.value) + 1} in Brand Overlay`;
+  pick.replaceChildren();
+  for (let i = 0; i < 3; i += 1) pick.add(new Option(String(i + 1), String(i)));
+  pick.value = prev;
+  const index = Number(pick.value);
+  const slot = stings.slots[index];
+  const named = slot?.name ? `${slot.name}` : `Logo ${index + 1}`;
+  if (logoBtn) logoBtn.title = slot?.ready ? `Play ${named}` : `Logo ${index + 1} is empty`;
 }
 function openLogoSettings() {
   const pick = $('logo-slot-pick');
@@ -417,7 +414,7 @@ bindTapHold($('screen-trigger'), {
   onHold: () => openProjectFold('screensaver'),
 });
 bindTapHold($('logos-trigger'), {
-  onTap: () => openLogoSettings(),
+  onTap: () => stings.trigger(Number($('logo-slot-pick')?.value || 0)),
   onHold: () => openLogoSettings(),
 });
 paintLogoPick();
@@ -429,6 +426,16 @@ const outputMap = new OutputMap({
   bezelInput: $('output-bezel'),
   bezelOut: $('output-bezel-out'),
   ledNote: $('map-led-note'),
+  guideImg: $('map-guide'),
+  guideFile: $('map-guide-file'),
+  guidePick: $('map-guide-pick'),
+  guideClear: $('map-guide-clear'),
+  guideOpacity: $('map-guide-opacity'),
+  guideOpacityOut: $('map-guide-opacity-out'),
+  presetName: $('map-preset-name'),
+  presetSave: $('map-preset-save'),
+  presetList: $('map-preset-list'),
+  presetEmpty: $('map-preset-empty'),
   getAspect: () => {
     const c = renderer.domElement;
     return c.width / Math.max(1, c.height);
@@ -706,7 +713,7 @@ function refreshMediaSelect() {
   const fileGroup = document.createElement('optgroup');
   fileGroup.label = 'Project Media';
   for (const item of project.mediaPool) {
-    if (item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
+    if (item.kind === 'audio' || mediaKind(item.name) === 'audio' || isBrandVisual(item)) continue;
     fileGroup.append(new Option(item.name, clipKey(item.name)));
   }
   if (layer.missing && !project.mediaPool.some((item) => item.name === layer.missing)) {
@@ -762,7 +769,7 @@ function paintLayerMediaPicker() {
   const sources = $('layer-media-sources');
   if (!box || box.hidden || !grid || !sources) return;
   grid.innerHTML = '';
-  const visuals = project.mediaPool.filter((item) => item?.name && item.kind !== 'audio' && mediaKind(item.name) !== 'audio');
+  const visuals = project.mediaPool.filter((item) => item?.name && item.kind !== 'audio' && mediaKind(item.name) !== 'audio' && !isBrandVisual(item));
   if (!visuals.length) {
     const empty = document.createElement('p');
     empty.className = 'hint';
@@ -1109,6 +1116,7 @@ function refreshLibraryUi() {
     list.append(card);
   }
   for (const entry of project.mediaPool) {
+    if (isBrandVisual(entry)) continue;
     const name = entry.name;
     const item = library.mediaItem(name);
     const used = layers.filter((l) => l.mediaKey === `file:${name}` || l.mediaKey === `url:${name}`).map((l) => l.id);
@@ -1303,7 +1311,11 @@ $('media-add').addEventListener('click', () => {
   globalLibrary?.refresh();
 });
 $('media-files').addEventListener('change', (e) => {
-  library.add(e.target.files);
+  const files = [...(e.target.files || [])];
+  library.add(files);
+  if ($('prep-brand')?.checked) {
+    for (const file of files) addMediaTag(file.name, 'brand');
+  }
   e.target.value = '';
   globalLibrary?.refresh();
   globalLibrary?.open();
@@ -1701,6 +1713,40 @@ function mediaKind(name) {
   return 'video';
 }
 
+function isBrandVisual(entry) {
+  const name = entry?.name;
+  if (!name || !hasMediaTag(name, 'brand')) return false;
+  return entry.kind !== 'audio' && mediaKind(name) !== 'audio';
+}
+
+window.addEventListener('vj-media-tags', () => {
+  refreshLibraryUi();
+  refreshMediaSelect();
+});
+
+function brandProjectClips() {
+  return project.mediaPool
+    .filter((item) => item?.name && mediaKind(item.name) !== 'audio' && hasMediaTag(item.name, 'brand'))
+    .map((item) => {
+      const media = library.mediaItem(item.name);
+      const thumbnail = media?.thumbnail || (mediaKind(item.name) === 'image' ? (media?.url || '') : '');
+      return { name: item.name, thumbnail, path: item.path || '' };
+    });
+}
+
+async function fileForProjectClip(name) {
+  const item = library.mediaItem(name);
+  if (item?.file) return item.file;
+  if (item?.url) {
+    const res = await fetch(item.url);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const type = blob.type || (mediaKind(name) === 'image' ? 'image/png' : 'video/mp4');
+    return new File([blob], name, { type });
+  }
+  return library.getBlob(name);
+}
+
 function addToBin(entry) {
   const name = entry?.name;
   if (!name) return false;
@@ -1721,7 +1767,18 @@ function addToBin(entry) {
   return true;
 }
 
-function removeFromBin(name) {
+async function releaseClip(name) {
+  for (const id of ['A', 'B', 'C']) {
+    const key = layerById[id]?.mediaKey;
+    if (key === `file:${name}` || key === `url:${name}`) {
+      await setLayerMedia(id, 'none', { history: false });
+    }
+  }
+  library.remove(name);
+}
+
+async function removeFromBin(name) {
+  await releaseClip(name);
   project.setMediaPool(project.mediaPool.filter((item) => item.name !== name));
   refreshLibraryUi();
   refreshMediaSelect();
@@ -2068,18 +2125,18 @@ const SCREEN_COLORS = {
 };
 const SCREEN_CREDIT = 'OS CC BY-NC-SA // REPO ON GITHUB';
 const SCREEN_QUERIES = [
-  'WHAT WILL YOU BUILD FROM THE RUINS OF THE OLD INTERFACE?',
-  'WHEN THE STATIC FINALLY CLEARED, WHAT DID YOU HEAR?',
-  'IF THE SYSTEMS RESET TONIGHT, WHO DO WE BECOME AT DAWN?',
-  'WHERE DOES THE LIGHT GO WHEN THE SERVERS FINALLY SLEEP?',
-  'WHAT GROWS IN THE SPACES BETWEEN THE WIRES NOW?',
-  'DID WE INVENT A NEW FUTURE, OR JUST FINALLY REMEMBER IT?',
-  'HOW DOES IT FEEL NOW THAT THE BORDERS ARE JUST PIXELS?',
-  'WHEN THE GLITCH BECAME THE MASTERPIECE, WHERE WERE YOU?',
-  'WHAT RHYTHMS REMAIN NOW THAT THE GRID HAS FALLEN?',
-  'IF MEMORY IS JUST A SIGNAL, WHAT ARE WE BROADCASTING TOMORROW?',
-  'WHO TENDED THE GARDEN WHILE THE MACHINES WERE REBOOTING?',
-  'NOW THAT THE BANDWIDTH IS INFINITE, WHAT DO YOU TRULY WANT TO SAY?',
+  'WHAT WILL YOU BUILD FROM THE RUINS\nOF THE OLD INTERFACE?',
+  'WHEN THE STATIC FINALLY\nCLEARED, WHAT DID YOU HEAR?',
+  'IF THE SYSTEMS RESET TONIGHT,\nWHO DO WE BECOME AT DAWN?',
+  'WHERE DOES THE LIGHT GO WHEN\nTHE SERVERS FINALLY SLEEP?',
+  'WHAT GROWS IN THE SPACES\nBETWEEN THE WIRES NOW?',
+  'DID WE INVENT A NEW FUTURE,\nOR JUST FINALLY REMEMBER IT?',
+  'HOW DOES IT FEEL NOW THAT\nTHE BORDERS ARE JUST PIXELS?',
+  'WHEN THE GLITCH BECAME THE\nMASTERPIECE, WHERE WERE YOU?',
+  'WHAT RHYTHMS REMAIN NOW\nTHAT THE GRID HAS FALLEN?',
+  'IF MEMORY IS JUST A SIGNAL,\nWHAT ARE WE BROADCASTING TOMORROW?',
+  'WHO TENDED THE GARDEN WHILE\nTHE MACHINES WERE REBOOTING?',
+  'NOW THAT THE BANDWIDTH IS INFINITE,\nWHAT DO YOU TRULY WANT TO SAY?',
 ];
 
 let brandMarkOn = true;
@@ -2183,9 +2240,7 @@ function paintCompositions() {
     const filled = !!slots[i];
     btn.classList.toggle('is-stored', filled);
     btn.setAttribute('aria-pressed', filled ? 'true' : 'false');
-    btn.title = filled
-      ? 'Click to recall this mix. Hold to replace it. Right-click to forget it.'
-      : 'Hold to store the current mix.';
+    btn.title = 'Click to activate | Long click to save | Right click to forget';
   });
 }
 
@@ -2526,7 +2581,7 @@ const diag = new Diagnostics($('diag-panel'), (item) => {
 const LIBRARY_FOLD_KEY = 'vj.accLeft';
 const LIBRARY_FOLDS = [
   ['diag-panel', false],
-  ['acc-media', true],
+  ['acc-media', false],
   ['acc-audio', false],
   ['acc-master', false],
   ['acc-output', false],
@@ -2723,7 +2778,7 @@ function captureDesk() {
     outputSize: $('output-size')?.value || '',
     recAspect: $('rec-aspect')?.value || '',
     recFormat: $('rec-format')?.value || '',
-    recAudio: $('rec-audio')?.checked !== false,
+    recAudio: route.recordings.audio !== false,
     syncMaster: { ...syncMaster },
   });
 }
@@ -2845,7 +2900,6 @@ function applyDesk(desk) {
     if ($('rec-format') && next.recFormat && [...$('rec-format').options].some((o) => o.value === next.recFormat)) {
       $('rec-format').value = next.recFormat;
     }
-    if ($('rec-audio')) $('rec-audio').checked = next.recAudio;
   } finally {
     deskWriting = false;
   }
@@ -3354,6 +3408,8 @@ async function loadProject(file, sourcePath = '') {
   {
     const shown = showRecordOutput(doc.recordOutput);
     project.setRecordOutput(shown);
+    const routed = showRoutes(doc.recordings, doc.outputs);
+    project.setRoutes({ recordings: routed.recordings, outputs: routed.outputs });
   }
   project.setCompositions(doc.compositions);
   paintCompositions();
@@ -3378,14 +3434,15 @@ function newProject() {
   refreshLibraryUi();
   resetProjectDesk();
   project.setRecordOutput({
-    codeRecord: !!$('hud-enable')?.checked,
-    codeOutput: !!$('hud-enable')?.checked,
-    screenRecord: false,
-    screenOutput: true,
     logoRecord: true,
     logoOutput: true,
   });
   showRecordOutput(project.recordOutput);
+  project.setRoutes({
+    recordings: { audio: true, screensaver: false, codeOverlay: !!$('hud-enable')?.checked },
+    outputs: { audio: true, screensaver: true, codeOverlay: !!$('hud-enable')?.checked },
+  });
+  showRoutes(project.recordings, project.outputs);
   project.setCompositions([null, null, null]);
   paintCompositions();
   project.setDesk(captureDesk());
@@ -3401,6 +3458,7 @@ function newProject() {
   for (const def of params.defs.values()) {
     if (def.layer) params.set(def.id, def.defaultValue, { exact: true });
   }
+  params.set('strobe', params.defs.get('strobe').defaultValue);
   for (const L of LAYERS) {
     bus.mute[L] = false;
     bus.solo[L] = false;
@@ -3628,7 +3686,7 @@ function runXdjBeat(deck) {
   const kind = xdjAssign.decks[deck]?.beat || 'none';
   if (kind === 'strobe') {
     triggerStrobePulse();
-    if (masterTransport.state === 'playing' && !timeline.playing) {
+    if (masterTransport.state === 'playing' && !timeline.playing && !bpmEngine.analyzing) {
       bpmEngine.beats = Math.round(bpmEngine.beats);
       beatClock.snap();
     }
@@ -4205,9 +4263,9 @@ function renderMomentary() {
     b.className = 'moment-pad';
     b.dataset.midi = `moment:${pad.id}`;
     const map = midi.mappingFor(`moment:${pad.id}`);
-    b.innerHTML = '<b></b><i></i>';
-    b.querySelector('b').textContent = pad.short || pad.label;
-    b.querySelector('i').textContent = map || 'unmapped';
+    const label = document.createElement('b');
+    label.textContent = pad.short || pad.label;
+    b.append(label);
     b.classList.toggle('held', momentary.held.has(pad.id));
     b.classList.toggle('mapped', !!map);
     b.title = map ? `${pad.label} · ${map}` : pad.label;
@@ -4397,7 +4455,7 @@ function toggleRecording() {
     recorder.stop();
   } else {
     const [width, height] = recordFrame();
-    const withAudio = $('rec-audio').checked && audio.recordStream;
+    const withAudio = route.recordings.audio && audio.recordStream;
     recorder.start({
       format: formats[$('rec-format').value],
       audioStream: withAudio ? audio.recordStream : null,
@@ -4423,7 +4481,6 @@ $('rec-aspect').addEventListener('change', () => {
   persistDesk();
 });
 $('rec-format')?.addEventListener('change', () => persistDesk());
-$('rec-audio')?.addEventListener('change', () => persistDesk());
 const pushOverlay = (force = true) => outputWin.syncHud(hud.capture(), { force });
 
 const HUD_MODES = ['scan', 'glsl', 'matrix', 'formula', 'diag', 'audio'];
@@ -4972,7 +5029,11 @@ function syncMidiTags() {
   const cards = document.querySelectorAll('#macro-list .macro-head');
   place(cards[0], 'F7');
   place(cards[1], 'F8');
-  document.querySelectorAll('#momentary-pads .moment-pad').forEach((pad, i) => place(pad, `TRK${i + 1}`));
+  const momentTrack = { strobe: 'TRK1', y2k: 'TRK2', shatter: 'TRK3', invert: 'TRK4', glitch: 'TRK5' };
+  document.querySelectorAll('#momentary-pads .moment-pad').forEach((pad) => {
+    const id = (pad.dataset.midi || '').replace(/^moment:/, '');
+    if (momentTrack[id]) place(pad, momentTrack[id]);
+  });
   document.querySelectorAll('.logo-triggers .sting-fire').forEach((btn, i) => place(btn, `TRK${i + 6}`));
   place($('shuffle-layer-fx'), '⇧TRK7');
   place($('code-trigger'), '⇧TRK8');
@@ -4997,32 +5058,21 @@ setMidiLabels(localStorage.getItem('vj.midi.labels') === '1', false);
   const storedMap = localStorage.getItem('vj.midi.map');
   setMidiMap(storedMap || (localStorage.getItem('vj.view') === 'apc' ? 'apc-mini-mk2' : 'apc-mini-mk2'));
 }
-$('code-record').addEventListener('change', () => setCodeRecord($('code-record').checked));
-$('hud-output').addEventListener('change', () => {
-  setCodeOutput($('hud-output').checked);
-  pushOverlay();
-});
-$('screen-record').addEventListener('change', () => setScreenRecord($('screen-record').checked));
-$('screen-output').addEventListener('change', () => setScreenOutput($('screen-output').checked));
 $('logo-record').addEventListener('change', () => setLogoRecord($('logo-record').checked));
 $('logo-output').addEventListener('change', () => setLogoOutput($('logo-output').checked));
+for (const id of ['rec-audio', 'rec-screen', 'rec-code', 'out-audio', 'out-screen', 'out-code']) {
+  $(id)?.addEventListener('change', onRouteChange);
+}
 
-let codeRecordOn = false;
-let codeOutputOn = false;
-let screenRecordOn = false;
-let screenOutputOn = false;
+const route = {
+  recordings: { audio: true, screensaver: false, codeOverlay: false },
+  outputs: { audio: true, screensaver: false, codeOverlay: false },
+};
 let logoRecordOn = true;
 let logoOutputOn = true;
 
-function recordFlags() {
-  return {
-    codeRecord: codeRecordOn,
-    codeOutput: codeOutputOn,
-    screenRecord: screenRecordOn,
-    screenOutput: screenOutputOn,
-    logoRecord: logoRecordOn,
-    logoOutput: logoOutputOn,
-  };
+function logoFlags() {
+  return { logoRecord: logoRecordOn, logoOutput: logoOutputOn };
 }
 
 function syncRecordBox(id, on) {
@@ -5030,41 +5080,57 @@ function syncRecordBox(id, on) {
   if (box && box.checked !== on) box.checked = on;
 }
 
-function setCodeRecord(on, save = true) {
-  codeRecordOn = !!on;
-  syncRecordBox('code-record', codeRecordOn);
-  if (save) project.setRecordOutput(recordFlags());
+function readRouteBoxes() {
+  return {
+    recordings: {
+      audio: !!$('rec-audio')?.checked,
+      screensaver: !!$('rec-screen')?.checked,
+      codeOverlay: !!$('rec-code')?.checked,
+    },
+    outputs: {
+      audio: !!$('out-audio')?.checked,
+      screensaver: !!$('out-screen')?.checked,
+      codeOverlay: !!$('out-code')?.checked,
+    },
+  };
 }
 
-function setCodeOutput(on, save = true) {
-  codeOutputOn = !!on;
-  syncRecordBox('hud-output', codeOutputOn);
-  if (outputWin.overlayOn !== codeOutputOn) outputWin.setOverlayOn(codeOutputOn);
-  if (save) project.setRecordOutput(recordFlags());
+function onRouteChange() {
+  setRoutes(readRouteBoxes());
+  pushOverlay();
 }
 
-function setScreenRecord(on, save = true) {
-  screenRecordOn = !!on;
-  syncRecordBox('screen-record', screenRecordOn);
-  if (save) project.setRecordOutput(recordFlags());
-}
-
-function setScreenOutput(on, save = true) {
-  screenOutputOn = !!on;
-  syncRecordBox('screen-output', screenOutputOn);
-  if (save) project.setRecordOutput(recordFlags());
+function setRoutes(next, save = true) {
+  route.recordings = {
+    audio: !!next.recordings?.audio,
+    screensaver: !!next.recordings?.screensaver,
+    codeOverlay: !!next.recordings?.codeOverlay,
+  };
+  route.outputs = {
+    audio: !!next.outputs?.audio,
+    screensaver: !!next.outputs?.screensaver,
+    codeOverlay: !!next.outputs?.codeOverlay,
+  };
+  syncRecordBox('rec-audio', route.recordings.audio);
+  syncRecordBox('rec-screen', route.recordings.screensaver);
+  syncRecordBox('rec-code', route.recordings.codeOverlay);
+  syncRecordBox('out-audio', route.outputs.audio);
+  syncRecordBox('out-screen', route.outputs.screensaver);
+  syncRecordBox('out-code', route.outputs.codeOverlay);
+  if (outputWin.overlayOn !== route.outputs.codeOverlay) outputWin.setOverlayOn(route.outputs.codeOverlay);
+  if (save) project.setRoutes(route);
 }
 
 function setLogoRecord(on, save = true) {
   logoRecordOn = !!on;
   syncRecordBox('logo-record', logoRecordOn);
-  if (save) project.setRecordOutput(recordFlags());
+  if (save) project.setRecordOutput(logoFlags());
 }
 
 function setLogoOutput(on, save = true) {
   logoOutputOn = !!on;
   syncRecordBox('logo-output', logoOutputOn);
-  if (save) project.setRecordOutput(recordFlags());
+  if (save) project.setRecordOutput(logoFlags());
 }
 
 function legacyLogoDefault() {
@@ -5077,24 +5143,36 @@ function legacyLogoDefault() {
 }
 
 function showRecordOutput(raw = {}) {
-  const codeDefault = !!$('hud-enable')?.checked;
   const logoDefault = legacyLogoDefault();
   const flags = {
-    codeRecord: typeof raw.codeRecord === 'boolean' ? raw.codeRecord : codeDefault,
-    codeOutput: typeof raw.codeOutput === 'boolean' ? raw.codeOutput : codeDefault,
-    screenRecord: typeof raw.screenRecord === 'boolean' ? raw.screenRecord : false,
-    screenOutput: typeof raw.screenOutput === 'boolean' ? raw.screenOutput : false,
     logoRecord: typeof raw.logoRecord === 'boolean' ? raw.logoRecord : logoDefault,
     logoOutput: typeof raw.logoOutput === 'boolean' ? raw.logoOutput : logoDefault,
   };
-  setCodeRecord(flags.codeRecord, false);
-  setCodeOutput(flags.codeOutput, false);
-  setScreenRecord(flags.screenRecord, false);
-  setScreenOutput(flags.screenOutput, false);
   setLogoRecord(flags.logoRecord, false);
   setLogoOutput(flags.logoOutput, false);
   const dirty = Object.keys(flags).some((key) => typeof raw[key] !== 'boolean');
   return { ...flags, dirty };
+}
+
+function showRoutes(recordings = {}, outputs = {}) {
+  const codeDefault = !!$('hud-enable')?.checked;
+  const next = {
+    recordings: {
+      audio: recordings.audio !== false,
+      screensaver: !!recordings.screensaver,
+      codeOverlay: typeof recordings.codeOverlay === 'boolean' ? recordings.codeOverlay : codeDefault,
+    },
+    outputs: {
+      audio: outputs.audio !== false,
+      screensaver: !!outputs.screensaver,
+      codeOverlay: typeof outputs.codeOverlay === 'boolean' ? outputs.codeOverlay : codeDefault,
+    },
+  };
+  setRoutes(next, false);
+  const dirty = ['audio', 'screensaver', 'codeOverlay'].some((key) => (
+    typeof recordings[key] !== 'boolean' || typeof outputs[key] !== 'boolean'
+  ));
+  return { ...next, dirty };
 }
 
 {
@@ -5102,6 +5180,11 @@ function showRecordOutput(raw = {}) {
   if (shown.dirty) {
     const { dirty, ...flags } = shown;
     project.setRecordOutput(flags);
+  }
+  const routed = showRoutes(project.recordings, project.outputs);
+  if (routed.dirty) {
+    const { dirty, ...routes } = routed;
+    project.setRoutes(routes);
   }
 }
 
@@ -5287,7 +5370,7 @@ $('reopen-project')?.addEventListener('change', (e) => {
 paintMachinePrefs();
 try {
   const rawScale = localStorage.getItem('vj.uiScale');
-  const savedScale = rawScale == null || rawScale === '' ? NaN : Number(rawScale);
+  const savedScale = rawScale == null || rawScale === '' ? 105 : Number(rawScale);
   if (Number.isFinite(savedScale)) setUiScale(savedScale);
 } catch { /* ignore */ }
 
@@ -5360,7 +5443,7 @@ function bindSplit(el) {
 }
 for (const id of ['split-library', 'split-inspector', 'split-dock']) bindSplit($(id));
 
-let topHeightPercent = 42;
+let topHeightPercent = 38;
 function clampPreviewSplit(percent) {
   return Math.min(80, Math.max(15, percent));
 }
@@ -5931,7 +6014,7 @@ function frame(stamp) {
       $('rec-time').textContent = recText;
     }
 
-  const paintHud = hud.visible && (!isPerformMode || document.body.classList.contains('hud-perform') || outputWin.overlayOn || codeRecordOn);
+  const paintHud = hud.visible && (!isPerformMode || document.body.classList.contains('hud-perform') || route.outputs.codeOverlay || route.recordings.codeOverlay);
   if (paintHud) {
     const sel = selectedLayer();
     if (hud.display === 'scan') {
@@ -5999,14 +6082,20 @@ function frame(stamp) {
   // Copy the finished WebGL frame after the HUD text has settled, so the recording
   // and the output window do not grab a line that is still scrolling into place.
   const frameSource = bakedPlate || renderer.domElement;
-  const hudRecord = codeRecordOn && hud.visible ? hud.recordOverlay() : null;
-  const hudOutput = codeOutputOn && hud.visible ? hud.recordOverlay() : null;
+  const hudRecord = route.recordings.codeOverlay && hud.visible ? hud.recordOverlay() : null;
+  const hudOutput = route.outputs.codeOverlay && hud.visible ? hud.recordOverlay() : null;
   const logosRecord = logoRecordOn && stings.live ? stings.outputPose() : null;
   const logosOutput = logoOutputOn && stings.live ? stings.outputPose() : null;
-  const screensaverRecord = screenRecordOn ? screenRecordSpec(nowMs) : null;
-  const screensaverOutput = screenOutputOn ? screenRecordSpec(nowMs) : null;
+  const screensaverRecord = route.recordings.screensaver ? screenRecordSpec(nowMs) : null;
+  const screensaverOutput = route.outputs.screensaver ? screenRecordSpec(nowMs) : null;
   if (recorder.recording) recorder.paint(frameSource, hudRecord, logosRecord, screensaverRecord);
-  outputWin.mirror(hudOutput, logosOutput, frameSource, screensaverOutput);
+  outputWin.mirror(
+    hudOutput,
+    logosOutput,
+    frameSource,
+    screensaverOutput,
+    route.outputs.audio ? audio.recordStream : null,
+  );
   if (performHolding) paintPerformHold();
 }
 
@@ -6230,8 +6319,8 @@ globalLibrary = bindGlobalLibrary({
   showToast,
   inBin: (name) => project.mediaPool.some((item) => item.name === name),
   projectSnapshot,
-  onDeleted: (name) => {
-    if (library.has(name)) library.remove(name);
+  onDeleted: async (name) => {
+    await releaseClip(name);
     refreshLibraryUi();
     refreshMediaSelect();
   },

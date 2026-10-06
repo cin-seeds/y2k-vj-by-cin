@@ -181,7 +181,7 @@ export class OutputWindow {
   }
 
   /** Copy the main WebGL frame into the output. Letterboxes when the screen shape differs. */
-  mirror(overlay = null, logos = null, source = null, screensaver = null) {
+  mirror(overlay = null, logos = null, source = null, screensaver = null, audioStream = null) {
     if (!this.open) {
       this.outCanvas = null;
       this.outCtx = null;
@@ -197,6 +197,7 @@ export class OutputWindow {
       if (!dest || !ctx) return;
       this.#paint(ctx, w, h, overlay, logos, picture, screensaver);
       this.#queueNativeFrame(dest);
+      this.#syncProgramAudio(audioStream);
       return;
     }
     if (!this.outCtx) this.#attach();
@@ -212,6 +213,30 @@ export class OutputWindow {
     }
     this.#paint(ctx, w, h, overlay, logos, picture, screensaver);
     this.#syncHudStyle(dest, overlay?.chrome);
+  }
+
+  #syncProgramAudio(stream) {
+    if (this.native || !this.win || this.win.closed) return;
+    let doc;
+    try { doc = this.win.document; } catch { return; }
+    if (!doc?.body) return;
+    const next = stream || null;
+    let el = doc.getElementById('program-audio');
+    if (!next) {
+      if (el) {
+        el.srcObject = null;
+        el.remove();
+      }
+      return;
+    }
+    if (!el) {
+      el = doc.createElement('audio');
+      el.id = 'program-audio';
+      el.autoplay = true;
+      doc.body.append(el);
+    }
+    if (el.srcObject !== next) el.srcObject = next;
+    el.play?.().catch(() => {});
   }
 
   #launchBrowser(target) {

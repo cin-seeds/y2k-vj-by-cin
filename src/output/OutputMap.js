@@ -2,6 +2,8 @@
 // top-left origin, 0..1 across the output frame. Persisted locally and in setlists.
 
 const STORAGE_KEY = 'vj.outputMap';
+const PRESET_KEY = 'vj.outputMapPresets';
+const GUIDE_KEY = 'vj.outputMapGuide';
 
 export const OUTPUT_MASKS = [
   { id: 'none', label: 'None (Full Screen)' },
@@ -100,8 +102,48 @@ function maskOutline(mask, aspect) {
   return null;
 }
 
+function presetId() {
+  return `map-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function cleanName(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+
+function snapshotMapping(pins, mask, bezel) {
+  return { pins: copyPins(pins), mask, bezel };
+}
+
+function shrinkGuide(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 1280;
+      const scale = Math.min(1, max / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+      const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+      const h = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.72));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Could not read that image'));
+    };
+    img.src = url;
+  });
+}
+
 export class OutputMap {
-  constructor({ stage, svg, maskSelect, resetBtn, bezelInput, bezelOut, ledNote, getAspect, onChange }) {
+  constructor({
+    stage, svg, maskSelect, resetBtn, bezelInput, bezelOut, ledNote, getAspect, onChange,
+    guideImg, guideFile, guidePick, guideClear, guideOpacity, guideOpacityOut,
+    presetName, presetSave, presetList, presetEmpty,
+  }) {
     this.stage = stage;
     this.svg = svg;
     this.maskSelect = maskSelect;
@@ -110,13 +152,41 @@ export class OutputMap {
     this.ledNote = ledNote;
     this.getAspect = getAspect;
     this.onChange = onChange;
+    this.guideImg = guideImg;
+    this.guideOpacityInput = guideOpacity;
+    this.guideOpacityOut = guideOpacityOut;
+    this.presetName = presetName;
+    this.presetList = presetList;
+    this.presetEmpty = presetEmpty;
     this.pins = copyPins(DEFAULT_PINS);
     this.gl = { tl: [0, 1], tr: [1, 1], bl: [0, 0], br: [1, 0] };
     this.mask = 'none';
     this.bezel = 0;
+    this.presets = [];
+    this.activePresetId = '';
+    this.guideUrl = '';
+    this.guideOpacity = 0.45;
     this.handles = {};
     this.#buildHandles();
     this.#load();
+    this.#loadPresets();
+    this.#loadGuide();
+    guidePick?.addEventListener('click', () => guideFile?.click());
+    guideFile?.addEventListener('change', () => {
+      const file = guideFile.files?.[0];
+      guideFile.value = '';
+      if (file) this.setGuide(file);
+    });
+    guideClear?.addEventListener('click', () => this.clearGuide());
+    guideOpacity?.addEventListener('input', () => {
+      this.guideOpacity = Math.min(1, Math.max(0, Number(guideOpacity.value) / 100));
+      this.#saveGuide();
+      this.#paintGuide();
+    });
+    presetSave?.addEventListener('click', () => this.savePreset(presetName?.value || ''));
+    presetName?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') this.savePreset(presetName.value);
+    });
     maskSelect.addEventListener('change', () => {
       this.mask = OUTPUT_MASKS.some((m) => m.id === maskSelect.value) ? maskSelect.value : 'none';
       this.#commit();
@@ -127,6 +197,8 @@ export class OutputMap {
     });
     resetBtn.addEventListener('click', () => this.resetPins());
     this.#draw();
+    this.#paintPresets();
+    this.#paintGuide();
   }
 
   get identity() {
@@ -153,7 +225,18 @@ export class OutputMap {
   }
 
   toJSON() {
-    return { pins: copyPins(this.pins), mask: this.mask, bezel: this.bezel };
+    return {
+      pins: copyPins(this.pins),
+      mask: this.mask,
+      bezel: this.bezel,
+      presets: this.presets.map((row) => ({
+        id: row.id,
+        name: row.name,
+        pins: copyPins(row.pins),
+        mask: row.mask,
+        bezel: row.bezel,
+      })),
+    };
   }
 
   apply(data, { notify = true } = {}) {
@@ -167,9 +250,81 @@ export class OutputMap {
     this.mask = OUTPUT_MASKS.some((m) => m.id === data?.mask) ? data.mask : 'none';
     const bezel = Number(data?.bezel);
     this.bezel = Number.isFinite(bezel) ? Math.min(0.05, Math.max(0, bezel)) : 0;
+    if (Array.isArray(data?.presets)) {
+      this.presets = data.presets.map((row) => this.#readPreset(row)).filter(Boolean);
+      this.#savePresets();
+      this.#paintPresets();
+    }
     this.#save();
     this.#draw();
     if (notify) this.onChange?.();
+  }
+
+  savePreset(name) {
+    const label = cleanName(name) || `Preset ${this.presets.length + 1}`;
+    const row = { id: presetId(), name: label, ...snapshotMapping(this.pins, this.mask, this.bezel) };
+    this.presets.push(row);
+    this.activePresetId = row.id;
+    if (this.presetName) this.presetName.value = '';
+    this.#savePresets();
+    this.#paintPresets();
+  }
+
+  renamePreset(id, name) {
+    const row = this.presets.find((item) => item.id === id);
+    if (!row) return;
+    const label = cleanName(name);
+    if (!label || label === row.name) {
+      this.#paintPresets();
+      return;
+    }
+    row.name = label;
+    this.#savePresets();
+    this.#paintPresets();
+  }
+
+  updatePreset(id) {
+    const row = this.presets.find((item) => item.id === id);
+    if (!row) return;
+    const next = snapshotMapping(this.pins, this.mask, this.bezel);
+    row.pins = next.pins;
+    row.mask = next.mask;
+    row.bezel = next.bezel;
+    this.activePresetId = id;
+    this.#savePresets();
+    this.#paintPresets();
+  }
+
+  deletePreset(id) {
+    this.presets = this.presets.filter((item) => item.id !== id);
+    if (this.activePresetId === id) this.activePresetId = '';
+    this.#savePresets();
+    this.#paintPresets();
+  }
+
+  usePreset(id) {
+    const row = this.presets.find((item) => item.id === id);
+    if (!row) return;
+    this.activePresetId = id;
+    this.apply({ pins: row.pins, mask: row.mask, bezel: row.bezel }, { notify: true });
+    this.#paintPresets();
+  }
+
+  async setGuide(file) {
+    if (!file || !String(file.type || '').startsWith('image/')) return;
+    try {
+      this.guideUrl = await shrinkGuide(file);
+    } catch {
+      return;
+    }
+    this.#saveGuide();
+    this.#paintGuide();
+  }
+
+  clearGuide() {
+    this.guideUrl = '';
+    this.#saveGuide();
+    this.#paintGuide();
   }
 
   resetPins() {
@@ -200,6 +355,110 @@ export class OutputMap {
 
   #save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.toJSON())); } catch { /* ignore */ }
+  }
+
+  #readPreset(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id.slice(0, 40) : presetId();
+    const name = cleanName(raw.name) || 'Preset';
+    const pins = raw.pins || {};
+    const mask = OUTPUT_MASKS.some((item) => item.id === raw.mask) ? raw.mask : 'none';
+    const bezel = Number(raw.bezel);
+    return {
+      id,
+      name,
+      pins: {
+        tl: readPin(pins.tl, DEFAULT_PINS.tl),
+        tr: readPin(pins.tr, DEFAULT_PINS.tr),
+        bl: readPin(pins.bl, DEFAULT_PINS.bl),
+        br: readPin(pins.br, DEFAULT_PINS.br),
+      },
+      mask,
+      bezel: Number.isFinite(bezel) ? Math.min(0.05, Math.max(0, bezel)) : 0,
+    };
+  }
+
+  #loadPresets() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(PRESET_KEY) || '[]');
+      if (!Array.isArray(raw)) return;
+      this.presets = raw.map((row) => this.#readPreset(row)).filter(Boolean);
+    } catch { /* ignore a bad save */ }
+  }
+
+  #savePresets() {
+    try { localStorage.setItem(PRESET_KEY, JSON.stringify(this.presets)); } catch { /* ignore */ }
+    this.#save();
+  }
+
+  #paintPresets() {
+    const list = this.presetList;
+    if (!list) return;
+    list.replaceChildren();
+    if (this.presetEmpty) this.presetEmpty.hidden = this.presets.length > 0;
+    for (const row of this.presets) {
+      const item = document.createElement('li');
+      item.classList.toggle('is-active', row.id === this.activePresetId);
+      const name = document.createElement('input');
+      name.type = 'text';
+      name.maxLength = 40;
+      name.value = row.name;
+      name.title = 'Preset name';
+      name.setAttribute('aria-label', `Name for ${row.name}`);
+      name.addEventListener('change', () => this.renamePreset(row.id, name.value));
+      const use = document.createElement('button');
+      use.type = 'button';
+      use.textContent = 'Use';
+      use.title = `Apply ${row.name}`;
+      use.addEventListener('click', () => this.usePreset(row.id));
+      const update = document.createElement('button');
+      update.type = 'button';
+      update.textContent = 'Update';
+      update.title = `Overwrite ${row.name} with the current corners`;
+      update.addEventListener('click', () => this.updatePreset(row.id));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = 'Delete';
+      remove.title = `Delete ${row.name}`;
+      remove.addEventListener('click', () => this.deletePreset(row.id));
+      item.append(name, use, update, remove);
+      list.append(item);
+    }
+  }
+
+  #loadGuide() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(GUIDE_KEY) || 'null');
+      if (!raw || typeof raw !== 'object') return;
+      if (typeof raw.url === 'string' && raw.url.startsWith('data:image/')) this.guideUrl = raw.url;
+      const opacity = Number(raw.opacity);
+      if (Number.isFinite(opacity)) this.guideOpacity = Math.min(1, Math.max(0, opacity));
+    } catch { /* ignore a bad save */ }
+  }
+
+  #saveGuide() {
+    try {
+      if (!this.guideUrl && this.guideOpacity === 0.45) {
+        localStorage.removeItem(GUIDE_KEY);
+        return;
+      }
+      localStorage.setItem(GUIDE_KEY, JSON.stringify({ url: this.guideUrl, opacity: this.guideOpacity }));
+    } catch { /* a large photo stays for this session */ }
+  }
+
+  #paintGuide() {
+    const img = this.guideImg;
+    if (!img) return;
+    if (this.guideUrl) {
+      img.src = this.guideUrl;
+      img.hidden = false;
+    } else {
+      img.removeAttribute('src');
+      img.hidden = true;
+    }
+    img.style.opacity = String(this.guideOpacity);
+    if (this.guideOpacityInput) this.guideOpacityInput.value = String(Math.round(this.guideOpacity * 100));
+    if (this.guideOpacityOut) this.guideOpacityOut.textContent = `${Math.round(this.guideOpacity * 100)}%`;
   }
 
   #buildHandles() {

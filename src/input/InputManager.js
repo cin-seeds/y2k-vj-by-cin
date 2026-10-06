@@ -117,6 +117,22 @@ export class InputManager {
 
     this.mixScene = new THREE.Scene();
     this.mixCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this.#makeMixQuad();
+
+    // One idle texture per layer, allocated with the layer and never rebuilt per frame.
+    const idle = new Uint8Array(64 * 64 * 4);
+    this.slot = new THREE.DataTexture(idle, 64, 64);
+    this.slot.colorSpace = THREE.NoColorSpace;
+    this.slot.needsUpdate = true;
+    this.#configure(this.slot);
+  }
+
+  async listCameras() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter((d) => d.kind === 'videoinput');
+  }
+
+  #makeMixQuad() {
     this.mixQuad = new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
       new THREE.ShaderMaterial({
@@ -133,22 +149,16 @@ export class InputManager {
     );
     this.mixQuad.frustumCulled = false;
     this.mixScene.add(this.mixQuad);
-
-    // One idle texture per layer, allocated with the layer and never rebuilt per frame.
-    const idle = new Uint8Array(64 * 64 * 4);
-    this.slot = new THREE.DataTexture(idle, 64, 64);
-    this.slot.colorSpace = THREE.NoColorSpace;
-    this.slot.needsUpdate = true;
-    this.#configure(this.slot);
   }
 
-  async listCameras() {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices.filter((d) => d.kind === 'videoinput');
+  #restoreGpu() {
+    this.ring = new FrameRing();
+    this.#makeMixQuad();
   }
 
   async useCamera(deviceId) {
     this.dispose();
+    this.#restoreGpu();
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -167,6 +177,7 @@ export class InputManager {
   /** ndi:<name> or spout:<name>. Frames land in the same texture a camera uses. */
   async usePicture(key) {
     this.dispose();
+    this.#restoreGpu();
     this.kind = 'picture';
     this.pictureKey = key;
     this.texture = blackPixel;
@@ -185,6 +196,7 @@ export class InputManager {
 
   async useFile(file) {
     this.dispose();
+    this.#restoreGpu();
     this.objectUrl = URL.createObjectURL(file);
 
     if (file.type.startsWith('image/')) {
@@ -223,6 +235,7 @@ export class InputManager {
    */
   async useUrl(url, alts = []) {
     this.dispose();
+    this.#restoreGpu();
     this.#remote = true;
     this.rejected = [];
     this.#fallbacks = alts.filter((item) => webStreamUrl(item) && item !== url);
@@ -468,11 +481,17 @@ export class InputManager {
     if (this.texture && this.texture !== this.slot && this.texture !== blackPixel) this.texture.dispose();
     if (this.altTex && this.altTex !== blackPixel) this.altTex.dispose();
     this.mixRt?.dispose();
-    this.ring.dispose();
+    if (this.mixQuad) {
+      this.mixQuad.geometry.dispose();
+      this.mixQuad.material.dispose();
+      this.mixScene.remove(this.mixQuad);
+      this.mixQuad = null;
+    }
+    this.ring?.dispose();
+    this.ring = null;
     this.texture = this.slot;
     this.displayTexture = null;
     this.altTex = this.mixRt = null;
-    this.ring = new FrameRing();
     this.#killVideo(this.video);
     this.#killVideo(this.alt);
     this.video = this.alt = null;

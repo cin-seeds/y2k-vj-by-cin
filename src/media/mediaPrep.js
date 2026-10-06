@@ -3,8 +3,10 @@
 // permanent global library (app data / global_media).
 
 import { isTauri } from '../output/OutputWindow.js';
+import { addMediaTag } from './GlobalLibrary.js';
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 const jobs = new Map();
 let listening = false;
 let pumping = false;

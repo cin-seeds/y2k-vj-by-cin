@@ -143,7 +143,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       empty.hidden = visible.length > 0;
       empty.textContent = rows.length && !visible.length
         ? `No clips tagged ${tagFilter}.`
-        : 'No media stored yet. Drop a video above.';
+        : 'No media stored yet. Drop a video or image above.';
     }
     for (const row of visible) {
       const card = document.createElement('div');
@@ -214,6 +214,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       if (!Object.keys(mediaTags).length) localStorage.removeItem(MEDIA_TAG_KEY);
       else localStorage.setItem(MEDIA_TAG_KEY, JSON.stringify(mediaTags));
     } catch { /* ignore */ }
+    window.dispatchEvent(new CustomEvent('vj-media-tags'));
   }
 
   function knownTag(value) {
@@ -353,13 +354,18 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         continue;
       }
       if (isTauri() && image && path) {
+        const asBrand = brandUpload();
         import('@tauri-apps/api/core').then(({ invoke }) => invoke('copy_into_global_media', { inputPath: path }))
-          .then(() => window.dispatchEvent(new CustomEvent('vj-global-media')))
+          .then(() => {
+            if (asBrand) addMediaTag(name, 'brand');
+            window.dispatchEvent(new CustomEvent('vj-global-media'));
+          })
           .catch((err) => showToast?.(err?.message || 'Could not save that image', true));
         queued += 1;
         continue;
       }
       library.add([file]);
+      if (brandUpload()) addMediaTag(name, 'brand');
       queued += 1;
     }
     if (queued && !isTauri()) render();
@@ -385,6 +391,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         else if (IMAGE_EXT.test(name)) {
           const { invoke } = await import('@tauri-apps/api/core');
           await invoke('copy_into_global_media', { inputPath: path });
+          if (brandUpload()) addMediaTag(name, 'brand');
         }
       }
       window.dispatchEvent(new CustomEvent('vj-global-media'));
@@ -420,7 +427,6 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   }
 
   async function finishDelete(row, uses) {
-    onDeleted?.(row.name);
     thumbs.delete(row.path || row.name);
     const names = [...new Set((uses || []).map((item) => item.project).filter(Boolean))];
     if (names.length) showToast?.(`Deleted ${row.name}. Missing file in ${names.join(', ')}.`);
@@ -430,6 +436,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
 
   async function requestDelete(row, force = false) {
     const snapshot = projectSnapshot?.() || { name: 'This project', path: '', document: '{}' };
+    if (force) await onDeleted?.(row.name);
     let outcome;
     try {
       outcome = await checkDelete(row, snapshot, force);
@@ -448,6 +455,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       return;
     }
     hideBlock();
+    if (!force) await onDeleted?.(row.name);
     await finishDelete(row, outcome.uses || []);
   }
 
@@ -467,6 +475,10 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     if (open) close();
   });
   window.addEventListener('vj-global-media', () => render());
+  window.addEventListener('vj-media-tags', () => {
+    mediaTags = readMediaTags();
+    paint(latest);
+  });
   library.onChange(() => render());
   send?.addEventListener('click', sendSelected);
   tagInput?.addEventListener('input', () => {
@@ -508,6 +520,39 @@ const MEDIA_TAG_KEY = 'vj.mediaTags';
 
 function cleanTag(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 24);
+}
+
+export function mediaTagsFor(name) {
+  const tags = readMediaTags()[name];
+  return Array.isArray(tags) ? tags : [];
+}
+
+export function hasMediaTag(name, tag) {
+  const key = cleanTag(tag).toLowerCase();
+  if (!key) return false;
+  return mediaTagsFor(name).some((item) => item.toLowerCase() === key);
+}
+
+export function addMediaTag(name, tag) {
+  const key = String(name || '');
+  const next = cleanTag(tag);
+  if (!key || !next) return false;
+  const all = readMediaTags();
+  const list = Array.isArray(all[key]) ? all[key].slice() : [];
+  if (list.some((item) => item.toLowerCase() === next.toLowerCase())) return true;
+  list.push(next);
+  all[key] = list.slice(0, 8);
+  try {
+    localStorage.setItem(MEDIA_TAG_KEY, JSON.stringify(all));
+  } catch {
+    return false;
+  }
+  window.dispatchEvent(new CustomEvent('vj-media-tags'));
+  return true;
+}
+
+function brandUpload() {
+  return !!document.getElementById('prep-brand')?.checked;
 }
 
 function readMediaTags() {

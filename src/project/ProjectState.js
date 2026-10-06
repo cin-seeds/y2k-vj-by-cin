@@ -57,6 +57,8 @@ export class ProjectState {
     this.transport = emptyTransport();
     this.locks = {};
     this.recordOutput = emptyRecordOutput();
+    this.recordings = emptyRoute();
+    this.outputs = emptyRoute();
     this.compositions = emptyCompositions();
     this.desk = null;
     this.view = null;
@@ -76,6 +78,8 @@ export class ProjectState {
       transport: this.transport,
       locks: { ...this.locks },
       recordOutput: { ...this.recordOutput },
+      recordings: { ...this.recordings },
+      outputs: { ...this.outputs },
       compositions: this.compositions.map((slot) => (slot ? { ...slot } : null)),
       desk: this.desk,
       view: this.view,
@@ -105,6 +109,12 @@ export class ProjectState {
 
   setRecordOutput(next) {
     this.recordOutput = normalizeRecordOutput(next);
+    this.#write();
+  }
+
+  setRoutes({ recordings, outputs } = {}) {
+    if (recordings) this.recordings = normalizeRoute(recordings, this.recordings);
+    if (outputs) this.outputs = normalizeRoute(outputs, this.outputs);
     this.#write();
   }
 
@@ -144,6 +154,8 @@ export class ProjectState {
     this.transport = doc.transport;
     this.locks = doc.locks;
     this.recordOutput = doc.recordOutput;
+    this.recordings = doc.recordings;
+    this.outputs = doc.outputs;
     this.compositions = doc.compositions;
     this.desk = doc.desk;
     this.view = doc.view;
@@ -158,6 +170,8 @@ export class ProjectState {
     this.transport = emptyTransport();
     this.locks = {};
     this.recordOutput = emptyRecordOutput();
+    this.recordings = emptyRoute();
+    this.outputs = emptyRoute();
     this.compositions = emptyCompositions();
     this.desk = null;
     this.view = null;
@@ -186,6 +200,8 @@ export class ProjectState {
         this.transport = doc.transport;
         this.locks = doc.locks;
         this.recordOutput = doc.recordOutput;
+        this.recordings = doc.recordings;
+        this.outputs = doc.outputs;
         this.compositions = doc.compositions;
         this.desk = doc.desk;
         this.view = doc.view;
@@ -208,6 +224,8 @@ export class ProjectState {
     this.transport = doc.transport;
     this.locks = doc.locks;
     this.recordOutput = doc.recordOutput;
+    this.recordings = doc.recordings;
+    this.outputs = doc.outputs;
     this.compositions = doc.compositions;
     this.desk = doc.desk;
     this.view = doc.view;
@@ -229,6 +247,21 @@ function emptyRecordOutput() {
     screenOutput: null,
     logoRecord: null,
     logoOutput: null,
+  };
+}
+
+function emptyRoute() {
+  return { audio: null, screensaver: null, codeOverlay: null };
+}
+
+function normalizeRoute(raw, fallback = emptyRoute()) {
+  const base = fallback && typeof fallback === 'object' ? fallback : emptyRoute();
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const flag = (key) => (typeof src[key] === 'boolean' ? src[key] : (typeof base[key] === 'boolean' ? base[key] : null));
+  return {
+    audio: flag('audio'),
+    screensaver: flag('screensaver'),
+    codeOverlay: flag('codeOverlay'),
   };
 }
 
@@ -305,6 +338,24 @@ function normalizeRecordOutput(raw) {
   return out;
 }
 
+function routesFromDocument(data) {
+  const legacy = data?.recordOutput;
+  const code = readRecordPair(legacy, 'code', 'codeRecord', 'codeOutput');
+  const screen = readRecordPair(legacy, 'screen', 'screenRecord', 'screenOutput');
+  const deskAudio = data?.desk && typeof data.desk.recAudio === 'boolean' ? data.desk.recAudio : null;
+  const recordings = normalizeRoute(data?.recordings, {
+    audio: deskAudio,
+    screensaver: screen.record,
+    codeOverlay: code.record,
+  });
+  const outputs = normalizeRoute(data?.outputs, {
+    audio: null,
+    screensaver: screen.output,
+    codeOverlay: code.output,
+  });
+  return { recordings, outputs };
+}
+
 /** Accept a vjproj or an older setlist (timeline object with a cues array). */
 export function coerceDocument(data = {}) {
   const transportIn = Array.isArray(data.timeline) ? (data.transport || {}) : (data.timeline || {});
@@ -336,6 +387,7 @@ export function coerceDocument(data = {}) {
     view: normalizeView(data.view),
     name: normalizeProjectName(data.name),
     legacy: data,
+    ...routesFromDocument(data),
   };
 }
 

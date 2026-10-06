@@ -192,6 +192,7 @@ async fn download_video(
   filename: String,
   save_dir: String,
 ) -> Result<String, String> {
+  ensure_ffmpeg_sidecar()?;
   let parsed = reqwest::Url::parse(&url).map_err(|_| "That video link is not a download address.".to_string())?;
   if parsed.scheme() != "http" && parsed.scheme() != "https" {
     return Err("That video link is not a download address.".into());
@@ -320,12 +321,12 @@ async fn download_audio(app: tauri::AppHandle, url: String, filename: String) ->
     return Err(err);
   }
 
-  locate_ffmpeg()?;
+  ensure_ffmpeg_sidecar()?;
   let input_arg = part.to_string_lossy().to_string();
   let output = dest.to_string_lossy().to_string();
   let (mut rx, child) = app
     .shell()
-    .sidecar("bin/ffmpeg")
+    .sidecar("ffmpeg")
     .map_err(|err| ffmpeg_launch_error(&err.to_string()))?
     .args([
       "-y",
@@ -812,7 +813,7 @@ fn safe_leaf(filename: &str) -> String {
   if name.is_empty() { "video.mp4".into() } else { name }
 }
 
-const FFMPEG_MISSING: &str = "FFmpeg binary missing in src-tauri/bin/ - please install sidecar binary";
+const FFMPEG_MISSING: &str = "FFmpeg is not installed. Run npm run setup, then restart the desktop app.";
 
 fn ffmpeg_file_name() -> String {
   let triple = option_env!("TAURI_ENV_TARGET_TRIPLE").unwrap_or(if cfg!(windows) {
@@ -846,6 +847,40 @@ fn locate_ffmpeg() -> Result<PathBuf, String> {
     .into_iter()
     .find(|path| path.is_file())
     .ok_or_else(|| FFMPEG_MISSING.to_string())
+}
+
+fn sidecar_runtime_path() -> Option<PathBuf> {
+  let exe = std::env::current_exe().ok()?;
+  let mut folder = exe.parent()?.to_path_buf();
+  if folder.ends_with("deps") {
+    if let Some(parent) = folder.parent() {
+      folder = parent.to_path_buf();
+    }
+  }
+  Some(folder.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }))
+}
+
+/// Sidecar("ffmpeg") loads the file next to the app. externalBin stores the
+/// triple-named build in src-tauri/bin and Tauri copies it beside the executable.
+fn ensure_ffmpeg_sidecar() -> Result<(), String> {
+  let Some(runtime) = sidecar_runtime_path() else {
+    locate_ffmpeg()?;
+    return Ok(());
+  };
+  if runtime.is_file() {
+    return Ok(());
+  }
+  let source = locate_ffmpeg()?;
+  if let Some(parent) = runtime.parent() {
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+  }
+  std::fs::copy(&source, &runtime).map_err(|err| ffmpeg_launch_error(&err.to_string()))?;
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755));
+  }
+  Ok(())
 }
 
 fn ffmpeg_launch_error(detail: &str) -> String {
@@ -1054,7 +1089,7 @@ async fn transcode_cancel(job_id: String) -> Result<(), String> {
 }
 
 /// Fit a video to 1920x1080 and write an H.264 MP4 into the global media library.
-/// The FFmpeg binary is the `bin/ffmpeg` sidecar (src-tauri/bin/ffmpeg-<target>).
+/// The FFmpeg binary is the `ffmpeg` sidecar (src-tauri/bin/ffmpeg-<target>, copied beside the app).
 #[tauri::command]
 async fn transcode_media(
   app: tauri::AppHandle,
@@ -1072,12 +1107,10 @@ async fn transcode_media(
   let output = dest.to_string_lossy().to_string();
   let input_arg = input.to_string_lossy().to_string();
 
-  // The sidecar name stays bin/ffmpeg. Spawn only after the file is on disk,
-  // so a missing binary does not surface as Windows os error 3.
-  locate_ffmpeg()?;
+  ensure_ffmpeg_sidecar()?;
   let (mut rx, child) = app
     .shell()
-    .sidecar("bin/ffmpeg")
+    .sidecar("ffmpeg")
     .map_err(|err| ffmpeg_launch_error(&err.to_string()))?
     .args([
       "-i",

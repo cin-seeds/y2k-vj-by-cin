@@ -1,6 +1,6 @@
 [package]
 name = "y2k-vj-by-cin"
-version = "0.1.0"
+version = "2.0.0"
 description = "Local live generative VJ performance tool"
 authors = ["you"]
 license = ""
@@ -37,3 +37,8 @@ spout-rs = { version = "0.2", features = ["vendored"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 syphon-rs = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

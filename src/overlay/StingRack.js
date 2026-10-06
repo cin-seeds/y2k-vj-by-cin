@@ -174,9 +174,18 @@ function makeVideo() {
   return video;
 }
 
-function uploadFrame(gl, tex, video) {
-  const w = video.videoWidth | 0;
-  const h = video.videoHeight | 0;
+function frameSize(source) {
+  const w = source?.videoWidth || source?.naturalWidth || source?.width || 0;
+  const h = source?.videoHeight || source?.naturalHeight || source?.height || 0;
+  return { w: w | 0, h: h | 0 };
+}
+
+function isStillFile(file) {
+  return !!file && (String(file.type || '').startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(file.name || ''));
+}
+
+function uploadFrame(gl, tex, source) {
+  const { w, h } = frameSize(source);
   if (w < 2 || h < 2) return;
   const prev = gl.getParameter(gl.TEXTURE_BINDING_2D);
   const flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
@@ -187,7 +196,7 @@ function uploadFrame(gl, tex, video) {
     tex._vw = w;
     tex._vh = h;
   }
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, video);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
   gl.bindTexture(gl.TEXTURE_2D, prev);
 }
@@ -203,17 +212,26 @@ function releaseTexture(slot) {
 }
 
 export class StingRack {
-  constructor(root, { onChange, onAssign, onPersist } = {}) {
+  constructor(root, { onChange, onAssign, onPersist, brandMedia, onPick } = {}) {
     this.slots = [];
     this.root = root;
     this.silent = false;
     this.onChange = onChange || (() => {});
     this.onAssign = onAssign || (() => {});
     this.onPersist = onPersist || (() => {});
+    this.brandMedia = brandMedia || (() => []);
+    this.onPick = onPick || (async () => null);
     const list = document.createElement('div');
     list.className = 'sting-slots';
     root.append(list);
     for (let i = 0; i < SLOTS; i++) this.slots.push(this.#slot(list, i));
+    document.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('.brand-pick, .sting-load')) return;
+      for (const slot of this.slots) {
+        const open = slot.card?.querySelector('.brand-pick');
+        if (open) open.hidden = true;
+      }
+    });
   }
 
   get live() {
@@ -321,7 +339,8 @@ export class StingRack {
         this.#finish(slot);
         continue;
       }
-      if (slot.texture) uploadFrame(slot.gl, slot.texture.sourceTexture, slot.video);
+      if (slot.texture) uploadFrame(slot.gl, slot.texture.sourceTexture, this.#source(slot));
+      if (slot.kind === 'image') continue;
       const video = slot.video;
       if (!slot.hold && video.ended) {
         try { video.currentTime = 0; } catch { /* not seekable yet */ }
@@ -354,7 +373,7 @@ export class StingRack {
       const mix = slot.opacity * pose.mix;
       if (mix <= 0.001) continue;
       slots.push({
-        video: slot.video,
+        video: this.#source(slot),
         mix,
         mode: slot.mode | 0,
         scale: pose.scale,
@@ -366,15 +385,20 @@ export class StingRack {
     return slots;
   }
 
+  #source(slot) {
+    return slot.kind === 'image' ? slot.still : slot.video;
+  }
+
   #active(slot) {
     return slot.playing && slot.reveal > 0.001 && slot.opacity > 0.001 && slot.texture;
   }
 
   #ensureTexture(slot, renderer) {
-    const video = slot.video;
-    if (video.readyState < video.HAVE_CURRENT_DATA) return;
-    const w = video.videoWidth | 0;
-    const h = video.videoHeight | 0;
+    const source = this.#source(slot);
+    if (slot.kind === 'image') {
+      if (!source?.complete) return;
+    } else if (source.readyState < source.HAVE_CURRENT_DATA) return;
+    const { w, h } = frameSize(source);
     if (w < 2 || h < 2) return;
     const gl = renderer.getContext();
     const tex = gl.createTexture();
@@ -383,8 +407,8 @@ export class StingRack {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    uploadFrame(gl, tex, video);
-    const texture = new THREE.Texture(video);
+    uploadFrame(gl, tex, source);
+    const texture = new THREE.Texture(source);
     texture.isExternalTexture = true;
     texture.sourceTexture = tex;
     texture.generateMipmaps = false;
@@ -421,6 +445,8 @@ export class StingRack {
   #slot(list, index) {
     const slot = {
       video: makeVideo(),
+      still: null,
+      kind: 'video',
       texture: null,
       gl: null,
       url: '',
@@ -457,7 +483,7 @@ export class StingRack {
     card.innerHTML = `
       <header>
         <b>Logo ${index + 1}</b>
-        <button type="button" class="sting-load">Load</button>
+        <button type="button" class="sting-load" title="Choose a brand clip from Project Media">Choose</button>
         <button type="button" class="sting-clear" hidden>Remove</button>
       </header>
       <span class="sting-name">Empty</span>
@@ -501,21 +527,18 @@ export class StingRack {
         <input type="checkbox" data-key="fxReact" /> React
       </label>
     `;
-    const file = document.createElement('input');
-    file.type = 'file';
-    file.accept = 'video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm';
-    file.hidden = true;
-    card.append(file);
+    const pick = document.createElement('div');
+    pick.className = 'brand-pick';
+    pick.hidden = true;
+    card.append(pick);
     slot.card = card;
     slot.nameEl = card.querySelector('.sting-name');
     slot.clearBtn = card.querySelector('.sting-clear');
-    card.querySelector('.sting-load').addEventListener('click', () => file.click());
-    slot.clearBtn.addEventListener('click', () => this.#clear(slot));
-    file.addEventListener('change', () => {
-      const next = file.files?.[0];
-      file.value = '';
-      if (next) this.#choose(slot, next);
+    card.querySelector('.sting-load').addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.#toggleBrandPick(slot, pick);
     });
+    slot.clearBtn.addEventListener('click', () => this.#clear(slot));
     card.querySelector('.sting-label-input').addEventListener('input', (e) => {
       slot.label = e.target.value;
       this.#applyButton(slot);
@@ -563,11 +586,61 @@ export class StingRack {
     this.onPersist();
   }
 
-  async #choose(slot, file) {
-    slot.assetPath = '';
+  async #choose(slot, file, path = '') {
+    slot.assetPath = typeof path === 'string' ? path : '';
     slot.cacheKey = `logo:${slot.index}:${file.name}`;
     try { await this.onAssign(slot, file); } catch { /* the clip still plays this session */ }
     this.#load(slot, file);
+  }
+
+  #toggleBrandPick(slot, pick) {
+    const opening = pick.hidden;
+    for (const other of this.slots) {
+      const panel = other.card?.querySelector('.brand-pick');
+      if (panel) panel.hidden = true;
+    }
+    if (!opening) return;
+    pick.replaceChildren();
+    const clips = this.brandMedia() || [];
+    if (!clips.length) {
+      const empty = document.createElement('p');
+      empty.className = 'brand-pick-empty';
+      empty.textContent = 'No brand clips in this project. Tag a file brand in Media Manager, then send it to Project Media.';
+      pick.append(empty);
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'brand-pick-grid';
+      for (const clip of clips) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'brand-pick-card';
+        button.title = clip.name;
+        if (clip.thumbnail) {
+          const img = document.createElement('img');
+          img.alt = '';
+          img.src = clip.thumbnail;
+          button.append(img);
+        }
+        const label = document.createElement('span');
+        label.textContent = clip.name;
+        button.append(label);
+        button.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          pick.hidden = true;
+          slot.nameEl.textContent = 'Loading…';
+          const file = await this.onPick(clip.name);
+          if (!file) {
+            slot.nameEl.textContent = 'Missing';
+            slot.nameEl.title = clip.name;
+            return;
+          }
+          this.#choose(slot, file, clip.path || '');
+        });
+        grid.append(button);
+      }
+      pick.append(grid);
+    }
+    pick.hidden = false;
   }
 
   #applyRow(slot, row) {
@@ -643,19 +716,18 @@ export class StingRack {
     const token = slot.token;
     slot.url = URL.createObjectURL(file);
     slot.name = file.name;
+    slot.kind = isStillFile(file) ? 'image' : 'video';
+    slot.still = null;
     this.#save();
     const video = slot.video;
-    video.crossOrigin = 'anonymous';
-    video.src = slot.url;
+    video.removeAttribute('src');
     video.load();
     if (slot.liveBtn) slot.liveBtn.hidden = true;
     if (slot.clearBtn) slot.clearBtn.hidden = false;
     slot.nameEl.textContent = 'Loading…';
     slot.nameEl.title = file.name;
-    const ready = () => {
+    const ready = (w, h) => {
       if (slot.token !== token) return;
-      const w = video.videoWidth | 0;
-      const h = video.videoHeight | 0;
       if (w >= 2 && h >= 2) slot.aspect = w / h;
       slot.ready = true;
       if (slot.liveBtn) slot.liveBtn.hidden = false;
@@ -664,14 +736,26 @@ export class StingRack {
       this.#applyButton(slot);
       this.onChange();
     };
-    video.addEventListener('canplaythrough', ready, { once: true });
-    if (video.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) ready();
-    video.addEventListener('error', () => {
+    const fail = () => {
       if (slot.token !== token) return;
       slot.ready = false;
       if (slot.clearBtn) slot.clearBtn.hidden = false;
       slot.nameEl.textContent = 'Could not load';
-    }, { once: true });
+    };
+    if (slot.kind === 'image') {
+      const img = new Image();
+      slot.still = img;
+      img.onload = () => ready(img.naturalWidth | 0, img.naturalHeight | 0);
+      img.onerror = fail;
+      img.src = slot.url;
+      return;
+    }
+    video.crossOrigin = 'anonymous';
+    video.src = slot.url;
+    video.load();
+    video.addEventListener('canplaythrough', () => ready(video.videoWidth | 0, video.videoHeight | 0), { once: true });
+    if (video.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) ready(video.videoWidth | 0, video.videoHeight | 0);
+    video.addEventListener('error', fail, { once: true });
   }
 
   #clear(slot) {
@@ -685,6 +769,8 @@ export class StingRack {
     slot.assetPath = '';
     slot.ready = false;
     slot.aspect = 1;
+    slot.kind = 'video';
+    slot.still = null;
     const video = slot.video;
     video.removeAttribute('src');
     video.load();
@@ -716,6 +802,7 @@ export class StingRack {
     slot.video.loop = true;
     this.#paint(slot);
     this.onChange();
+    if (slot.kind === 'image') return;
     if (!fresh) {
       if (slot.video.paused) slot.video.play().catch(() => {});
       return;

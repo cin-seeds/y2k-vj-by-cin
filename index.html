@@ -57,12 +57,16 @@
       <section id="media-prep" class="media-prep" hidden>
         <header class="prep-head">
           <h2>Media Manager</h2>
-          <p>Drop a video to fit it to 1920×1080 and store it here. Every file keeps a thumbnail. Hover a video to preview it, select the ones you want, and send them to Project Media.</p>
+          <p>Drop a video or image to store it here. Tag a logo <b>brand</b>, then send it to Project Media. Every file keeps a thumbnail.</p>
         </header>
         <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
-          <b>Drop a video here</b>
-          <span>or click to choose a file</span>
+          <b>Drop a video or image</b>
+          <span>mov, mp4, jpg, png, or click to choose</span>
         </div>
+        <label class="check prep-brand" for="prep-brand">
+          <input id="prep-brand" type="checkbox" />
+          Brand asset
+        </label>
         <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
         <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
         <div class="prep-gallery-bar">
@@ -137,7 +141,7 @@
           </div>
           <div id="xdj-decks" class="xdj-row"></div>
         </div>
-        <details id="acc-macros" class="fold" open>
+        <details id="acc-macros" class="fold">
           <summary>Macro Knobs</summary>
           <div id="macro-list" class="macro-list"></div>
           <button id="macro-add" type="button">Add macro knob</button>
@@ -162,7 +166,7 @@
           <h3>Keep it readable</h3>
           <ul id="diag-readable" class="diag-list"></ul>
         </details>
-        <details id="acc-media" class="fold" open>
+        <details id="acc-media" class="fold">
           <summary>Project Media</summary>
           <div class="row bin-row">
             <button id="media-add" type="button" class="bin-add" title="Open Media Manager">+</button>
@@ -205,7 +209,6 @@
             <label class="audio-file-pick">Add local audio file
               <input id="audio-file" type="file" accept=".mp3,.wav,.aiff,.aif,audio/mpeg,audio/wav,audio/wave,audio/aiff,audio/x-aiff,audio/*" />
             </label>
-            <button id="stock-audio-open" type="button">Search Stock Audio</button>
             <div id="audio-drop" class="audio-drop">Drop an .mp3, .wav, or .aiff</div>
             <ul id="audio-recent" hidden></ul>
             <div class="transport">
@@ -213,6 +216,7 @@
               <input id="audio-scrub" type="range" min="0" max="1000" step="1" value="0" disabled />
               <span id="audio-time" class="status">0:00</span>
             </div>
+            <button id="stock-audio-open" type="button">Search Stock Audio</button>
             <div class="row">
               <label class="check" title="Loop the music on the audio clock. A video ending or looping does not move this track."><input id="audio-loop" type="checkbox" checked /> Loop Audio</label>
               <label class="check" title="When on, header Play, Pause, and Stop drive this track. Turn off and it ignores the master transport."><input id="audio-sync" type="checkbox" checked /> Sync to Master</label>
@@ -292,6 +296,15 @@
           <div class="row">
             <button id="fs-btn" type="button">Fullscreen</button>
           </div>
+          <div class="row">
+            <label class="check" title="Send audio with the master output."><input id="out-audio" type="checkbox" checked /> Audio</label>
+          </div>
+          <div class="row">
+            <label class="check" title="Draw the screensaver on the master output."><input id="out-screen" type="checkbox" /> Include Screensaver</label>
+          </div>
+          <div class="row">
+            <label class="check" title="Draw the code overlay on the master output."><input id="out-code" type="checkbox" /> Include Code Overlay</label>
+          </div>
         </details>
 
         <details id="acc-output" class="fold">
@@ -329,7 +342,13 @@
             <select id="rec-format"></select>
           </div>
           <div class="row">
-            <label class="check"><input id="rec-audio" type="checkbox" checked /> Include audio</label>
+            <label class="check" title="Mux audio into the recorded file."><input id="rec-audio" type="checkbox" checked /> Audio</label>
+          </div>
+          <div class="row">
+            <label class="check" title="Draw the screensaver into the recorded file."><input id="rec-screen" type="checkbox" /> Include Screensaver</label>
+          </div>
+          <div class="row">
+            <label class="check" title="Draw the code overlay into the recorded file."><input id="rec-code" type="checkbox" /> Include Code Overlay</label>
           </div>
         </details>
 
@@ -404,14 +423,6 @@
               <input id="hud-automask" type="checkbox" />
               Automask
             </label>
-            <label class="check" title="Draw the code overlay into the recorded file.">
-              <input id="code-record" type="checkbox" />
-              Include in Recording
-            </label>
-            <label class="check" title="Copy the code overlay onto the projector. The desk preview can stay clean.">
-              <input id="hud-output" type="checkbox" />
-              Include in Output
-            </label>
             <label class="check" title="Draw a triggered logo into the recorded file.">
               <input id="logo-record" type="checkbox" />
               Include Logo in Recording
@@ -475,14 +486,6 @@ FUTURE</textarea>
             <input id="brand-size" type="range" min="40" max="220" step="5" value="40" title="Screensaver size" />
             <output id="brand-size-out" for="brand-size">40%</output>
           </label>
-          <label class="check" title="Draw the screensaver into the recorded file.">
-            <input id="screen-record" type="checkbox" />
-            Include in Recording
-          </label>
-          <label class="check" title="Draw the screensaver on the master output.">
-            <input id="screen-output" type="checkbox" />
-            Include in Output
-          </label>
         </details>
       </aside>
 
@@ -520,24 +523,28 @@ FUTURE</textarea>
                 </div>
               </div>
               <div class="glance-row glance-play">
-                <button id="tl-loop" type="button" class="on" title="Loop the timeline">Loop</button>
-                <label class="tl-bars-field">Bars <input id="tl-bars" type="number" min="1" max="2048" step="1" value="16" title="Length of the timeline in bars. It can run to 2048. Scroll the timeline right to move along it." /></label>
-                <span id="tl-pos" class="tl-pos">1.1</span>
-                <label class="master-speed" title="Scales shader motion and automation. 0 freezes them. 1 is normal speed. 4 is four times faster.">
+                <div class="play-group">
+                  <button id="tl-loop" type="button" class="on" title="Loop the timeline">Loop</button>
+                  <label class="tl-bars-field">Bars <input id="tl-bars" type="number" min="1" max="2048" step="1" value="16" title="Length of the timeline in bars. It can run to 2048. Scroll the timeline right to move along it." /></label>
+                  <span id="tl-pos" class="tl-pos">1.1</span>
+                </div>
+                <label class="play-group master-speed" title="Scales shader motion and automation. 0 freezes them. 1 is normal speed. 4 is four times faster.">
                   Master Speed
                   <input id="master-speed" type="range" min="0" max="4" step="0.01" value="1" />
                   <output id="master-speed-out">1.00x</output>
                 </label>
-                <label class="fade-sec" title="Scene transition time">X-fade
-                  <input id="tl-fade-sec" type="range" min="0" max="10" step="0.1" value="1" />
-                  <output id="tl-fade-readout">1.0s</output>
-                </label>
-                <select id="tl-style" title="Transition style">
-                  <option value="0">Crossfade Alpha</option>
-                  <option value="1">Additive Bleed</option>
-                  <option value="2">Wiping Glitch</option>
-                </select>
-                <div id="brightness-slot" class="brightness-slot"></div>
+                <div class="play-group">
+                  <label class="fade-sec" title="Scene transition time">X-fade
+                    <input id="tl-fade-sec" type="range" min="0" max="10" step="0.1" value="1" />
+                    <output id="tl-fade-readout">1.0s</output>
+                  </label>
+                  <select id="tl-style" title="Transition style">
+                    <option value="0">Crossfade Alpha</option>
+                    <option value="1">Additive Bleed</option>
+                    <option value="2">Wiping Glitch</option>
+                  </select>
+                </div>
+                <div id="brightness-slot" class="play-group brightness-slot"></div>
               </div>
             </div>
           </div>
@@ -557,29 +564,33 @@ FUTURE</textarea>
           <div class="timeline-resizable-divider" role="separator" aria-orientation="horizontal" aria-label="Resize timeline" title="Drag up to shorten the timeline. Drag down to make it taller. Scroll over the timeline to zoom the bars."></div>
           <div class="workspace-pane">
           <div class="layer-toolbar">
-            <input id="scene-name" type="text" placeholder="Scene name (optional)" maxlength="40" />
+            <input id="scene-name" type="text" placeholder="Scene name" maxlength="40" aria-label="Scene name" title="Scene name" />
             <button id="scene-save" type="button" class="primary" title="Save the current state as a scene">Save Scene</button>
-            <div id="momentary-pads" class="momentary-pads"></div>
+            <div class="fx-crashers">
+              <div id="momentary-pads" class="momentary-pads"></div>
+            </div>
             <div class="overlay-triggers">
               <input id="hud-enable" type="checkbox" hidden />
               <input id="screen-enable" type="checkbox" hidden />
-              <div class="overlay-pair">
-                <button id="code-trigger" type="button" class="moment-pad hud-toggle" aria-pressed="false" title="Code Overlay. Click to turn it on or off. Hold to open Code Overlay.">
-                  <b>Code</b>
-                  <i class="hud-state">Off</i>
-                </button>
-                <div class="logo-triggers">
-                  <button id="logos-trigger" type="button" class="moment-pad" title="Open the selected logo in Brand Overlay."><b>Logo</b></button>
-                  <select id="logo-slot-pick" class="logo-slot-pick" hidden title="Filled logo slots" aria-label="Logo slot"></select>
-                  <button type="button" class="sting-fire" data-sting="0" hidden><span class="sting-label">Logo 1</span></button>
-                  <button type="button" class="sting-fire" data-sting="1" hidden><span class="sting-label">Logo 2</span></button>
-                  <button type="button" class="sting-fire" data-sting="2" hidden><span class="sting-label">Logo 3</span></button>
-                </div>
-              </div>
+              <button id="code-trigger" type="button" class="moment-pad hud-toggle" aria-pressed="false" title="Code Overlay. Click to turn it on or off. Hold to open Code Overlay.">
+                <b>Code</b>
+                <i class="hud-state">Off</i>
+              </button>
               <button id="screen-trigger" type="button" class="moment-pad hud-toggle" aria-pressed="false" title="Screensaver. Click to turn it on or off. Hold to open Screensaver.">
                 <b>Screen</b>
                 <i class="screen-state">Off</i>
               </button>
+              <div class="logo-triggers">
+                <button id="logos-trigger" type="button" class="moment-pad" title="Play Logo 1"><b>Brand</b></button>
+                <select id="logo-slot-pick" class="logo-slot-pick" title="Brand logo" aria-label="Brand logo">
+                  <option value="0">1</option>
+                  <option value="1">2</option>
+                  <option value="2">3</option>
+                </select>
+                <button type="button" class="sting-fire" data-sting="0" hidden><span class="sting-label">Logo 1</span></button>
+                <button type="button" class="sting-fire" data-sting="1" hidden><span class="sting-label">Logo 2</span></button>
+                <button type="button" class="sting-fire" data-sting="2" hidden><span class="sting-label">Logo 3</span></button>
+              </div>
             </div>
           </div>
           <div class="control-deck">
@@ -643,7 +654,7 @@ FUTURE</textarea>
           </header>
           <div id="comp-slot-host">
             <div class="comp-slots">
-              <button id="shuffle-layer-fx" type="button" title="Randomize the effect values on layers A, B, and C, and the composition effects. Barrel stays put.">&#x1F3B2; Shuffle Composition FX</button>
+              <button id="shuffle-layer-fx" type="button" class="shuffle" title="Randomize Color, Distortion, and Motion. Barrel stays put.">&#x1F3B2; Shuffle</button>
             </div>
           </div>
           <div id="master-params" class="master-params"></div>
@@ -705,51 +716,80 @@ FUTURE</textarea>
         <div class="guide-body">
           <ol>
             <li>
-              <h3>Media Manager</h3>
-              <p>Click <b>Media Manager</b>. Drop a video on the drop area, or click it to choose a file. The app fits it to 1920×1080, encodes H.264, and stores it in the gallery. That store is kept across restarts and projects. Hover a thumbnail to play a preview. Click clips to select them, then <b>Send to Project Media</b>. To skip the conversion, click <b>Bypass Transcode &amp; Add Directly</b>. Transcoding runs in the desktop app.</p>
+              <h3>The desk</h3>
+              <p>Under the picture, top to bottom: the tempo row (<b>beat light</b>, <b>BPM</b>, the slider, <b>Auto: Read Live</b>, <b>Tap/Phase</b>, <b>x2</b>, <b>/2</b>, <b>Nudge +</b>, and <b>Nudge -</b>), then <b>Loop</b>, <b>Bars</b>, the position readout, <b>Master Speed</b>, <b>X-fade</b>, the transition style, and <b>Output Brightness</b>. Then the timeline. Then the scene name, <b>Save Scene</b>, the hit pads, and <b>Code</b>, <b>Screen</b>, and <b>Brand</b>. Then the scene grid. Then layers <b>A</b>, <b>B</b>, and <b>C</b>.</p>
+              <p><b>Composition</b> is the top-right column, beside the picture. The <b>Inspector</b> is the bottom-right column, beside the layers. The left column is the project.</p>
             </li>
             <li>
-              <h3>Project: audio and media</h3>
-              <p>Open <b>Hello</b>. <b>New Project</b> starts clean. <b>Load Project</b> opens a saved show. <b>Save</b> and <b>Save New</b> write the whole show: scenes, timeline, project media, audio, levels, output, recording settings, and which Hello views are open. In the desktop app the media, audio, and logo files are copied into a folder next to the project.</p>
-              <p>Open the <b>Audio</b> fold. Click <b>Live Hardware</b> and pick an input, or click <b>Local File</b> and drop an .mp3, .wav, or .aiff. <b>Search Stock Audio</b> finds free Wikimedia clips, plays a preview, and saves a 44.1 kHz wav into Media Manager. Press <b>Play</b>. <b>Auto-Gain</b> keeps the level steady. <b>Master Gain</b> and <b>Mute</b> set how hard the sound hits the picture.</p>
-              <p>Open <b>Project Media</b>. It lists only the clips sent to this project. Click <b>+</b> to open Media Manager and send more. On a card, click <b>A</b>, <b>B</b>, or <b>C</b> to put that clip on a layer.</p>
+              <h3>Hello</h3>
+              <p><b>Hello</b> holds <b>New Project</b>, <b>Load Project</b>, <b>Save</b>, and <b>Save New</b>. <b>Save</b> writes the scenes, timeline, project media, audio, levels, output, recording settings, and which views are open. In the desktop app, media, audio, and logo files are copied into a folder next to the project.</p>
+              <p><b>Undo</b> and <b>Redo</b> sit in the top bar (<b>Ctrl+Z</b>, <b>Ctrl+Shift+Z</b> or <b>Ctrl+Y</b>). <b>Preferences</b> sets the UI scale, whether the app opens in <b>Live</b>, <b>Perform</b>, or <b>Media Manager</b>, whether it reopens the last project, and the stock download folder. The <b>View</b> checks show or hide the timeline, <b>Project Media</b>, the <b>Inspector</b>, each layer, and <b>Composition</b>.</p>
+            </li>
+            <li>
+              <h3>Media Manager</h3>
+              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264. Tag a logo <b>Brand asset</b> before it is stored. The gallery is kept across restarts. Select clips, tag them, then <b>Send to Project Media</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app.</p>
+              <p><b>Project Media</b> lists only the clips sent to this project. Click <b>+</b> to open <b>Media Manager</b>. On a card, <b>A</b>, <b>B</b>, or <b>C</b> assigns that clip. Removing a clip from the project drops it from this show. If a layer is playing it, that layer returns to the test pattern.</p>
+            </li>
+            <li>
+              <h3>Audio</h3>
+              <p>In the <b>Audio</b> fold, <b>Live Hardware</b> picks an input. <b>Local File</b> takes an .mp3, .wav, or .aiff. <b>Search Stock Audio</b> finds Wikimedia clips and saves a 44.1 kHz wav. <b>Play</b> starts the file. <b>Loop Audio</b> repeats it. <b>Sync to Master</b> lets the top-bar <b>Play</b>, <b>Pause</b>, and <b>Stop</b> drive it.</p>
+              <p><b>Auto-Gain</b> holds the level. <b>Master Gain</b> and <b>Mute</b> set how hard the sound hits the picture. The meters read <b>KICK</b>, <b>SNARE</b>, <b>NRG</b>, <b>BRK</b>, and <b>DROP</b>.</p>
             </li>
             <li>
               <h3>Layers</h3>
-              <p>Under the preview are layers <b>A</b>, <b>B</b>, and <b>C</b>. Click <b>Select</b> (or press Q, W, or E). The mix menu sets how this layer sits on the one below: <b>Normal</b>, <b>Screen</b>, <b>Multiply</b>, and the rest. Raise the opacity fader to bring it in. <b>Mute</b> and <b>Solo</b> cut or isolate a layer. <b>Sync</b> locks the video to the master Play, Pause, and Stop.</p>
+              <p><b>A</b>, <b>B</b>, and <b>C</b> sit under the scene grid. <b>Select</b>, or <b>Q</b>, <b>W</b>, and <b>E</b>. The mix menu sets how the layer sits on the one below. The opacity fader brings it in. <b>Mute</b> and <b>Solo</b> cut or isolate it. <b>Sync</b> follows the top-bar transport. A layer set to <b>Lock</b> keeps playing through <b>Play</b>, <b>Pause</b>, and <b>Stop</b>.</p>
             </li>
             <li>
-              <h3>Shaders</h3>
-              <p>With a layer selected, pick a look in the Inspector, or press 1–9 for the first nine. Each look is a shader, from <b>Glitch</b> and <b>Y2K / 2000s</b> through <b>Black Metallic Y2K</b>. On the 3D looks, drag the preview to orbit and scroll to zoom.</p>
+              <h3>Looks</h3>
+              <p>With a layer selected, pick a shader in the <b>Inspector</b>, or press <b>1</b>–<b>9</b> for the first nine, from <b>Glitch</b> and <b>Y2K / 2000s</b> through <b>Black Metallic Y2K</b>. On the 3D looks, drag the preview to orbit and scroll to zoom.</p>
             </li>
             <li>
               <h3>Inspector</h3>
-              <p>The Inspector is the column on the right. Work one layer at a time. The <b>Media</b> menu assigns the video: <b>Test pattern</b>, a camera, an NDI / Spout source, or a library clip. <b>Mirror</b> flips it. The groups under that hold the sliders for the current look. Hover a slider to read what it changes. <b>Mute</b> bypasses a group. <b>🎲 Shuffle</b> randomizes that group. Double-click a slider to reset it. Then <b>Select</b> the next layer and repeat.</p>
+              <p>One layer at a time. Open the media gallery for <b>Test pattern</b>, a project clip, a camera, or an NDI / Spout source. <b>Mirror</b> flips it. The groups under that are the sliders for the current look. Hover a slider to read it. <b>Mute</b> bypasses a group. The dice, <b>Shuffle</b>, shuffles that group. Double-click a slider to reset it.</p>
             </li>
             <li>
-              <h3>Audio reactivity</h3>
-              <p>Sound can move the picture in more than one place at once. On a layer strip, pick <b>Sub-Bass</b>, <b>Mid-Energy</b>, <b>High-Hats</b>, <b>LFO 1</b>, or <b>LFO 2</b>, then set <b>Depth</b> and <b>Gate</b>. In the Inspector, each slider has its own audio row. Routes include <b>Punch</b>, <b>BPM Pulse</b>, <b>Song Energy</b>, <b>Drop Pulse</b>, and <b>Beat / Onset</b>. <b>Depth</b> is how far the slider moves. <b>Gate</b> ignores quiet sound. Click <b>A</b> on a slider to add an LFO on top. The Audio fold meters show <b>KICK</b>, <b>SNARE</b>, <b>NRG</b>, <b>BRK</b>, and <b>DROP</b> as the sound comes in.</p>
+              <h3>Tempo, loop, and timeline</h3>
+              <p>The tempo row is the clock for the shaders, the strobe, and the timeline. It starts at 120. <b>Auto: Read Live</b> listens for a few seconds, locks one tempo, then returns to manual. <b>Tap/Phase</b> (<b>T</b>) sets a tempo, or one tap on the beat lines the phase up. <b>x2</b> and <b>/2</b> double or halve it. <b>Nudge</b> moves it by 0.1. While Auto is listening, a Pioneer beat assigned to strobe still flashes, and it does not move the phase.</p>
+              <p><b>Loop</b> repeats the timeline. <b>Bars</b> sets its length, up to 2048. Drag the timeline’s top edge to make it taller. Scroll over it to zoom. Drop a scene or a clip on the ruler. Click the ruler to move the playhead. <b>X-fade</b> and the style menu set how one scene replaces another: <b>Crossfade Alpha</b>, <b>Additive Bleed</b>, or <b>Wiping Glitch</b>.</p>
             </li>
             <li>
-              <h3>Diagnostics</h3>
-              <p>Click <b>Diagnostics</b> in the top bar. <b>Helper / Diagnostics</b> keeps updating while you work. <b>What's happening</b> lists what is driving each control. <b>What's messy</b> flags clipping and stacked routes. <b>Performance</b> and <b>Keep it readable</b> flag load and hard-to-read setups. Click a warning to jump to that slider.</p>
+              <h3>Scenes</h3>
+              <p>Type a name and click <b>Save Scene</b>. The grid is three rows and scrolls to the right. Empty cells are waiting. Click a scene to launch it. Drag it to the timeline. Right-click it for the menu. <b>C1</b>, <b>C2</b>, and <b>C3</b> in <b>Composition</b> are separate: they store the composition mix, not a scene.</p>
             </li>
             <li>
-              <h3>BPM</h3>
-              <p>The clock sits at the top of Composition. It starts at 120.0. Click <b>Auto: Read Live</b> to take the tempo from the audio. <b>Tap/Phase</b> (T) sets a tempo, or one tap on the beat lines the phase up. <b>x2</b> and <b>/2</b> double or halve it. <b>Nudge +</b> and <b>Nudge -</b> move it by 0.1. The beat light flashes on each beat. Shaders, the strobe, and the timeline read this clock.</p>
+              <h3>Hits and overlays</h3>
+              <p>The pads under <b>Save Scene</b> are holds: <b>Strobe/Flash</b>, <b>Y2K Crash</b>, <b>Particle Scatter</b>, <b>Invert Colors</b>, and <b>Max Glitch</b>. They last while the pad is down. <b>Code</b> and <b>Screen</b> turn those overlays on or off. Hold <b>Code</b> to open <b>Code Overlay</b>, or <b>Screen</b> to open <b>Screensaver</b>. <b>Brand</b> plays the logo chosen in the number menu. Hold <b>Brand</b> to open that logo in <b>Brand Overlay</b>.</p>
             </li>
             <li>
               <h3>Composition</h3>
-              <p>Composition is the last pass, after the three layers are mixed. Set <b>Master Speed</b> (1.00x is normal, 0 freezes motion) and <b>Output Brightness</b>. Then the master groups: <b>Color &amp; Texture</b>, <b>Distortion &amp; Glitch</b>, and <b>Motion &amp; Timing</b>. <b>Strobe Source</b> can be <b>Manual</b>, <b>Beat Pulse</b>, or <b>Drop Pulse</b>. <b>Lock</b> a group if Shuffle should leave it alone.</p>
+              <p>This is the last pass, after <b>A</b>, <b>B</b>, and <b>C</b> are mixed. <b>Master Speed</b> and <b>Output Brightness</b> sit on the play row under the BPM. <b>1.00x</b> is normal speed. <b>0</b> freezes motion. <b>C1</b>, <b>C2</b>, and <b>C3</b> recall a stored mix. Click recalls, a long press stores, a right-click forgets.</p>
+              <p><b>Shuffle</b> randomizes <b>Color &amp; Texture</b>, <b>Distortion &amp; Glitch</b>, and <b>Motion &amp; Timing</b>, and leaves <b>Barrel</b> alone. Those four groups start closed. The <b>Lock</b> icon keeps a group where it is, and <b>Shuffle</b> skips it. <b>Strobe Source</b> can be <b>Manual</b>, <b>Beat Pulse</b>, or <b>Drop Pulse</b>. <b>Barrel</b> bends the finished frame.</p>
+            </li>
+            <li>
+              <h3>Sound into the picture</h3>
+              <p>On a layer strip, pick <b>Sub-Bass</b>, <b>Mid-Energy</b>, <b>High-Hats</b>, <b>LFO 1</b>, or <b>LFO 2</b>, then set <b>Depth</b> and <b>Gate</b>. In the <b>Inspector</b>, each slider has its own audio row, including <b>Punch</b>, <b>BPM Pulse</b>, <b>Song Energy</b>, <b>Drop Pulse</b>, and <b>Beat / Onset</b>. <b>Depth</b> is how far the slider moves. <b>Gate</b> ignores quiet sound. <b>A</b> on a slider adds an LFO.</p>
             </li>
             <li>
               <h3>Output and recording</h3>
-              <p>Open the <b>Output</b> fold. Pick the <b>Preview</b> shape. Click <b>Master Output</b> and choose a display. Pick an NDI / Syphon / SPOUT size and click <b>Send</b> when another app should receive the picture. Click <b>Advanced Output</b> to drag the corner pins onto a projector.</p>
-              <p>Open <b>Recordings</b>. Set <b>Scale</b> to <b>Fill</b> or <b>Fit</b>, and <b>Render scale</b> to 0.5x, 0.75x, or 1x. Pick the format and leave <b>Include audio</b> on if the file should have sound. In the top bar, pick 16:9, 9:16, 1:1, or Native, then click <b>● REC</b>. Click <b>■ STOP</b> to finish.</p>
+              <p>In <b>Output</b>, set the <b>Preview</b> shape. <b>Master Output</b> chooses a display. Pick an NDI, Syphon, or SPOUT size and click <b>Send</b> when another app should receive the picture. <b>Advanced Output</b> drags the corner pins onto a projector.</p>
+              <p>In <b>Recordings</b>, set <b>Scale</b> to <b>Fill</b> or <b>Fit</b>, and <b>Render scale</b> to 0.5x, 0.75x, or 1x. The frame menu there is <b>16:9</b>, <b>9:16</b>, <b>1:1</b>, or <b>Native</b>. <b>Include audio</b> puts sound in the file. <b>Code</b>, <b>Screen</b>, and the logos each have <b>Include in Recording</b> and <b>Include in Output</b>. <b>● REC</b> is in the top bar. Click it again to stop.</p>
+            </li>
+            <li>
+              <h3>Diagnostics</h3>
+              <p>Open <b>Helper / Diagnostics</b> in the project column. It keeps updating. <b>What's happening</b> lists what is driving each control. <b>What's messy</b> flags clipping and stacked routes. <b>Performance</b> and <b>Keep it readable</b> flag load and hard-to-read setups. Click a warning to jump to that slider.</p>
+            </li>
+            <li>
+              <h3>Perform</h3>
+              <p><b>Perform</b> is the hardware desk. <b>APC Mini MK2</b> is the full map. <b>XDJ-700</b> shows one to four decks. <b>Pro DJ Link</b> carries the beat, not the button notes. Buttons wait for a USB learn. <b>Macro Knobs</b> let one MIDI CC move several sliders.</p>
             </li>
             <li>
               <h3>Keys</h3>
-              <p><b>Q</b>, <b>W</b>, and <b>E</b> select a layer. <b>1</b>–<b>9</b> set that layer’s shader. <b>Shift+1</b>–<b>9</b> launches a scene in the current bank. <b>Space</b> plays or pauses. <b>T</b> taps the tempo. <b>L</b> switches Live and Timeline. <b>H</b> toggles the code overlay. <b>C</b> cycles the overlay mode. <b>P</b> hides the panels. <b>F</b> is fullscreen. <b>R</b> starts or stops recording.</p>
+              <p><b>Q</b>, <b>W</b>, and <b>E</b> select a layer. <b>1</b>–<b>9</b> set that layer’s shader. <b>Shift+1</b>–<b>8</b> launch a scene from the current set of eight. <b>Space</b> plays or pauses. <b>T</b> taps the tempo. <b>L</b> switches Live and Timeline. <b>H</b> toggles the code overlay. <b>C</b> cycles the overlay mode. <b>P</b> hides the panels. <b>F</b> is fullscreen. <b>R</b> starts or stops recording. <b>Ctrl+Z</b> undoes. <b>Ctrl+Shift+Z</b> or <b>Ctrl+Y</b> redoes.</p>
+            </li>
+            <li>
+              <h3>About</h3>
+              <p>Y2K VJ was custom-coded for the late future, to hold analog rawness and digital precision in the same hand. Rust and Tauri keep the instrument steady. WebGL draws the frame that exists only while it is playing.</p>
+              <p>Glitch is a material, and the Y2K look is a tomorrow that already happened. The human brings the gesture. The machine brings the pulse. The vision is Cín’s. The app is an instrument for visual artists crossing the new ether.</p>
             </li>
           </ol>
         </div>
@@ -803,8 +843,18 @@ FUTURE</textarea>
           <h2 id="map-title">Advanced Output</h2>
           <button id="map-close" type="button">Close</button>
         </header>
-        <p class="hint">Drag a corner pin to skew the final picture onto the projector. The grid is the output frame.</p>
+        <p class="hint">Drag a corner pin to skew the final picture onto the projector. The grid is the output frame. A guide image sits behind the grid so the pins can line up with a photo of the surface.</p>
+        <div class="row map-tools map-guide-tools">
+          <label for="map-guide-file">Guide</label>
+          <input id="map-guide-file" type="file" accept="image/*" hidden />
+          <button id="map-guide-pick" type="button" title="Choose a reference photo for the mapping canvas">Choose image</button>
+          <button id="map-guide-clear" type="button">Clear</button>
+          <label for="map-guide-opacity">Opacity</label>
+          <input id="map-guide-opacity" type="range" min="0" max="100" step="1" value="45" title="How strongly the guide image shows behind the grid" />
+          <output id="map-guide-opacity-out">45%</output>
+        </div>
         <div id="map-stage" class="map-stage">
+          <img id="map-guide" class="map-guide" alt="" hidden />
           <svg id="map-svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg>
         </div>
         <div class="row map-tools">
@@ -825,6 +875,14 @@ FUTURE</textarea>
           <output id="output-bezel-out">0%</output>
         </div>
         <p id="map-led-note" class="hint" hidden>Preview locked to 1:1. Reference frame 1152×1152. Cells outside the 25 panels are black.</p>
+        <div class="map-presets">
+          <div class="row map-tools">
+            <input id="map-preset-name" type="text" maxlength="40" placeholder="Preset name" spellcheck="false" autocomplete="off" aria-label="New mapping preset name" />
+            <button id="map-preset-save" type="button" title="Save the current corners, mask, and bezel as a new preset">Save</button>
+          </div>
+          <ul id="map-preset-list" class="map-preset-list"></ul>
+          <p id="map-preset-empty" class="hint">No mapping presets yet.</p>
+        </div>
       </div>
     </div>
 

@@ -144,7 +144,8 @@ export class Panel {
         const sel = this.strips.get(def.layer).engine;
         if (document.activeElement !== sel) sel.value = String(v);
       }
-      if ((def.key === 'mode' || def.key === 'engine' || def.key === 'palette') && def.layer === this.selected) this.updateVisibility();
+      if ((def.key === 'mode' || def.key === 'engine') && def.layer === this.selected) this.updateVisibility({ foldShader: true });
+      else if (def.key === 'palette' && def.layer === this.selected) this.updateVisibility();
       if (def.key === 'mode' || def.key === 'opacity' || def.key === 'engine' || def.key === 'pCount') {
         this.#syncStrip(def.layer);
       }
@@ -382,14 +383,17 @@ export class Panel {
         const title = document.createElement('h2');
         title.textContent = 'Layer Shader';
         row.input.classList.add('strip-engine');
+        const line = document.createElement('div');
+        line.className = 'shader-line';
         const shuffle = document.createElement('button');
         shuffle.type = 'button';
-        shuffle.className = 'shader-shuffle';
-        shuffle.textContent = 'Shuffle';
+        shuffle.className = 'shuffle';
+        shuffle.textContent = '🎲 Shuffle';
         shuffle.title = 'Pick a random effect from this list';
         const layer = d.layer;
         shuffle.addEventListener('click', () => this.#shuffleShader(layer));
-        slot.append(title, row.input, shuffle);
+        line.append(row.input, shuffle);
+        slot.append(title, line);
         this.strips.get(d.layer).engine.insertAdjacentElement('afterend', slot);
         row.row = slot;
       } else if (!d.layer) this.#block('master', bucket).body.append(row.row);
@@ -744,8 +748,8 @@ export class Panel {
   }
 
   /**
-   * Randomize the live effect sliders on layers A, B, and C, plus the composition
-   * effects. Barrel, mix, geometry, source, and dropdowns stay put.
+   * Randomize Color, Distortion, and Motion on the composition bus.
+   * Barrel stays put, and so do dropdowns.
    */
   #shuffleShader(layer) {
     const id = layerParam(layer, 'mode');
@@ -762,33 +766,12 @@ export class Panel {
     else run();
   }
 
-  #layerEffectActive(def) {
-    const mode = MODES[this.params.get(layerParam(def.layer, 'mode'))];
-    const engine = ENGINES[this.params.get(layerParam(def.layer, 'engine'))] || ENGINE_FX;
-    if (def.key === 'colorDepth' && this.params.get(layerParam(def.layer, 'palette')) !== 0) return false;
-    if (def.modes) return engine === ENGINE_FX && def.modes.includes(mode);
-    if (engine === ENGINE_FX && (def.group === 'fx' || def.group === mode)) return true;
-    if (engine === ENGINE_PARTICLES && def.group === 'particles') return true;
-    if (engine === ENGINE_HYDRA && def.group === 'hydra') return true;
-    if (def.group === 'video' && this.isVideo(def.layer)) return true;
-    if (def.group === 'image' && this.isImage(def.layer)) return true;
-    return def.group === 'layer';
-  }
-
   #shuffleSelected() {
-    const skipGroups = new Set(['Geometry & Scale', 'Mix & Composite', 'Source & Playback', 'Barrel']);
-    const skipKeys = new Set(['mode', 'opacity', 'blend', 'blendInvert', 'scale', 'posX', 'posY', 'engine', 'crtBarrel', 'master', 'audioGain']);
-    const compGroups = new Set(['Color & Texture', 'Distortion & Glitch', 'Motion & Timing']);
+    const groups = new Set(['Color & Texture', 'Distortion & Glitch', 'Motion & Timing']);
     for (const def of this.params.defs.values()) {
-      if (def.options || skipKeys.has(def.key)) continue;
+      if (def.layer || def.options || def.key === 'crtBarrel') continue;
       const group = def.category || def.group;
-      if (!group || skipGroups.has(group)) continue;
-      if (!def.layer) {
-        if (!compGroups.has(group) || this.isSectionLocked('master', group)) continue;
-        this.#shuffleOne(def);
-        continue;
-      }
-      if (!this.#layerEffectActive(def) || this.isSectionLocked(def.layer, group)) continue;
+      if (!groups.has(group) || this.isSectionLocked('master', group)) continue;
       this.#shuffleOne(def);
     }
   }
@@ -1204,11 +1187,6 @@ export class Panel {
     this.#saveFolds();
   }
 
-  /** Color, Distortion, and Motion begin closed. A click still opens that header. */
-  #masterStartsClosed(group) {
-    return group === 'Color & Texture' || group === 'Distortion & Glitch' || group === 'Motion & Timing' || group === 'Barrel';
-  }
-
   /** Shader sections follow the layer's current look. Source, Geometry, and Audio stay put. */
   #foldShaderGroups(layer) {
     const mode = MODES[this.params.get(layerParam(layer, 'mode'))];
@@ -1222,27 +1200,14 @@ export class Panel {
   }
 
   /**
-   * Open the sections a set starts on, and leave the rest closed.
-   * A header the operator has already toggled stays where they left it.
+   * Sections start folded. A header the operator has already toggled stays where they left it.
    * Closing a section only hides its sliders.
    */
   applyFoldDefaults() {
     for (const block of this.blocks.values()) {
-      const { layer, group } = block.el.dataset;
-      const key = `${layer}:${group}`;
-      if (layer === 'master' && this.#masterStartsClosed(group)) {
-        this.#setFold(block.el, true, false);
-        continue;
-      }
-      if (layer !== 'master' && MODE_LABELS.includes(group)) {
-        this.#foldShaderGroups(layer);
-        continue;
-      }
-      if (Object.prototype.hasOwnProperty.call(this.folds, key)) {
-        this.#setFold(block.el, !!this.folds[key], false);
-        continue;
-      }
-      this.#setFold(block.el, group !== 'Source & Playback', false);
+      const key = `${block.el.dataset.layer}:${block.el.dataset.group}`;
+      const collapsed = Object.prototype.hasOwnProperty.call(this.folds, key) ? !!this.folds[key] : true;
+      this.#setFold(block.el, collapsed, false);
     }
   }
 
@@ -1276,7 +1241,7 @@ export class Panel {
   }
 
   /** Show the selected layer's params in the inspector. The Master bus stays put. */
-  updateVisibility() {
+  updateVisibility({ foldShader = false } = {}) {
     if (this.layerEditor) this.layerEditor.hidden = false;
     const video = this.isVideo(this.selected);
     const image = this.isImage(this.selected);
@@ -1325,7 +1290,7 @@ export class Panel {
       const any = [...block.body.children].some((row) => !row.hidden);
       block.el.hidden = !any;
     }
-    this.#foldShaderGroups(this.selected);
+    if (foldShader) this.#foldShaderGroups(this.selected);
   }
 
   refreshMidi() {

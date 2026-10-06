@@ -4,6 +4,8 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Audio interface / mic input for live visuals</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>This app requires local network access to receive Pioneer Pro DJ Link beat sync data on port 50001.</string>
   <key>NSCameraUsageDescription</key>
   <string>Camera input for live visuals</string>
 </dict>
