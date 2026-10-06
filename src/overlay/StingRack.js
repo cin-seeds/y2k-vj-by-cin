@@ -214,12 +214,6 @@ export class StingRack {
     list.className = 'sting-slots';
     root.append(list);
     for (let i = 0; i < SLOTS; i++) this.slots.push(this.#slot(list, i));
-    this.#syncDefine();
-  }
-
-  #syncDefine() {
-    const tag = document.getElementById('brand-define');
-    if (tag) tag.hidden = this.slots.some((slot) => slot.ready);
   }
 
   get live() {
@@ -248,6 +242,7 @@ export class StingRack {
       label: slot.label,
       name: slot.name,
       cacheKey: slot.cacheKey || '',
+      path: slot.assetPath || '',
       opacity: slot.opacity,
       scale: slot.scale,
       x: slot.x,
@@ -277,7 +272,6 @@ export class StingRack {
     });
     this.silent = false;
     this.#save();
-    this.#syncDefine();
     this.onChange();
   }
 
@@ -300,7 +294,6 @@ export class StingRack {
     for (const slot of this.slots) this.#clear(slot);
     this.silent = false;
     this.#save();
-    this.#syncDefine();
     this.onChange();
   }
 
@@ -433,6 +426,7 @@ export class StingRack {
       url: '',
       name: '',
       cacheKey: '',
+      assetPath: '',
       token: 0,
       ready: false,
       aspect: 1,
@@ -454,7 +448,7 @@ export class StingRack {
       fxAmt: 0.5,
       fxReact: false,
       index,
-      liveBtn: document.querySelector(`#live-tools .sting-fire[data-sting="${index}"]`),
+      liveBtn: document.querySelector(`.logo-triggers .sting-fire[data-sting="${index}"]`),
       card: null,
       nameEl: null,
     };
@@ -570,6 +564,7 @@ export class StingRack {
   }
 
   async #choose(slot, file) {
+    slot.assetPath = '';
     slot.cacheKey = `logo:${slot.index}:${file.name}`;
     try { await this.onAssign(slot, file); } catch { /* the clip still plays this session */ }
     this.#load(slot, file);
@@ -594,6 +589,7 @@ export class StingRack {
     slot.cacheKey = typeof row.cacheKey === 'string' && row.cacheKey
       ? row.cacheKey
       : (slot.name ? `logo:${slot.index}:${slot.name}` : '');
+    slot.assetPath = typeof row.path === 'string' ? row.path : '';
     slot.opacity = num('opacity', slot.opacity);
     slot.scale = num('scale', slot.scale);
     slot.x = num('x', slot.x);
@@ -644,7 +640,6 @@ export class StingRack {
     slot.ready = false;
     slot.aspect = 1;
     slot.token += 1;
-    this.#syncDefine();
     const token = slot.token;
     slot.url = URL.createObjectURL(file);
     slot.name = file.name;
@@ -667,7 +662,6 @@ export class StingRack {
       if (slot.clearBtn) slot.clearBtn.hidden = false;
       slot.nameEl.textContent = slot.name;
       this.#applyButton(slot);
-      this.#syncDefine();
       this.onChange();
     };
     video.addEventListener('canplaythrough', ready, { once: true });
@@ -677,7 +671,6 @@ export class StingRack {
       slot.ready = false;
       if (slot.clearBtn) slot.clearBtn.hidden = false;
       slot.nameEl.textContent = 'Could not load';
-      this.#syncDefine();
     }, { once: true });
   }
 
@@ -689,6 +682,7 @@ export class StingRack {
     slot.url = '';
     slot.name = '';
     slot.cacheKey = '';
+    slot.assetPath = '';
     slot.ready = false;
     slot.aspect = 1;
     const video = slot.video;
@@ -698,7 +692,6 @@ export class StingRack {
     slot.nameEl.title = '';
     if (slot.liveBtn) slot.liveBtn.hidden = true;
     if (slot.clearBtn) slot.clearBtn.hidden = true;
-    this.#syncDefine();
     if (this.silent) return;
     this.#save();
     this.onChange();

@@ -10,13 +10,15 @@ import copyFrag from './shaders/copy.frag?raw';
 import xfadeFrag from './shaders/xfade.frag?raw';
 import stingFrag from './shaders/sting.frag?raw';
 
-import { LAYERS, LAYER_DEFS, MODES, MODE_LABELS, ParamStore, layerParam, neutralOf } from './params.js';
+import { LAYERS, LAYER_DEFS, MODE_LABELS, SHADER_KEY_MODES, ParamStore, layerParam, neutralOf } from './params.js';
+import { createParamHistory } from './history/ParamHistory.js';
 import { ENGINE_FX, ENGINE_PARTICLES } from './engines/constants.js';
 import { liveFormulaModel, liveStackModel } from './ui/liveCode.js';
 import { ScanLog } from './ui/ScanLog.js';
 import { Layer, activeShaderSource, overlayShaderSource, blankTexture } from './layers/Layer.js';
 import { MediaLibrary } from './media/MediaLibrary.js';
 import { fetchVideoLoop } from './media/onlineFetch.js';
+import { searchStockAudio } from './media/stockAudio.js';
 import { AudioEngine } from './audio/AudioEngine.js';
 import { ModMatrix, createModRow } from './audio/ModMatrix.js';
 import { BeatClock } from './clock/BeatClock.js';
@@ -33,6 +35,7 @@ import { bindPictureSources, pictureSources, refreshPictureSources } from './inp
 import { bindRangeReadout } from './ui/NumericSlider.js';
 import { beginDrag, endDragSoon } from './ui/dragPayload.js';
 import { bindMediaPrep } from './media/mediaPrep.js';
+import { bindGlobalLibrary } from './media/GlobalLibrary.js';
 import { dpiState, formatFactor, pixelsOf, setDpiAuto, setOutputPixels, setPreviewScale } from './ui/dpiScale.js';
 import { OutputMap } from './output/OutputMap.js';
 import { SceneManager } from './scenes/SceneManager.js';
@@ -94,6 +97,15 @@ const renderCtx = { quad, quadScene, camera2d, camera3 };
 
 // ---------------------------------------------------------------- state
 const params = new ParamStore();
+function paintHistory() {
+  const undo = $('undo-btn');
+  const redo = $('redo-btn');
+  if (undo) undo.disabled = !params.history.canUndo;
+  if (redo) redo.disabled = !params.history.canRedo;
+}
+params.history = createParamHistory((id, value) => params.set(id, value), { onChange: paintHistory });
+$('undo-btn').addEventListener('click', () => params.history.undo());
+$('redo-btn').addEventListener('click', () => params.history.redo());
 const library = new MediaLibrary();
 const audio = new AudioEngine();
 const bus = new LayerBus(LAYERS);
@@ -149,8 +161,15 @@ const panel = new Panel({
   lfo,
   mods,
 });
+panel.onLayout = () => persistProjectView();
 
 $('shuffle-layer-fx')?.addEventListener('click', () => panel.shuffleSelectedLayer());
+bus.onEdit = (kind, id, from, to) => {
+  params.history?.edit(`bus:${kind}:${id}`, from, to, (v) => {
+    bus.setFlag(kind, id, v);
+  }, 'commit');
+  persistProjectView();
+};
 
 // ---------------------------------------------------------------- compositor
 const comp = {
@@ -291,11 +310,46 @@ const stingMaterial = new THREE.ShaderMaterial({
 });
 const stingRt = new THREE.WebGLRenderTarget(1, 1, STACK_RT);
 const stings = new StingRack($('logo-overlay'), {
-  onChange: () => apcView?.refresh(),
+  onChange: () => {
+    apcView?.refresh();
+    paintLogoPick();
+  },
   onAssign: (slot, file) => library.cacheBlob(slot.cacheKey, file, 'logo'),
   onPersist: () => persistDesk(),
 });
-document.querySelectorAll('#live-tools .sting-fire').forEach((btn) => {
+function paintLogoPick() {
+  const pick = $('logo-slot-pick');
+  const logoBtn = $('logos-trigger');
+  if (!pick) return;
+  const filled = stings.slots
+    .map((slot, index) => ({ index, on: !!(slot.ready || slot.name) }))
+    .filter((row) => row.on);
+  const prev = pick.value;
+  pick.replaceChildren();
+  if (!filled.length) {
+    pick.hidden = true;
+    if (logoBtn) logoBtn.title = 'Open Brand Overlay';
+    return;
+  }
+  pick.hidden = false;
+  for (const row of filled) pick.add(new Option(String(row.index + 1), String(row.index)));
+  pick.value = filled.some((row) => String(row.index) === prev) ? prev : String(filled[0].index);
+  if (logoBtn) logoBtn.title = `Open Logo ${Number(pick.value) + 1} in Brand Overlay`;
+}
+function openLogoSettings() {
+  const pick = $('logo-slot-pick');
+  const index = pick && !pick.hidden ? Number(pick.value) : 0;
+  openProjectFold('logo-overlay');
+  const card = stings.slots[index]?.card;
+  if (!card) return;
+  window.setTimeout(() => {
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    card.classList.add('is-called');
+    window.setTimeout(() => card.classList.remove('is-called'), 1400);
+  }, 40);
+}
+$('logo-slot-pick')?.addEventListener('change', paintLogoPick);
+document.querySelectorAll('.logo-triggers .sting-fire').forEach((btn) => {
   btn.addEventListener('click', () => stings.trigger(Number(btn.dataset.sting)));
 });
 function openProjectFold(id) {
@@ -306,9 +360,67 @@ function openProjectFold(id) {
   if (fold) fold.open = true;
   fold?.querySelector('summary')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
-$('brand-define')?.addEventListener('click', () => openProjectFold('logo-overlay'));
-$('code-define')?.addEventListener('click', () => openProjectFold('code-overlay'));
-$('screen-define')?.addEventListener('click', () => openProjectFold('screensaver'));
+const FOLD_HOLD_MS = 500;
+function bindTapHold(el, { onTap, onHold, ms = FOLD_HOLD_MS }) {
+  if (!el) return;
+  let timer = 0;
+  let holdFired = false;
+  let swallowClick = false;
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    holdFired = false;
+    if (timer) window.clearTimeout(timer);
+    try { el.setPointerCapture(e.pointerId); } catch { /* a synthetic press has no pointer to capture */ }
+    timer = window.setTimeout(() => {
+      timer = 0;
+      holdFired = true;
+      onHold();
+    }, ms);
+  });
+  const stop = () => {
+    if (!timer) return;
+    window.clearTimeout(timer);
+    timer = 0;
+  };
+  el.addEventListener('pointerup', (e) => {
+    if (e.button !== 0) return;
+    const tap = !holdFired;
+    stop();
+    holdFired = false;
+    swallowClick = true;
+    if (tap) onTap?.();
+  });
+  el.addEventListener('pointercancel', () => {
+    stop();
+    holdFired = false;
+    swallowClick = true;
+  });
+  el.addEventListener('click', (e) => {
+    if (swallowClick) {
+      swallowClick = false;
+      e.preventDefault();
+      return;
+    }
+    onTap?.();
+  });
+}
+bindTapHold($('code-trigger'), {
+  onTap: () => setHudEnabled(!hudWant, { history: true }),
+  onHold: () => openProjectFold('code-overlay'),
+});
+bindTapHold($('screen-trigger'), {
+  onTap: () => {
+    const prev = brandMarkOn;
+    setBrandMark(!brandMarkOn);
+    params.history?.edit('screenOn', prev, brandMarkOn, (v) => setBrandMark(v), 'commit');
+  },
+  onHold: () => openProjectFold('screensaver'),
+});
+bindTapHold($('logos-trigger'), {
+  onTap: () => openLogoSettings(),
+  onHold: () => openLogoSettings(),
+});
+paintLogoPick();
 const outputMap = new OutputMap({
   stage: $('map-stage'),
   svg: $('map-svg'),
@@ -547,8 +659,9 @@ function clipKey(name) {
   return item?.url ? `url:${name}` : `file:${name}`;
 }
 
-async function setLayerMedia(L, key, { mirror } = {}) {
+async function setLayerMedia(L, key, { mirror, history = false } = {}) {
   const layer = layerById[L];
+  const prev = { key: layer.mediaKey, mirror: !!layer.mirror };
   const cameraLabel = key.startsWith('cam:') ? library.cameraLabel(key.slice(4)) : undefined;
   const pending = layer.setMedia(key, { library, cameraLabel, mirror, fitMode });
   refreshLayerUi();
@@ -560,6 +673,12 @@ async function setLayerMedia(L, key, { mirror } = {}) {
   }
   refreshLayerUi();
   apcView?.refresh();
+  if (history) {
+    const next = { key: layer.mediaKey, mirror: !!layer.mirror };
+    params.history?.edit(`media:${L}`, prev, next, (m) => {
+      setLayerMedia(L, m.key, { mirror: m.mirror });
+    }, 'commit');
+  }
 }
 
 window.addEventListener('vj-media-fallback', () => {
@@ -585,15 +704,106 @@ function refreshMediaSelect() {
   sel.append(camGroup);
   sel.append(pictureSourceGroup(layer));
   const fileGroup = document.createElement('optgroup');
-  fileGroup.label = 'Media library';
-  for (const name of library.names) fileGroup.append(new Option(name, clipKey(name)));
-  if (layer.missing) fileGroup.append(new Option(`(missing) ${layer.missing}`, `file:${layer.missing}`));
-  fileGroup.append(new Option('+ Add files...', 'add'));
+  fileGroup.label = 'Project Media';
+  for (const item of project.mediaPool) {
+    if (item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
+    fileGroup.append(new Option(item.name, clipKey(item.name)));
+  }
+  if (layer.missing && !project.mediaPool.some((item) => item.name === layer.missing)) {
+    fileGroup.append(new Option(`(missing) ${layer.missing}`, `file:${layer.missing}`));
+  }
   sel.append(fileGroup);
   if (![...sel.options].some((o) => o.value === layer.mediaKey)) {
     sel.add(new Option(mediaKeyLabel(layer.mediaKey), layer.mediaKey));
   }
   sel.value = layer.mediaKey;
+  paintLayerMediaPicker();
+}
+
+function closeLayerMediaGallery() {
+  const box = $('layer-media-gallery');
+  if (!box) return;
+  box.hidden = true;
+  $('layer-media-open')?.setAttribute('aria-expanded', 'false');
+}
+
+function placeLayerMediaGallery() {
+  const open = $('layer-media-open');
+  const box = $('layer-media-gallery');
+  if (!open || !box) return;
+  const row = open.closest('.row');
+  const r = (row || open).getBoundingClientRect();
+  const width = Math.max(220, Math.round(r.width));
+  const left = Math.min(Math.max(8, r.left), window.innerWidth - width - 8);
+  box.style.left = `${Math.round(left)}px`;
+  box.style.width = `${width}px`;
+  box.style.top = `${Math.round(r.bottom + 4)}px`;
+}
+
+function chooseLayerMedia(value) {
+  const sel = $('layer-media');
+  if (!sel || ![...sel.options].some((opt) => opt.value === value)) return;
+  sel.value = value;
+  sel.dispatchEvent(new Event('change'));
+  closeLayerMediaGallery();
+}
+
+function paintLayerMediaPicker() {
+  const sel = $('layer-media');
+  const label = $('layer-media-label');
+  const open = $('layer-media-open');
+  if (!sel || !label || !open) return;
+  const text = sel.selectedOptions[0]?.textContent || 'Test pattern';
+  label.textContent = text;
+  open.title = text;
+  $('layer-media-none')?.classList.toggle('is-on', sel.value === 'none');
+  const box = $('layer-media-gallery');
+  const grid = $('layer-media-grid');
+  const sources = $('layer-media-sources');
+  if (!box || box.hidden || !grid || !sources) return;
+  grid.innerHTML = '';
+  const visuals = project.mediaPool.filter((item) => item?.name && item.kind !== 'audio' && mediaKind(item.name) !== 'audio');
+  if (!visuals.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'No clips in Project Media.';
+    grid.append(empty);
+  }
+  for (const item of visuals) {
+    const key = clipKey(item.name);
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'layer-media-card';
+    card.title = item.name;
+    card.classList.toggle('is-on', sel.value === key || sel.value === `file:${item.name}` || sel.value === `url:${item.name}`);
+    const img = document.createElement('img');
+    img.alt = '';
+    const still = library.mediaItem(item.name)?.thumbnail;
+    if (still) img.src = still;
+    else img.hidden = true;
+    const name = document.createElement('span');
+    name.textContent = String(item.name).replace(/\.[^.]+$/, '');
+    card.append(img, name);
+    card.addEventListener('click', () => chooseLayerMedia(key));
+    grid.append(card);
+  }
+  sources.innerHTML = '';
+  sources.hidden = true;
+}
+
+function openLayerMediaGallery() {
+  const box = $('layer-media-gallery');
+  if (!box) return;
+  if (!box.hidden) {
+    closeLayerMediaGallery();
+    return;
+  }
+  box.hidden = false;
+  $('layer-media-open')?.setAttribute('aria-expanded', 'true');
+  placeLayerMediaGallery();
+  paintLayerMediaPicker();
+  library.refreshCameras().catch(() => {});
+  refreshPictureSources().catch(() => {});
 }
 
 const LINUX_PICTURE_NOTE = 'Spout and Syphon are not on this system.';
@@ -879,9 +1089,9 @@ function bindLoopThumb(id, which) {
 bindLoopThumb('loop-in-thumb', 'in');
 bindLoopThumb('loop-out-thumb', 'out');
 
-function assignMediaToLayer(mediaId, layerId) {
+function assignMediaToLayer(mediaId, layerId, { history = true } = {}) {
   const name = String(mediaId).replace(/^(?:file|url):/, '');
-  return setLayerMedia(layerId, clipKey(name));
+  return setLayerMedia(layerId, clipKey(name), { history });
 }
 
 const pendingOnline = [];
@@ -898,7 +1108,8 @@ function refreshLibraryUi() {
     card.querySelector('.media-name').title = job.label;
     list.append(card);
   }
-  for (const name of library.names) {
+  for (const entry of project.mediaPool) {
+    const name = entry.name;
     const item = library.mediaItem(name);
     const used = layers.filter((l) => l.mediaKey === `file:${name}` || l.mediaKey === `url:${name}`).map((l) => l.id);
     const card = document.createElement('article');
@@ -906,11 +1117,20 @@ function refreshLibraryUi() {
     card.draggable = true;
     card.classList.toggle('on', used.length > 0);
     card.innerHTML = '<div class="media-thumb-wrap"><img class="media-thumb" alt="" /><div class="media-badges"></div><div class="media-actions"></div></div><span class="media-name"></span>';
+    const audioFile = entry.kind === 'audio' || mediaKind(name) === 'audio';
     const thumb = card.querySelector('.media-thumb');
-    if (item?.thumbnail) thumb.src = item.thumbnail;
+    if (!audioFile && item?.thumbnail) thumb.src = item.thumbnail;
     else thumb.hidden = true;
     thumb.alt = '';
-    if (item?.kind === 'video') {
+    if (audioFile) {
+      card.classList.add('is-audio');
+      card.draggable = false;
+      const mark = document.createElement('i');
+      mark.className = 'media-play';
+      mark.textContent = '\u266A';
+      mark.title = 'Audio';
+      card.querySelector('.media-thumb-wrap').append(mark);
+    } else if (item?.kind === 'video') {
       const play = document.createElement('i');
       play.className = 'media-play';
       play.title = 'Video loop';
@@ -928,26 +1148,38 @@ function refreshLibraryUi() {
       badges.append(mark);
     }
     const actions = card.querySelector('.media-actions');
-    for (const id of ['A', 'B', 'C']) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.dataset.layer = id;
-      btn.textContent = id;
-      btn.title = `Assign to layer ${id}`;
-      btn.addEventListener('click', (e) => {
+    if (audioFile) {
+      const use = document.createElement('button');
+      use.type = 'button';
+      use.textContent = 'Use';
+      use.title = 'Play this file on the audio clock';
+      use.addEventListener('click', (e) => {
         e.stopPropagation();
-        assignMediaToLayer(name, id);
+        useProjectAudio(entry).catch((err) => showToast(err?.message || 'Could not play that audio file', true));
       });
-      actions.append(btn);
+      actions.append(use);
+    } else {
+      for (const id of ['A', 'B', 'C']) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.dataset.layer = id;
+        btn.textContent = id;
+        btn.title = `Assign to layer ${id}`;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          assignMediaToLayer(name, id);
+        });
+        actions.append(btn);
+      }
     }
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'media-delete';
     del.textContent = '\u00d7';
-    del.title = 'Remove from library';
+    del.title = 'Remove from this project';
     del.addEventListener('click', (e) => {
       e.stopPropagation();
-      library.remove(name);
+      removeFromBin(name);
     });
     actions.append(del);
     card.addEventListener('dragstart', (e) => {
@@ -978,18 +1210,28 @@ function refreshLibraryUi() {
   const wanted = new Set();
   for (const l of layers) if (l.missing) wanted.add(l.missing);
   for (const s of scenes.scenes) {
-    for (const m of Object.values(s.media || {})) if (m?.key?.startsWith('file:')) wanted.add(m.key.slice(5));
+    for (const m of Object.values(s.media || {})) {
+      const key = m?.key || '';
+      if (key.startsWith('file:') || key.startsWith('url:')) wanted.add(key.slice(key.indexOf(':') + 1));
+    }
   }
-  const missing = [...wanted].filter((n) => !library.has(n));
-  $('media-missing').hidden = !missing.length;
-  $('media-missing').textContent = missing.length
-    ? `Scenes need these files. Add them to the library: ${missing.join(', ')}`
-    : '';
+  const inProject = new Set(project.mediaPool.map((item) => item.name));
+  const missing = [...wanted].filter((n) => !inProject.has(n) && !library.has(n));
+  const gone = mediaHydrated
+    ? project.mediaPool.filter((item) => item.name && item.kind !== 'audio' && mediaKind(item.name) !== 'audio' && !library.has(item.name)).map((item) => item.name)
+    : [];
+  const lines = [];
+  if (gone.length) lines.push(`Missing file: ${gone.join(', ')}`);
+  if (missing.length) lines.push(`Scenes need these files. Send them from Media Manager: ${missing.join(', ')}`);
+  $('media-missing').hidden = !lines.length;
+  $('media-missing').textContent = lines.join(' ');
 }
 
-function addFiles(fileList, { assign = false } = {}) {
+function addFiles(fileList, { bin = false } = {}) {
   const added = library.add(fileList);
-  if (assign && added.length === 1) assignMediaToLayer(added[0], panel.selected);
+  if (bin) {
+    for (const name of added) addToBin({ name, path: '' });
+  }
   return added;
 }
 
@@ -997,33 +1239,26 @@ library.onChange(() => {
   // A layer waiting on a missing file picks it up as soon as it's added.
   for (const l of layers) {
     if (l.missing && library.has(l.missing) && l.mediaStatus !== 'loading...') {
-      assignMediaToLayer(l.missing, l.id);
+      assignMediaToLayer(l.missing, l.id, { history: false });
     }
   }
   refreshLayerUi();
   apcView?.refresh();
 });
 
-let assignNextAdd = false;
 $('layer-media').addEventListener('change', async (e) => {
   const v = e.target.value;
-  if (v === 'add') {
-    assignNextAdd = true;
-    $('media-files').click();
-    refreshMediaSelect();
-    return;
-  }
   if (v === 'picture-none') {
     refreshMediaSelect();
     return;
   }
   if (v === 'cam:') {
     // No device list yet: open the default camera, which also unlocks device labels.
-    await setLayerMedia(panel.selected, 'cam:');
+    await setLayerMedia(panel.selected, 'cam:', { history: true });
     await library.refreshCameras().catch(() => {});
     return;
   }
-  setLayerMedia(panel.selected, v);
+  setLayerMedia(panel.selected, v, { history: true });
 });
 let pictureMenuDirty = false;
 $('layer-media').addEventListener('focus', () => {
@@ -1035,19 +1270,43 @@ $('layer-media').addEventListener('blur', () => {
   pictureMenuDirty = false;
   refreshMediaSelect();
 });
+$('layer-media-open')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openLayerMediaGallery();
+});
+$('layer-media-none')?.addEventListener('click', () => chooseLayerMedia('none'));
+window.addEventListener('pointerdown', (e) => {
+  const box = $('layer-media-gallery');
+  if (!box || box.hidden) return;
+  if (e.target.closest('#layer-media-gallery, #layer-media-open')) return;
+  closeLayerMediaGallery();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeLayerMediaGallery();
+});
 $('layer-media-refresh').addEventListener('click', () => {
   library.refreshCameras().catch(() => {});
   refreshPictureSources().catch(() => {});
 });
-$('layer-mirror').addEventListener('change', (e) => selectedLayer().setMirror(e.target.checked));
+$('layer-mirror').addEventListener('change', (e) => {
+  const layer = selectedLayer();
+  const prev = !!layer.mirror;
+  layer.setMirror(e.target.checked);
+  params.history?.edit(`mirror:${layer.id}`, prev, !!layer.mirror, (v) => {
+    layerById[layer.id].setMirror(v);
+    refreshLayerUi();
+  }, 'commit');
+});
+let globalLibrary = null;
 $('media-add').addEventListener('click', () => {
-  assignNextAdd = false;
-  $('media-files').click();
+  setDeskMode('prep');
+  globalLibrary?.refresh();
 });
 $('media-files').addEventListener('change', (e) => {
-  addFiles(e.target.files, { assign: assignNextAdd });
-  assignNextAdd = false;
+  library.add(e.target.files);
   e.target.value = '';
+  globalLibrary?.refresh();
+  globalLibrary?.open();
 });
 
 function setOnlineStatus(text, isError = false) {
@@ -1144,12 +1403,12 @@ async function fileFromStock(clip, onPhase) {
     const blob = await res.blob();
     const leaf = String(output).split(/[\\/]/).pop();
     if (!leaf) throw new Error('Download failed');
-    return new File([blob], leaf, { type: blob.type || 'video/mp4' });
+    return { file: new File([blob], leaf, { type: blob.type || 'video/mp4' }), path: output };
   }
   const res = await fetch(clip.videoUrl);
   if (!res.ok) throw new Error('Download failed');
   const blob = await res.blob();
-  return new File([blob], filename, { type: blob.type || type });
+  return { file: new File([blob], filename, { type: blob.type || type }), path: '' };
 }
 
 function isWikimediaWebm(clip) {
@@ -1165,13 +1424,14 @@ async function downloadClip(clip, card) {
   const previous = source.textContent;
   source.textContent = 'Downloading...';
   try {
-    const file = await fileFromStock(clip, (text) => { source.textContent = text; });
-    const added = library.add([file]);
+    const saved = await fileFromStock(clip, (text) => { source.textContent = text; });
+    const added = library.add([saved.file]);
     if (!added.length) throw new Error('Download failed');
-    await assignMediaToLayer(added[0], panel.selected);
-    source.textContent = 'In library';
-    setOnlineStatus(`Saved ${added[0]} on layer ${panel.selected}.`);
-    showToast(`Saved ${added[0]}`);
+    addToBin({ name: added[0], path: saved.path || '' });
+    window.dispatchEvent(new CustomEvent('vj-global-media'));
+    source.textContent = 'In project';
+    setOnlineStatus(`Sent ${added[0]} to Project Media.`);
+    showToast(`Sent ${added[0]} to Project Media`);
   } catch (err) {
     card.classList.add('failed');
     const transcode = !!err?.transcode;
@@ -1270,10 +1530,14 @@ window.addEventListener('drop', (e) => {
     e.preventDefault();
     return;
   }
-  if (e.target?.closest?.('#tl-track, #media-prep')) return;
+  if (e.target?.closest?.('#tl-track, #media-prep, #global-library')) return;
   if (!e.dataTransfer?.files.length) return;
   e.preventDefault();
-  addFiles(e.dataTransfer.files, { assign: true });
+  const count = globalLibrary?.ingest([...e.dataTransfer.files], e) || 0;
+  if (count) {
+    setDeskMode('prep');
+    globalLibrary?.refresh();
+  }
 });
 document.addEventListener('dragstart', (e) => {
   if (!isPerformMode) return;
@@ -1290,18 +1554,68 @@ panel.onSelect = (id) => {
 
 // ---------------------------------------------------------------- scenes + timeline
 const project = new ProjectState();
+
+function paintProjectName() {
+  const input = $('project-name');
+  if (!input) return;
+  input.value = project.name || '';
+}
+
+function commitProjectName() {
+  const input = $('project-name');
+  if (!input) return;
+  const next = input.value.replace(/\s+/g, ' ').trim().slice(0, 48);
+  const prev = project.name || '';
+  if (input.value !== next) input.value = next;
+  if (next === prev) return;
+  project.setName(next);
+  params.history?.edit('projectName', prev, next, (name) => {
+    project.setName(name);
+    paintProjectName();
+  }, 'commit');
+}
+
+{
+  const input = $('project-name');
+  if (input) {
+    input.value = project.name || '';
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      } else if (e.key === 'Escape') {
+        input.value = project.name || '';
+        input.blur();
+      }
+    });
+    input.addEventListener('blur', commitProjectName);
+  }
+}
+
 let deskReady = false;
 let deskWriting = false;
+let viewApplying = false;
+let viewTimer = 0;
+let audioAssetPath = '';
 
 const FOLD_LOCKS = ['acc-audio', 'acc-master', 'acc-output', 'code-overlay', 'logo-overlay', 'screensaver'];
-const COMP_LOCKS = ['Color & Texture', 'Distortion & Glitch', 'Motion & Timing'];
+const COMP_LOCKS = ['Color & Texture', 'Distortion & Glitch', 'Motion & Timing', 'Barrel'];
 
 function lockButton(id) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'section-lock';
   btn.dataset.lock = id;
-  btn.textContent = 'Lock';
+  btn.setAttribute('aria-label', 'Lock');
+  btn.innerHTML = `
+    <svg class="lock-open" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="2.25" y="7" width="11.5" height="7.25" rx="1.4"/>
+      <path d="M5 7V4.75a3 3 0 0 1 5.8-.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </svg>
+    <svg class="lock-closed" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="2.25" y="7" width="11.5" height="7.25" rx="1.4"/>
+      <path d="M5 7V4.75a3 3 0 0 1 6 0V7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </svg>`;
   btn.title = 'Lock this section. Its controls stay put and Shuffle skips it.';
   btn.addEventListener('pointerdown', (e) => e.stopPropagation());
   btn.addEventListener('click', (e) => {
@@ -1378,15 +1692,71 @@ function applySceneRouting(routing) {
   mods.replace({ ...keep, ...(routing || {}) });
 }
 
-function syncMediaPool() {
-  project.setMediaPool(library.names.map((name) => ({
+const BIN_SPLIT = 'vj.mediaBinSplit';
+let mediaHydrated = false;
+
+function mediaKind(name) {
+  if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) return 'image';
+  if (/\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i.test(name)) return 'audio';
+  return 'video';
+}
+
+function addToBin(entry) {
+  const name = entry?.name;
+  if (!name) return false;
+  if (project.mediaPool.some((item) => item.name === name)) return false;
+  project.setMediaPool(project.mediaPool.concat([{
     id: name,
     name,
-    kind: /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name) ? 'image' : 'video',
-  })));
+    kind: entry.kind === 'image' || entry.kind === 'video' || entry.kind === 'audio' ? entry.kind : mediaKind(name),
+    path: typeof entry.path === 'string' ? entry.path : '',
+  }]));
+  if (mediaKind(name) !== 'audio' && entry.path && isTauri() && !library.has(name)) {
+    import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
+      library.addRemote({ name, url: convertFileSrc(entry.path) });
+    });
+  }
+  refreshLibraryUi();
+  refreshMediaSelect();
+  return true;
 }
-library.onChange(syncMediaPool);
-library.ready.then(() => syncMediaPool()).catch(() => {});
+
+function removeFromBin(name) {
+  project.setMediaPool(project.mediaPool.filter((item) => item.name !== name));
+  refreshLibraryUi();
+  refreshMediaSelect();
+}
+
+async function hydrateProjectMedia() {
+  await library.ensureCached(project.mediaPool.map((item) => item.name));
+  if (!isTauri()) return;
+  const { convertFileSrc } = await import('@tauri-apps/api/core');
+  for (const item of project.mediaPool) {
+    if (item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
+    if (!item.path || library.has(item.name)) continue;
+    library.addRemote({ name: item.name, url: convertFileSrc(item.path) });
+  }
+}
+
+library.ready.then(async () => {
+  let split = false;
+  try { split = localStorage.getItem(BIN_SPLIT) === '1'; } catch { split = false; }
+  if (!split) {
+    if (!project.mediaPool.length && library.names.length) {
+      project.setMediaPool(library.names.map((name) => ({
+        id: name,
+        name,
+        kind: mediaKind(name),
+        path: '',
+      })));
+    }
+    try { localStorage.setItem(BIN_SPLIT, '1'); } catch { /* private mode */ }
+  }
+  await hydrateProjectMedia();
+  mediaHydrated = true;
+  refreshLibraryUi();
+  refreshMediaSelect();
+}).catch(() => {});
 
 const scenes = new SceneManager({
   params,
@@ -1398,6 +1768,11 @@ const scenes = new SceneManager({
   onSaveError: (text) => showToast(text, true),
 });
 const timeline = new Timeline(project);
+scenes.onHistory = (before, after) => {
+  params.history?.edit('scenes', before, after, (snap) => {
+    params.history.silence(() => scenes.restoreHistory(snap));
+  }, 'commit');
+};
 
 // ---------------------------------------------------------------- tempo clock
 // The timeline's BPM is the single stored tempo; the clock follows it and,
@@ -1409,8 +1784,11 @@ function formatBpm(bpm) {
   return (Math.round(Number(bpm) * 10) / 10).toFixed(1);
 }
 
-function setTempo(bpm) {
-  timeline.set('bpm', bpmEngine.setBpm(bpm));
+function setTempo(bpm, { history = 'commit' } = {}) {
+  const prev = timeline.bpm;
+  const next = bpmEngine.setBpm(bpm);
+  timeline.set('bpm', next, { history: false });
+  if (history) params.history?.edit('bpm', prev, timeline.bpm, (v) => setTempo(v, { history: false }), history);
 }
 
 function tapTempo() {
@@ -1422,7 +1800,7 @@ function tapTempo() {
     beatClock.beats = bpmEngine.beats;
     beatClock.setBpm(bpmEngine.bpm);
   }
-  if (result.bpmChanged) timeline.set('bpm', bpmEngine.bpm);
+  if (result.bpmChanged) setTempo(bpmEngine.bpm);
   else syncTempoUi();
 }
 
@@ -1443,14 +1821,26 @@ timeline.onChange(() => {
   syncTempoUi();
 });
 syncTempoUi();
+timeline.onEdit = (before, after, field, kind) => {
+  params.history.edit(`tl:${field}`, before, after, (data) => {
+    params.history.silence(() => {
+      timeline.load(data);
+      bpmEngine.setBpm(timeline.bpm);
+      syncTempoUi();
+    });
+  }, kind || 'commit');
+};
+timeline.historyCommit = () => params.history.commit();
 
 $('bpm-slider').addEventListener('input', (e) => {
   if (bpmMode === 'auto' || e.target.disabled) return;
-  setTempo(Number(e.target.value));
+  setTempo(Number(e.target.value), { history: 'drag' });
 });
+$('bpm-slider').addEventListener('change', () => params.history?.commit());
 $('bpm-slider').addEventListener('dblclick', () => {
   if (bpmMode === 'auto') return;
   setTempo(120);
+  params.history?.coalesce('bpm');
 });
 $('bpm-value').addEventListener('pointerdown', () => {
   if (bpmMode === 'auto') setBpmMode('manual');
@@ -1505,8 +1895,6 @@ function setBpmMode(src) {
     : 'Manual tempo. Click to read the live audio.';
   document.body.classList.toggle('bpm-auto', auto);
   $('bpm-slider').disabled = auto;
-  const tlBpm = $('tl-bpm');
-  if (tlBpm) tlBpm.disabled = auto;
   const readout = $('bpm-value')?.parentElement;
   readout?.classList.toggle('locked', !auto);
   readout?.classList.toggle('sync', auto);
@@ -1523,21 +1911,29 @@ function setBpmMode(src) {
 $('bpm-mode').addEventListener('click', () => setBpmMode('auto'));
 
 let masterSpeed = 1;
-function setMasterSpeed(value) {
+function setMasterSpeed(value, { history = false } = {}) {
+  const prev = masterSpeed;
   const n = Number(value);
   masterSpeed = Math.min(4, Math.max(0, Number.isFinite(n) ? n : 1));
   const out = $('master-speed-out');
   if (out && out.dataset.editing !== '1') out.textContent = `${masterSpeed.toFixed(2)}x`;
   const slider = $('master-speed');
   if (slider && document.activeElement !== slider) slider.value = String(masterSpeed);
+  if (history) params.history?.edit('speed', prev, masterSpeed, (v) => setMasterSpeed(v), history);
+  persistProjectView();
 }
-$('master-speed')?.addEventListener('input', (e) => setMasterSpeed(e.target.value));
-$('master-speed')?.addEventListener('dblclick', () => setMasterSpeed(1));
+$('master-speed')?.addEventListener('input', (e) => setMasterSpeed(e.target.value, { history: 'drag' }));
+$('master-speed')?.addEventListener('change', () => params.history?.commit());
+$('master-speed')?.addEventListener('dblclick', () => {
+  setMasterSpeed(1, { history: 'commit' });
+  params.history?.coalesce('speed');
+});
 
 function setUiMode(mode) {
   const live = mode === 'live';
   document.body.classList.toggle('live-mode', live);
   try { localStorage.setItem('vj.uiMode', live ? 'live' : 'timeline'); } catch { /* ignore */ }
+  persistProjectView();
 }
 
 let isPerformMode = false;
@@ -1621,6 +2017,7 @@ function setLibraryOpen(open) {
   const box = $('view-library');
   if (box) box.checked = !!open;
   try { localStorage.setItem('vj.library', open ? '1' : '0'); } catch { /* ignore */ }
+  persistProjectView(true);
 }
 const PANEL_KEY = 'vj.panels';
 const PANEL_TOGGLES = [
@@ -1638,6 +2035,7 @@ function bindPanelToggles() {
     const next = {};
     for (const [id] of PANEL_TOGGLES) next[id] = !!$(id)?.checked;
     try { localStorage.setItem(PANEL_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    persistProjectView(true);
   };
   for (const [id, className] of PANEL_TOGGLES) {
     const box = $(id);
@@ -1654,7 +2052,7 @@ function bindPanelToggles() {
 }
 bindPanelToggles();
 
-const SCREEN_TEXT = 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE FUTURE';
+const SCREEN_TEXT = 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE\nFUTURE';
 const SCREEN_FONTS = {
   desk: 'var(--font)',
   terminal: '"Courier New", "Lucida Console", monospace',
@@ -1669,14 +2067,29 @@ const SCREEN_COLORS = {
   green: '#7dffb0',
 };
 const SCREEN_CREDIT = 'OS CC BY-NC-SA // REPO ON GITHUB';
+const SCREEN_QUERIES = [
+  'WHAT WILL YOU BUILD FROM THE RUINS OF THE OLD INTERFACE?',
+  'WHEN THE STATIC FINALLY CLEARED, WHAT DID YOU HEAR?',
+  'IF THE SYSTEMS RESET TONIGHT, WHO DO WE BECOME AT DAWN?',
+  'WHERE DOES THE LIGHT GO WHEN THE SERVERS FINALLY SLEEP?',
+  'WHAT GROWS IN THE SPACES BETWEEN THE WIRES NOW?',
+  'DID WE INVENT A NEW FUTURE, OR JUST FINALLY REMEMBER IT?',
+  'HOW DOES IT FEEL NOW THAT THE BORDERS ARE JUST PIXELS?',
+  'WHEN THE GLITCH BECAME THE MASTERPIECE, WHERE WERE YOU?',
+  'WHAT RHYTHMS REMAIN NOW THAT THE GRID HAS FALLEN?',
+  'IF MEMORY IS JUST A SIGNAL, WHAT ARE WE BROADCASTING TOMORROW?',
+  'WHO TENDED THE GARDEN WHILE THE MACHINES WERE REBOOTING?',
+  'NOW THAT THE BANDWIDTH IS INFINITE, WHAT DO YOU TRULY WANT TO SAY?',
+];
 
-let brandMarkOn = false;
+let brandMarkOn = true;
 let brandLayout = null;
-let brandScale = 100;
+let brandScale = 40;
 let screenText = SCREEN_TEXT;
-let screenFont = 'desk';
-let screenShade = 8;
-let screenBg = 1;
+let screenCredit = true;
+let screenFont = 'fixedsys';
+let screenShade = 0;
+let screenBg = 0.65;
 let screenColor = 'white';
 
 function escapeScreenLine(line) {
@@ -1693,7 +2106,10 @@ function paintScreenText(mark) {
     const shown = line.length ? escapeScreenLine(line) : '&nbsp;';
     return `<span class="brand-line">${shown}</span>`;
   }).join('');
-  const html = `${body}<span class="brand-notice">OS CC BY-NC-SA // <a href="https://github.com/cin-seeds/y2k-vj-by-cin" target="_blank" rel="noopener noreferrer">REPO ON GITHUB</a></span>`;
+  const notice = screenCredit
+    ? '<span class="brand-notice">OS CC BY-NC-SA // <a href="https://github.com/cin-seeds/y2k-vj-by-cin" target="_blank" rel="noopener noreferrer">REPO ON GITHUB</a></span>'
+    : '';
+  const html = `${body}${notice}`;
   if (mark.dataset.screen === html) return;
   mark.innerHTML = html;
   mark.dataset.screen = html;
@@ -1708,12 +2124,150 @@ function setBrandMark(on) {
   brandMarkOn = !!on;
   const box = $('screen-enable');
   if (box) box.checked = brandMarkOn;
-  const state = document.querySelector('#live-tools .screen-state');
+  const state = document.querySelector('#screen-trigger .screen-state');
   if (state) state.textContent = brandMarkOn ? 'On' : 'Off';
+  const screenBtn = $('screen-trigger');
+  if (screenBtn) {
+    screenBtn.classList.toggle('on', brandMarkOn);
+    screenBtn.setAttribute('aria-pressed', brandMarkOn ? 'true' : 'false');
+  }
   try { localStorage.setItem('vj.screenOn', brandMarkOn ? '1' : '0'); } catch { /* ignore */ }
   refreshScreen();
   persistDesk();
 }
+
+const COMP_HOLD_MS = 500;
+const COMP_IDS = ['gradeHue', 'gradeSat', 'gradeContrast', 'crtBleed', 'crtScan', 'chroma', 'strobe', 'strobeSrc', 'strobePol', 'master'];
+
+function captureComposition() {
+  const mix = {};
+  for (const id of COMP_IDS) mix[id] = params.get(id);
+  mix.speed = masterSpeed;
+  mix.bpm = timeline.bpm;
+  mix.code = !!hudWant;
+  mix.screen = !!brandMarkOn;
+  return mix;
+}
+
+function recallComposition(mix) {
+  if (!mix) return;
+  const run = () => {
+    for (const id of COMP_IDS) {
+      if (mix[id] == null || !params.defs.has(id)) continue;
+      params.set(id, mix[id], { history: 'commit' });
+    }
+    const speed = masterSpeed;
+    setMasterSpeed(mix.speed);
+    params.history?.edit('speed', speed, masterSpeed, (v) => setMasterSpeed(v), 'commit');
+    const bpm = timeline.bpm;
+    setTempo(mix.bpm, { history: false });
+    params.history?.edit('bpm', bpm, timeline.bpm, (v) => setTempo(v, { history: false }), 'commit');
+    if (!!mix.code !== !!hudWant) {
+      const prev = hudWant;
+      setHudEnabled(!!mix.code);
+      params.history?.edit('hud', prev, hudWant, (v) => setHudEnabled(v), 'commit');
+    }
+    if (!!mix.screen !== !!brandMarkOn) {
+      const prev = brandMarkOn;
+      setBrandMark(!!mix.screen);
+      params.history?.edit('screenOn', prev, brandMarkOn, (v) => setBrandMark(v), 'commit');
+    }
+  };
+  if (params.history) params.history.group(run);
+  else run();
+}
+
+function paintCompositions() {
+  const slots = project.compositions || [null, null, null];
+  document.querySelectorAll('#comp-slot-host .comp-slot').forEach((btn, i) => {
+    const filled = !!slots[i];
+    btn.classList.toggle('is-stored', filled);
+    btn.setAttribute('aria-pressed', filled ? 'true' : 'false');
+    btn.title = filled
+      ? 'Click to recall this mix. Hold to replace it. Right-click to forget it.'
+      : 'Hold to store the current mix.';
+  });
+}
+
+function mountCompositions() {
+  const host = $('comp-slot-host');
+  if (!host || host.querySelector('.comp-slot')) return;
+  const row = host.querySelector('.comp-slots') || document.createElement('div');
+  row.className = 'comp-slots';
+  const shuffle = $('shuffle-layer-fx');
+  ['C1', 'C2', 'C3'].forEach((label, index) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'comp-slot';
+    btn.textContent = label;
+    let pressed = false;
+    let saved = false;
+    let timer = 0;
+    const clearHold = () => {
+      if (timer) clearTimeout(timer);
+      timer = 0;
+      btn.classList.remove('is-holding');
+    };
+    btn.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      pressed = true;
+      saved = false;
+      clearHold();
+      btn.classList.add('is-holding');
+      try { btn.setPointerCapture(e.pointerId); } catch { /* synthetic press */ }
+      timer = window.setTimeout(() => {
+        timer = 0;
+        saved = true;
+        btn.classList.remove('is-holding');
+        const prev = structuredClone(project.compositions || [null, null, null]);
+        const next = prev.slice();
+        next[index] = captureComposition();
+        project.setCompositions(next);
+        paintCompositions();
+        params.history?.edit('comps', prev, structuredClone(next), (list) => {
+          project.setCompositions(list);
+          paintCompositions();
+        }, 'commit');
+      }, COMP_HOLD_MS);
+    });
+    btn.addEventListener('pointerup', () => {
+      if (!pressed) return;
+      pressed = false;
+      const held = saved;
+      saved = false;
+      clearHold();
+      if (held) return;
+      const mix = project.compositions?.[index];
+      if (mix) recallComposition(mix);
+    });
+    btn.addEventListener('pointercancel', () => {
+      pressed = false;
+      saved = false;
+      clearHold();
+    });
+    btn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      pressed = false;
+      saved = false;
+      clearHold();
+      const prev = structuredClone(project.compositions || [null, null, null]);
+      if (!prev[index]) return;
+      const next = prev.slice();
+      next[index] = null;
+      project.setCompositions(next);
+      paintCompositions();
+      params.history?.edit('comps', prev, structuredClone(next), (list) => {
+        project.setCompositions(list);
+        paintCompositions();
+      }, 'commit');
+    });
+    if (shuffle && shuffle.parentElement === row) row.insertBefore(btn, shuffle);
+    else row.append(btn);
+  });
+  if (!row.parentElement) host.append(row);
+  paintCompositions();
+}
+mountCompositions();
 
 function setBrandScale(value) {
   const next = Math.min(220, Math.max(40, Math.round(Number(value) || 100)));
@@ -1723,6 +2277,15 @@ function setBrandScale(value) {
   const out = $('brand-size-out');
   if (out) out.textContent = `${next}%`;
   try { localStorage.setItem('vj.brandSize', String(next)); } catch { /* ignore */ }
+  refreshScreen();
+  persistDesk();
+}
+
+function setScreenCredit(on) {
+  screenCredit = !!on;
+  const box = $('screen-credit');
+  if (box) box.checked = screenCredit;
+  try { localStorage.setItem('vj.screenCredit', screenCredit ? '1' : '0'); } catch { /* ignore */ }
   refreshScreen();
   persistDesk();
 }
@@ -1779,7 +2342,7 @@ function setScreenColor(value) {
 function layoutBrandMark(mark, wrapW, wrapH) {
   const key = [
     wrapW, wrapH, brandScale, screenShade, screenFont, screenColor,
-    screenBg.toFixed(2), screenText,
+    screenBg.toFixed(2), screenText, screenCredit ? 1 : 0,
   ].join('|');
   if (brandLayout?.key === key) return brandLayout;
   paintScreenText(mark);
@@ -1857,20 +2420,69 @@ function placeBrandMark(nowMs) {
   if (mark.style.top !== top) mark.style.top = top;
 }
 
-$('screen-enable')?.addEventListener('change', () => setBrandMark($('screen-enable').checked));
-$('brand-size')?.addEventListener('input', () => setBrandScale($('brand-size').value));
-$('screen-text')?.addEventListener('input', () => setScreenText($('screen-text').value));
-$('screen-font')?.addEventListener('change', () => setScreenFont($('screen-font').value));
-$('screen-shade')?.addEventListener('input', () => setScreenShade($('screen-shade').value));
-$('screen-bg')?.addEventListener('input', () => setScreenBg($('screen-bg').value));
-$('screen-color')?.addEventListener('change', () => setScreenColor($('screen-color').value));
+$('screen-enable')?.addEventListener('change', () => {
+  const prev = brandMarkOn;
+  setBrandMark($('screen-enable').checked);
+  params.history?.edit('screenOn', prev, brandMarkOn, (v) => setBrandMark(v), 'commit');
+});
+$('brand-size')?.addEventListener('input', () => {
+  const prev = brandScale;
+  setBrandScale($('brand-size').value);
+  params.history?.edit('screenSize', prev, brandScale, (v) => setBrandScale(v), 'drag');
+});
+$('brand-size')?.addEventListener('change', () => params.history?.commit());
+$('screen-text')?.addEventListener('input', () => {
+  const prev = screenText;
+  setScreenText($('screen-text').value);
+  params.history?.edit('screenText', prev, screenText, (v) => setScreenText(v), 'drag');
+});
+$('screen-text')?.addEventListener('blur', () => params.history?.commit());
+$('screen-query')?.addEventListener('click', () => {
+  const prev = screenText;
+  const pool = SCREEN_QUERIES.filter((line) => line !== prev.trim());
+  const next = pool[Math.floor(Math.random() * pool.length)];
+  setScreenText(next);
+  params.history?.edit('screenText', prev, screenText, (v) => setScreenText(v), 'commit');
+});
+$('screen-credit')?.addEventListener('change', () => {
+  const prev = screenCredit;
+  setScreenCredit($('screen-credit').checked);
+  params.history?.edit('screenCredit', prev, screenCredit, (v) => setScreenCredit(v), 'commit');
+});
+$('screen-font')?.addEventListener('change', () => {
+  const prev = screenFont;
+  setScreenFont($('screen-font').value);
+  params.history?.edit('screenFont', prev, screenFont, (v) => setScreenFont(v), 'commit');
+});
+$('screen-shade')?.addEventListener('input', () => {
+  const prev = screenShade;
+  setScreenShade($('screen-shade').value);
+  params.history?.edit('screenShade', prev, screenShade, (v) => setScreenShade(v), 'drag');
+});
+$('screen-shade')?.addEventListener('change', () => params.history?.commit());
+$('screen-bg')?.addEventListener('input', () => {
+  const prev = screenBg;
+  setScreenBg($('screen-bg').value);
+  params.history?.edit('screenBg', prev, screenBg, (v) => setScreenBg(v), 'drag');
+});
+$('screen-bg')?.addEventListener('change', () => params.history?.commit());
+$('screen-color')?.addEventListener('change', () => {
+  const prev = screenColor;
+  setScreenColor($('screen-color').value);
+  params.history?.edit('screenColor', prev, screenColor, (v) => setScreenColor(v), 'commit');
+});
 try {
   const savedOn = localStorage.getItem('vj.screenOn');
-  setBrandMark(savedOn == null ? localStorage.getItem('vj.brandMark') === '1' : savedOn === '1');
+  const legacyOn = localStorage.getItem('vj.brandMark');
+  setBrandMark(savedOn == null ? legacyOn !== '0' : savedOn === '1');
 } catch { /* ignore */ }
 try {
   const savedText = localStorage.getItem('vj.screenText');
   if (savedText != null) setScreenText(savedText);
+} catch { /* ignore */ }
+try {
+  const savedCredit = localStorage.getItem('vj.screenCredit');
+  if (savedCredit != null) setScreenCredit(savedCredit !== '0');
 } catch { /* ignore */ }
 try {
   const savedFont = localStorage.getItem('vj.screenFont');
@@ -1911,19 +2523,6 @@ const diag = new Diagnostics($('diag-panel'), (item) => {
   if (item.parameterTarget) panel.focusParam(item.parameterTarget, item.level);
   else if (item.layerId) panel.selectLayer(item.layerId);
 });
-$('diag-toggle').addEventListener('click', () => {
-  if (deskMode !== 'live') setDeskMode('live');
-  const panelEl = $('diag-panel');
-  const showing = panelEl.open && !document.body.classList.contains('sys-collapsed');
-  if (showing) {
-    panelEl.open = false;
-    return;
-  }
-  setLibraryOpen(true);
-  panelEl.open = true;
-  panelEl.scrollIntoView({ block: 'nearest' });
-});
-
 const LIBRARY_FOLD_KEY = 'vj.accLeft';
 const LIBRARY_FOLDS = [
   ['diag-panel', false],
@@ -1945,6 +2544,7 @@ function bindLibraryFolds() {
     const next = {};
     for (const [id] of LIBRARY_FOLDS) next[id] = !!$(id)?.open;
     try { localStorage.setItem(LIBRARY_FOLD_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    persistProjectView(true);
   };
   for (const [id, open] of LIBRARY_FOLDS) {
     const el = $(id);
@@ -1959,11 +2559,62 @@ try {
   if (localStorage.getItem('vj.uiMode') === 'live') setUiMode('live');
 } catch { /* ignore */ }
 
-function triggerScene(id, fade = timeline.fadeSeconds) {
+function mediaSnap(L) {
+  const layer = layerById[L];
+  return { key: layer.mediaKey, mirror: !!layer.mirror };
+}
+
+function lookSnap(paramIds) {
+  const values = {};
+  for (const id of paramIds) {
+    if (params.defs.has(id)) values[id] = params.get(id);
+  }
+  return {
+    params: values,
+    media: Object.fromEntries(LAYERS.map((L) => [L, mediaSnap(L)])),
+    routing: layerRouting(),
+  };
+}
+
+function restoreLook(look) {
+  scenes.transition = null;
+  params.history?.silence(() => {
+    for (const [id, v] of Object.entries(look?.params || {})) params.set(id, v);
+    for (const L of LAYERS) {
+      const m = look?.media?.[L];
+      if (!m) continue;
+      const cur = mediaSnap(L);
+      if (cur.key !== m.key || cur.mirror !== !!m.mirror) setLayerMedia(L, m.key, { mirror: m.mirror });
+    }
+    applySceneRouting(look?.routing || {});
+  });
+  refreshLayerUi();
+}
+
+function triggerScene(id, fade = timeline.fadeSeconds, { history = false } = {}) {
   if (typeof id === 'string' && !scenes.get(id)) return;
+  const source = typeof id === 'string' ? scenes.get(id) : id;
+  const before = history && source && !params.history?.applying
+    ? lookSnap(Object.keys(source.params || {}))
+    : null;
   if (fade > 0) snapshotHold();
   scenes.launch(id, fade);
-  scheduleSceneThumb(id);
+  if (before && source) {
+    const after = {
+      params: {},
+      media: { ...before.media },
+      routing: source.routing ? structuredClone(source.routing) : before.routing,
+    };
+    for (const [pid, v] of Object.entries(source.params || {})) {
+      if (params.defs.has(pid)) after.params[pid] = v;
+    }
+    for (const L of LAYERS) {
+      const target = source.media?.[L];
+      if (target) after.media[L] = { key: target.key, mirror: !!target.mirror };
+    }
+    params.history.edit('scene', before, after, restoreLook, 'commit');
+  }
+  scheduleSceneThumb(typeof id === 'string' ? id : source?.id);
 }
 
 const programCanvas = $('program-monitor');
@@ -2013,7 +2664,7 @@ function captureSceneThumb(nowMs) {
 
 timeline.onTrigger = (cue, { immediate } = {}) => {
   if (cue.kind === 'clip') {
-    if (library.has(cue.mediaName)) assignMediaToLayer(cue.mediaName, cue.layerId || 'A');
+    if (library.has(cue.mediaName)) assignMediaToLayer(cue.mediaName, cue.layerId || 'A', { history: false });
     return;
   }
   triggerScene(cue.sceneId, immediate ? 0 : timeline.fadeSeconds);
@@ -2044,12 +2695,13 @@ function captureDesk() {
       mode: $('hud-mode')?.value,
       perform: !!$('hud-perform')?.checked,
       dpi: !!$('hud-dpi')?.checked,
-      logoOutput: $('logo-output')?.checked !== false,
+      logoOutput: logoOutputOn,
       box: { ...hudBox },
     },
     screen: {
       on: brandMarkOn,
       text: screenText,
+      credit: screenCredit,
       font: screenFont,
       shade: screenShade,
       bg: screenBg,
@@ -2066,6 +2718,7 @@ function captureDesk() {
       attack: Number($('audio-attack')?.value),
       release: Number($('audio-release')?.value),
       file: audio.fileName || '',
+      path: audioAssetPath || '',
     },
     outputSize: $('output-size')?.value || '',
     recAspect: $('rec-aspect')?.value || '',
@@ -2132,11 +2785,6 @@ function applyCode(code) {
   setDpiAuto(code.dpi);
   if ($('hud-dpi')) $('hud-dpi').checked = code.dpi;
   syncDpi();
-  const logoOut = $('logo-output');
-  if (logoOut) {
-    logoOut.checked = code.logoOutput;
-    try { localStorage.setItem('vj.logoOutput', code.logoOutput ? '1' : '0'); } catch { /* ignore */ }
-  }
   setHudEnabled(code.enabled);
 }
 
@@ -2148,12 +2796,14 @@ function applyDesk(desk) {
     stings.apply(next.logos);
     applyCode(next.code);
     setScreenText(next.screen.text);
+    setScreenCredit(next.screen.credit);
     setScreenFont(next.screen.font);
     setScreenShade(next.screen.shade);
     setScreenBg(next.screen.bg);
     setScreenColor(next.screen.color);
     setBrandScale(next.screen.size);
     setBrandMark(next.screen.on);
+    audioAssetPath = next.audio.path || '';
     showAudioMode(next.audio.mode);
     audio.volume = next.audio.volume;
     if ($('audio-volume')) $('audio-volume').value = String(audio.volume);
@@ -2222,13 +2872,14 @@ function resetProjectDesk() {
       box: { ...HUD_BOX_DEFAULT },
     },
     screen: {
-      on: false,
+      on: true,
       text: SCREEN_TEXT,
-      font: 'desk',
-      shade: 8,
-      bg: 1,
+      credit: true,
+      font: 'fixedsys',
+      shade: 0,
+      bg: 0.65,
       color: 'white',
-      size: 100,
+      size: 40,
     },
     audio: {
       mode: 'device',
@@ -2262,9 +2913,263 @@ async function restoreLogoFiles() {
   }
 }
 
+const HELLO_VIEWS = [
+  ['view-timeline', 'hide-timeline', 'timeline'],
+  ['view-inspector', 'hide-inspector', 'inspector'],
+  ['view-layer-a', 'hide-layer-a', 'layerA'],
+  ['view-layer-b', 'hide-layer-b', 'layerB'],
+  ['view-layer-c', 'hide-layer-c', 'layerC'],
+  ['view-composition', 'hide-composition', 'composition'],
+];
+
+function persistProjectView(immediate = false) {
+  if (viewApplying || !deskReady) return;
+  clearTimeout(viewTimer);
+  const write = () => {
+    if (viewApplying || !deskReady) return;
+    project.setView(captureView());
+  };
+  if (immediate) write();
+  else viewTimer = setTimeout(write, 240);
+}
+
+function captureView() {
+  const cs = getComputedStyle($('app'));
+  const read = (name) => {
+    const n = parseFloat(cs.getPropertyValue(name));
+    return Number.isFinite(n) ? n : null;
+  };
+  let folds = {};
+  try { folds = JSON.parse(localStorage.getItem(LIBRARY_FOLD_KEY) || '{}'); } catch { folds = {}; }
+  const layout = panel.layoutSnapshot();
+  const hello = {};
+  for (const [id, , key] of HELLO_VIEWS) hello[key] = !!$(id)?.checked;
+  return {
+    ...hello,
+    library: !!$('view-library')?.checked,
+    panes: {
+      library: read('--library-w'),
+      inspector: read('--inspector-w'),
+      dock: read('--dock-h'),
+    },
+    previewSplit: topHeightPercent,
+    timelineH: parseFloat(document.querySelector('.timeline-pane')?.style.height) || null,
+    timelinePx: timelineBarPx,
+    folds,
+    fxFolds: layout.folds,
+    catMute: layout.muted,
+    workspace: deskMode,
+    midiMap,
+    midiLabels: !!$('midi-labels')?.checked,
+    uiScale: Number($('ui-scale')?.value) || 100,
+    bus: {
+      mute: { A: !!bus.mute.A, B: !!bus.mute.B, C: !!bus.mute.C },
+      solo: { A: !!bus.solo.A, B: !!bus.solo.B, C: !!bus.solo.C },
+    },
+    masterSpeed,
+  };
+}
+
+function applyProjectView(view, { workspace = false } = {}) {
+  if (!view) return;
+  viewApplying = true;
+  try {
+    for (const [id, className, key] of HELLO_VIEWS) {
+      const box = $(id);
+      const on = view[key] !== false;
+      if (box) box.checked = on;
+      document.body.classList.toggle(className, !on);
+    }
+    setLibraryOpen(view.library !== false);
+    const panes = view.panes || {};
+    if (panes.library) $('app').style.setProperty('--library-w', `${panes.library}px`);
+    if (panes.inspector) $('app').style.setProperty('--inspector-w', `${panes.inspector}px`);
+    if (panes.dock) $('app').style.setProperty('--dock-h', `${panes.dock}px`);
+    if (view.previewSplit != null) applyPreviewSplit(view.previewSplit, true);
+    if (view.timelineH != null) applyTimelineSplit(view.timelineH, true);
+    if (view.timelinePx != null) applyTimelineZoom(view.timelinePx, true);
+    if (view.folds && typeof view.folds === 'object') {
+      for (const [id] of LIBRARY_FOLDS) {
+        const el = $(id);
+        if (!el || typeof view.folds[id] !== 'boolean') continue;
+        el.open = view.folds[id];
+      }
+    }
+    panel.applyLayout({ folds: view.fxFolds || {}, muted: view.catMute || [] });
+    if (view.uiScale != null) setUiScale(view.uiScale);
+    if (view.midiMap) setMidiMap(view.midiMap);
+    setMidiLabels(!!view.midiLabels);
+    for (const id of LAYERS) {
+      bus.setFlag('mute', id, !!view.bus?.mute?.[id]);
+      bus.setFlag('solo', id, !!view.bus?.solo?.[id]);
+    }
+    panel.refreshBus();
+    if (view.masterSpeed != null) setMasterSpeed(view.masterSpeed);
+    if (workspace) setDeskMode(view.workspace || 'live');
+  } finally {
+    viewApplying = false;
+  }
+}
+
+function defaultProjectView() {
+  const view = captureView();
+  view.timeline = true;
+  view.library = true;
+  view.inspector = true;
+  view.layerA = true;
+  view.layerB = true;
+  view.layerC = true;
+  view.composition = true;
+  view.catMute = [];
+  view.fxFolds = {};
+  view.folds = Object.fromEntries(LIBRARY_FOLDS.map(([id, open]) => [id, open]));
+  view.workspace = 'live';
+  view.bus = { mute: { A: false, B: false, C: false }, solo: { A: false, B: false, C: false } };
+  view.masterSpeed = 1;
+  return view;
+}
+
+function absoluteMediaPath(path) {
+  return /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('\\\\') || path.startsWith('/');
+}
+
+function projectDirJoin(projectPath, rel) {
+  const dir = projectPath.replace(/[/\\][^/\\]+$/, '');
+  const sep = projectPath.includes('\\') ? '\\' : '/';
+  return `${dir}${sep}${String(rel).replace(/[\\/]/g, sep)}`;
+}
+
+const PROJECT_CHUNK = 8 * 1024 * 1024;
+
+async function storeProjectAsset(projectPath, leaf, file, sourcePath) {
+  const { invoke } = await import('@tauri-apps/api/core');
+  if (sourcePath && absoluteMediaPath(sourcePath)) {
+    try {
+      return await invoke('copy_project_asset', { projectPath, sourcePath, leaf });
+    } catch { /* the path may be stale; write the bytes we still have */ }
+  }
+  if (!file) return '';
+  const ready = await invoke('project_asset_ready', { projectPath, leaf, size: file.size }).catch(() => null);
+  if (ready) return ready;
+  let rel = '';
+  const total = file.size;
+  for (let offset = 0; offset < total || offset === 0; offset += PROJECT_CHUNK) {
+    const end = Math.min(total, offset + PROJECT_CHUNK);
+    const chunk = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+    rel = await invoke('write_project_asset', chunk, {
+      headers: {
+        'x-project': encodeURIComponent(projectPath),
+        'x-leaf': encodeURIComponent(leaf),
+        'x-append': offset > 0 ? '1' : '0',
+      },
+    });
+    if (total === 0) break;
+  }
+  return rel || '';
+}
+
+async function bundleProjectAssets(data, projectPath) {
+  if (!isTauri() || !projectPath) return data;
+  const saved = JSON.parse(JSON.stringify(data));
+  const missed = [];
+  for (const item of saved.mediaPool || []) {
+    if (!item?.name) continue;
+    try {
+      const rel = await storeProjectAsset(projectPath, item.name, library.get(item.name), item.path);
+      if (rel) item.path = rel;
+    } catch (err) {
+      missed.push(item.name);
+      console.warn('Could not store project media', item.name, err);
+    }
+  }
+  const audioFileName = saved.desk?.audio?.file || '';
+  if (saved.desk?.audio?.mode === 'file' && audioFileName) {
+    try {
+      const audioFile = await library.getAudio(audioFileName);
+      const rel = await storeProjectAsset(projectPath, audioFileName, audioFile, absoluteMediaPath(audioAssetPath) ? audioAssetPath : '');
+      if (rel) saved.desk.audio.path = rel;
+    } catch (err) {
+      missed.push(audioFileName);
+      console.warn('Could not store the audio file', err);
+    }
+  }
+  for (let i = 0; i < 3; i += 1) {
+    const row = saved.desk?.logos?.[i];
+    const slot = stings.slots[i];
+    if (!row || !slot?.cacheKey) continue;
+    try {
+      const file = await library.getBlob(slot.cacheKey);
+      const leaf = `logo-${i + 1}-${file?.name || row.name || 'logo'}`;
+      const rel = await storeProjectAsset(projectPath, leaf, file, absoluteMediaPath(slot.assetPath || '') ? slot.assetPath : '');
+      if (rel) row.path = rel;
+    } catch (err) {
+      missed.push(row.name || `Logo ${i + 1}`);
+      console.warn('Could not store a logo', err);
+    }
+  }
+  if (missed.length) showToast(`Saved the project. These files stayed in the app only: ${missed.join(', ')}`, true);
+  return saved;
+}
+
+async function pointProjectAtFolder(projectPath) {
+  if (!isTauri() || !projectPath) return;
+  const { convertFileSrc } = await import('@tauri-apps/api/core');
+  const pool = project.mediaPool.map((item) => {
+    if (!item.path || absoluteMediaPath(item.path)) return item;
+    return { ...item, path: projectDirJoin(projectPath, item.path) };
+  });
+  project.setMediaPool(pool);
+  await hydrateProjectMedia();
+  for (let i = 0; i < 3; i += 1) {
+    const slot = stings.slots[i];
+    const rel = slot?.assetPath || '';
+    if (!slot || !rel || absoluteMediaPath(rel) || slot.ready) continue;
+    try {
+      const res = await fetch(convertFileSrc(projectDirJoin(projectPath, rel)));
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      const name = slot.name || rel.split(/[/\\]/).pop() || `logo-${i + 1}`;
+      stings.loadFile(i, new File([blob], name, { type: blob.type || 'video/mp4' }));
+      slot.assetPath = rel;
+    } catch { /* the logo stays missing */ }
+  }
+  const audioRow = project.desk?.audio;
+  if (audioRow?.mode === 'file' && audioRow.file) {
+    let file = null;
+    if (audioRow.path && !absoluteMediaPath(audioRow.path)) {
+      try {
+        const res = await fetch(convertFileSrc(projectDirJoin(projectPath, audioRow.path)));
+        if (res.ok) {
+          const blob = await res.blob();
+          file = new File([blob], audioRow.file, { type: blob.type || 'audio/mpeg' });
+        }
+      } catch { /* use the cached file */ }
+    }
+    if (!file) file = await library.getAudio(audioRow.file);
+    if (file) {
+      audioAssetPath = audioRow.path || '';
+      await useAudioFile(file);
+    }
+  }
+}
+
+function projectSnapshot() {
+  const data = projectFile();
+  let path = '';
+  try { path = localStorage.getItem('vj.lastProjectPath') || ''; } catch { path = ''; }
+  const leaf = path.split(/[/\\]/).pop()?.replace(/\.(vjproj|json)$/i, '') || '';
+  return {
+    name: data.name || leaf || 'This project',
+    path,
+    document: JSON.stringify(data),
+  };
+}
+
 function projectFile() {
-  if (deskReady) project.setDesk(captureDesk());
-  syncMediaPool();
+  if (deskReady) {
+    project.setDesk(captureDesk());
+    project.setView(captureView());
+  }
   return {
     ...project.toJSON(),
     live: { params: params.snapshot(), media: currentMedia() },
@@ -2278,6 +3183,8 @@ function projectFile() {
   };
 }
 
+const LAST_PROJECT_KEY = 'vj.lastProjectPath';
+
 function downloadProjectFile(data, filename) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -2288,28 +3195,97 @@ function downloadProjectFile(data, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-function saveProject() {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  downloadProjectFile(projectFile(), `vj-project-${stamp}.vjproj`);
+function rememberProjectPath(path) {
+  try { localStorage.setItem(LAST_PROJECT_KEY, path); } catch { /* ignore */ }
 }
 
-function saveNewProject() {
-  const name = prompt('Name the new project', 'Untitled project');
+async function storeProjectFile(data, filename) {
+  if (!isTauri()) {
+    downloadProjectFile(data, filename);
+    return;
+  }
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  const picked = await save({
+    defaultPath: filename,
+    title: 'Save Project',
+    filters: [{ name: 'Y2K VJ project', extensions: ['vjproj'] }],
+  });
+  if (typeof picked !== 'string' || !picked) return;
+  const path = /\.(vjproj|json)$/i.test(picked) ? picked : `${picked}.vjproj`;
+  const bundled = await bundleProjectAssets(data, path);
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('write_text_file', { path, contents: JSON.stringify(bundled, null, 2) });
+  rememberProjectPath(path);
+  audioAssetPath = bundled.desk?.audio?.path || '';
+  for (let i = 0; i < 3; i += 1) {
+    const rel = bundled.desk?.logos?.[i]?.path || '';
+    if (rel && stings.slots[i]) stings.slots[i].assetPath = rel;
+  }
+  if (bundled.desk) project.setDesk(captureDesk());
+  if (Array.isArray(bundled.mediaPool)) {
+    project.setMediaPool(bundled.mediaPool.map((item) => (
+      item?.path && !absoluteMediaPath(item.path)
+        ? { ...item, path: projectDirJoin(path, item.path) }
+        : item
+    )));
+  }
+}
+
+async function saveProject() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  try {
+    await storeProjectFile(projectFile(), `vj-project-${stamp}.vjproj`);
+  } catch (err) {
+    showToast(err?.message || String(err) || 'Could not save the project.', true);
+  }
+}
+
+async function saveNewProject() {
+  const name = prompt('Name the new project', project.name || 'Untitled project');
   if (name == null) return;
   const trimmed = name.trim();
   if (!trimmed) return;
+  project.setName(trimmed);
+  paintProjectName();
   const data = projectFile();
   data.id = crypto.randomUUID?.() || `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  data.name = trimmed;
+  data.name = project.name;
   const safe = trimmed.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim() || 'project';
-  downloadProjectFile(data, `${safe}.vjproj`);
+  try {
+    await storeProjectFile(data, `${safe}.vjproj`);
+  } catch (err) {
+    showToast(err?.message || String(err) || 'Could not save the project.', true);
+  }
+}
+
+async function reopenLastProject() {
+  if (!isTauri()) return;
+  let on = false;
+  let path = '';
+  try {
+    on = localStorage.getItem('vj.reopenProject') === '1';
+    path = localStorage.getItem(LAST_PROJECT_KEY) || '';
+  } catch { return; }
+  if (!on) return;
+  if (!path) {
+    newProject();
+    return;
+  }
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const text = await invoke('read_text_file', { path });
+    const leaf = path.split(/[/\\]/).pop() || 'project.vjproj';
+    await loadProject(new File([text], leaf, { type: 'application/json' }), path);
+  } catch {
+    newProject();
+  }
 }
 
 function clearShowBuffers() {
   for (const layer of layers) layer.clearBuffers(renderer);
 }
 
-async function loadProject(file) {
+async function loadProject(file, sourcePath = '') {
   let data;
   try {
     data = JSON.parse(await file.text());
@@ -2327,6 +3303,8 @@ async function loadProject(file) {
     alert('That file is not a Y2K VJ project.');
     return;
   }
+  project.setName(data.name);
+  paintProjectName();
   const doc = coerceDocument(data);
   const names = new Set(doc.mediaPool.map((item) => item.name));
   const grab = (media) => {
@@ -2337,7 +3315,15 @@ async function loadProject(file) {
   for (const scene of doc.scenes) grab(scene.media);
   grab(data.live?.media);
   await library.ensureCached([...names]);
-  syncMediaPool();
+  const pool = doc.mediaPool.map((item) => ({ ...item }));
+  const have = new Set(pool.map((item) => item.name));
+  for (const name of names) {
+    if (have.has(name)) continue;
+    pool.push({ id: name, name, kind: mediaKind(name), path: '' });
+    have.add(name);
+  }
+  project.setMediaPool(pool);
+  await hydrateProjectMedia();
   timeline.pause();
   clearShowBuffers();
   scenes.replaceAll(doc.scenes);
@@ -2362,11 +3348,15 @@ async function loadProject(file) {
   project.setLocks(doc.locks);
   applyLocks();
   if (!doc.desk) project.setDesk(captureDesk());
-  restoreLogoFiles();
+  if (doc.view) applyProjectView(doc.view, { workspace: true });
+  await restoreLogoFiles();
+  await pointProjectAtFolder(sourcePath);
   {
     const shown = showRecordOutput(doc.recordOutput);
-    project.setRecordOutput({ code: shown.code, screen: shown.screen });
+    project.setRecordOutput(shown);
   }
+  project.setCompositions(doc.compositions);
+  paintCompositions();
   if (data.live?.params) {
     for (const [id, v] of Object.entries(data.live.params)) {
       if (!params.defs.get(id)?.layer) params.set(id, v);
@@ -2376,15 +3366,31 @@ async function loadProject(file) {
   refreshLayerUi();
   sceneBar.setBank(0);
   panel.applyFoldDefaults();
+  if (doc.view) project.setView(doc.view);
+  params.history?.clear();
 }
 
 function newProject() {
+  audioAssetPath = '';
+  project.setName('');
+  paintProjectName();
+  project.setMediaPool([]);
+  refreshLibraryUi();
   resetProjectDesk();
+  project.setRecordOutput({
+    codeRecord: !!$('hud-enable')?.checked,
+    codeOutput: !!$('hud-enable')?.checked,
+    screenRecord: false,
+    screenOutput: true,
+    logoRecord: true,
+    logoOutput: true,
+  });
+  showRecordOutput(project.recordOutput);
+  project.setCompositions([null, null, null]);
+  paintCompositions();
   project.setDesk(captureDesk());
   project.setLocks({});
   applyLocks();
-  project.setRecordOutput({ code: !!$('hud-enable')?.checked, screen: false });
-  showRecordOutput(project.recordOutput);
   timeline.stop();
   scenes.replaceAll([]);
   timeline.load({
@@ -2404,23 +3410,45 @@ function newProject() {
   clearShowBuffers();
   refreshLayerUi();
   sceneBar.setBank(0);
-  panel.applyFoldDefaults();
+  applyProjectView(defaultProjectView(), { workspace: true });
+  project.setView(captureView());
+  params.history?.clear();
 }
 
 const sceneBar = new SceneBar({
   scenes,
   timeline,
   midi,
-  onLaunch: (id, fade) => triggerScene(id, fade ?? timeline.fadeSeconds),
+  onLaunch: (id, fade) => triggerScene(id, fade ?? timeline.fadeSeconds, { history: true }),
+  groupEdit: (fn) => params.history.group(fn),
   onSave: saveScene,
   onExport: saveProject,
   onSaveNew: saveNewProject,
   onImport: loadProject,
+  onPickProject: async () => {
+    if (!isTauri()) return false;
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({
+        title: 'Load Project',
+        filters: [{ name: 'Y2K VJ project', extensions: ['vjproj', 'json'] }],
+      });
+      if (typeof picked !== 'string' || !picked) return true;
+      const { invoke } = await import('@tauri-apps/api/core');
+      const text = await invoke('read_text_file', { path: picked });
+      const leaf = picked.split(/[/\\]/).pop() || 'project.vjproj';
+      rememberProjectPath(picked);
+      await loadProject(new File([text], leaf, { type: 'application/json' }), picked);
+    } catch (err) {
+      showToast(err?.message || String(err) || 'Could not load the project.', true);
+    }
+    return true;
+  },
   onNew: newProject,
   onTap: tapTempo,
   clipLayer: () => (panel.selected === 'B' || panel.selected === 'C' ? panel.selected : 'A'),
   hasMedia: (name) => library.has(name),
-  onDropFiles: (files) => addFiles(files),
+  onDropFiles: (files) => addFiles(files, { bin: true }),
 });
 scenes.onChange(() => {
   refreshLibraryUi();
@@ -2498,21 +3526,81 @@ function syncTransport() {
 
 const masterTransport = { state: 'playing' };
 
-// Which CDJ deck drives which hit. Deck numbers are 1–4.
-const prolinkMapping = {
-  pulse: 1,
-  glitch: 2,
-};
-try {
-  const saved = JSON.parse(localStorage.getItem('vj.prolinkMapping') || 'null');
-  const pulse = parseInt(saved?.pulse, 10);
-  const glitch = parseInt(saved?.glitch, 10);
-  if (pulse >= 1 && pulse <= 4) prolinkMapping.pulse = pulse;
-  if (glitch >= 1 && glitch <= 4) prolinkMapping.glitch = glitch;
-} catch { /* ignore */ }
+const XDJ_BUTTONS = [
+  ['play', 'Play'],
+  ['cue', 'Cue'],
+  ['beat', 'Beat'],
+  ['jog', 'Jog', true],
+  ['tempo', 'Tempo', true],
+  ['hotA', 'Hot Cue A'],
+  ['hotB', 'Hot Cue B'],
+  ['hotC', 'Hot Cue C'],
+  ['loop', 'Loop'],
+  ['slip', 'Slip'],
+];
+const XDJ_ASSIGN = [
+  ['none', 'None'],
+  ['strobe', 'Strobe'],
+  ['glitch', 'Glitch'],
+  ['code', 'Code Overlay'],
+  ['logo1', 'Logo 1'],
+  ['logo2', 'Logo 2'],
+  ['logo3', 'Logo 3'],
+];
+const XDJ_KEY = 'vj.xdjAssign';
+
+function blankXdjDeck() {
+  const deck = {};
+  for (const [id] of XDJ_BUTTONS) deck[id] = 'none';
+  return deck;
+}
+
+function xdjAssignValue(value) {
+  return XDJ_ASSIGN.some(([id]) => id === value) ? value : 'none';
+}
+
+function loadXdjAssign() {
+  const decks = { 1: blankXdjDeck(), 2: blankXdjDeck(), 3: blankXdjDeck(), 4: blankXdjDeck() };
+  let count = 2;
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(XDJ_KEY) || 'null'); } catch { /* ignore */ }
+  if (stored && stored.decks) {
+    const next = Number(stored.count);
+    if (next >= 1 && next <= 4) count = next;
+    for (const n of [1, 2, 3, 4]) {
+      const row = stored.decks[n] || stored.decks[String(n)];
+      if (!row || typeof row !== 'object') continue;
+      for (const [id] of XDJ_BUTTONS) decks[n][id] = xdjAssignValue(row[id]);
+    }
+    return { count, decks, fresh: false };
+  }
+  let pulse = 1;
+  let glitch = 2;
+  try {
+    const saved = JSON.parse(localStorage.getItem('vj.prolinkMapping') || 'null');
+    const nextPulse = parseInt(saved?.pulse, 10);
+    const nextGlitch = parseInt(saved?.glitch, 10);
+    if (nextPulse >= 1 && nextPulse <= 4) pulse = nextPulse;
+    if (nextGlitch >= 1 && nextGlitch <= 4) glitch = nextGlitch;
+  } catch { /* ignore */ }
+  decks[pulse].beat = 'strobe';
+  if (glitch !== pulse) decks[glitch].beat = 'glitch';
+  return { count, decks, fresh: true };
+}
+
+const xdjAssign = loadXdjAssign();
 let proLinkPulse = 0;
 let proLinkGlitch = 0;
-const proLinkSeen = { pulse: 0, glitch: 0 };
+const proLinkSeen = { 1: 0, 2: 0, 3: 0, 4: 0 };
+const xdjBeatFlash = {};
+
+function saveXdjAssign() {
+  const decks = {};
+  for (const n of [1, 2, 3, 4]) decks[n] = xdjAssign.decks[n];
+  try {
+    localStorage.setItem(XDJ_KEY, JSON.stringify({ count: xdjAssign.count, decks }));
+  } catch { /* ignore */ }
+}
 
 function triggerStrobePulse() {
   proLinkPulse = 1;
@@ -2520,6 +3608,99 @@ function triggerStrobePulse() {
 
 function triggerGlitch() {
   proLinkGlitch = 1;
+}
+
+function applyXdjCount() {
+  document.querySelectorAll('#xdj-decks .xdj-deck').forEach((deck) => {
+    deck.hidden = Number(deck.dataset.deck) > xdjAssign.count;
+  });
+}
+
+function flashXdjBeat(deck) {
+  const pad = document.querySelector(`#xdj-view .xdj-pad[data-xdj-deck="${deck}"][data-xdj-btn="beat"]`);
+  if (!pad) return;
+  pad.classList.add('hit');
+  clearTimeout(xdjBeatFlash[deck]);
+  xdjBeatFlash[deck] = setTimeout(() => pad.classList.remove('hit'), 180);
+}
+
+function runXdjBeat(deck) {
+  const kind = xdjAssign.decks[deck]?.beat || 'none';
+  if (kind === 'strobe') {
+    triggerStrobePulse();
+    if (masterTransport.state === 'playing' && !timeline.playing) {
+      bpmEngine.beats = Math.round(bpmEngine.beats);
+      beatClock.snap();
+    }
+  } else if (kind === 'glitch') {
+    triggerGlitch();
+  }   else if (kind === 'code') {
+    setHudEnabled(!hudWant, { history: true });
+  } else if (kind === 'logo1') {
+    stings.trigger(0);
+  } else if (kind === 'logo2') {
+    stings.trigger(1);
+  } else if (kind === 'logo3') {
+    stings.trigger(2);
+  }
+}
+
+function mountXdj() {
+  const root = $('xdj-decks');
+  if (!root || root.childElementCount) return;
+  const countSel = $('xdj-count');
+  if (countSel) countSel.value = String(xdjAssign.count);
+  for (let n = 1; n <= 4; n += 1) {
+    const deck = document.createElement('section');
+    deck.className = 'xdj-deck';
+    deck.dataset.deck = String(n);
+    const title = document.createElement('h3');
+    title.textContent = `Deck ${n}`;
+    const face = document.createElement('div');
+    face.className = 'xdj-face';
+    for (const [id, label, wide] of XDJ_BUTTONS) {
+      const slot = document.createElement('div');
+      slot.className = wide ? 'xdj-slot wide' : 'xdj-slot';
+      const pad = document.createElement('button');
+      pad.type = 'button';
+      pad.className = 'apc-pad xdj-pad';
+      pad.dataset.xdjDeck = String(n);
+      pad.dataset.xdjBtn = id;
+      const name = document.createElement('b');
+      name.textContent = label;
+      pad.append(name);
+      const select = document.createElement('select');
+      select.className = 'xdj-assign';
+      select.title = `${label} on Deck ${n}`;
+      select.dataset.xdjDeck = String(n);
+      select.dataset.xdjBtn = id;
+      for (const [value, text] of XDJ_ASSIGN) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        select.append(option);
+      }
+      select.value = xdjAssign.decks[n][id];
+      select.addEventListener('change', () => {
+        xdjAssign.decks[n][id] = xdjAssignValue(select.value);
+        select.value = xdjAssign.decks[n][id];
+        saveXdjAssign();
+      });
+      slot.append(pad, select);
+      face.append(slot);
+    }
+    deck.append(title, face);
+    root.append(deck);
+  }
+  applyXdjCount();
+  countSel?.addEventListener('change', () => {
+    const count = parseInt(countSel.value, 10);
+    if (count < 1 || count > 4) return;
+    xdjAssign.count = count;
+    applyXdjCount();
+    saveXdjAssign();
+  });
+  if (xdjAssign.fresh) saveXdjAssign();
 }
 
 function initProDjLink() {
@@ -2533,39 +3714,16 @@ function initProDjLink() {
       const deck = event.payload?.deck;
       if (deck < 1 || deck > 4 || !event.payload?.is_beat) return;
       const now = performance.now();
-      if (deck === prolinkMapping.pulse && now - proLinkSeen.pulse >= 180) {
-        proLinkSeen.pulse = now;
-        triggerStrobePulse();
-        if (masterTransport.state === 'playing' && !timeline.playing) {
-          bpmEngine.beats = Math.round(bpmEngine.beats);
-          beatClock.snap();
-        }
-      }
-      if (deck === prolinkMapping.glitch && now - proLinkSeen.glitch >= 180) {
-        proLinkSeen.glitch = now;
-        triggerGlitch();
-      }
+      if (now - proLinkSeen[deck] < 180) return;
+      proLinkSeen[deck] = now;
+      flashXdjBeat(deck);
+      runXdjBeat(deck);
     });
   }).catch(() => {});
 }
 
+mountXdj();
 initProDjLink();
-
-function bindProlinkSettings() {
-  for (const effect of ['pulse', 'glitch']) {
-    const select = $(`prolink-${effect}`);
-    if (!select) continue;
-    select.value = String(prolinkMapping[effect]);
-    select.addEventListener('change', (e) => {
-      const deck = parseInt(e.target.value, 10);
-      if (deck < 1 || deck > 4) return;
-      prolinkMapping[effect] = deck;
-      try { localStorage.setItem('vj.prolinkMapping', JSON.stringify(prolinkMapping)); } catch { /* ignore */ }
-    });
-  }
-}
-
-bindProlinkSettings();
 let audioOverrideStop = false;
 try { audioOverrideStop = localStorage.getItem('vj.audioOverrideStop') === '1'; } catch { /* ignore */ }
 const syncMaster = { audio: true, A: true, B: true, C: true };
@@ -2745,6 +3903,7 @@ $('audio-recent')?.addEventListener('click', async (e) => {
     await paintAudioRecent();
     return;
   }
+  audioAssetPath = '';
   try { await useAudioFile(file); }
   catch (err) { setStatus($('audio-status'), err.message, true); }
 });
@@ -2791,9 +3950,140 @@ navigator.mediaDevices?.addEventListener('devicechange', () => {
   library.refreshCameras().catch(() => {});
 });
 
+async function useProjectAudio(entry) {
+  showAudioMode('file');
+  if (entry?.path && isTauri()) {
+    const { convertFileSrc } = await import('@tauri-apps/api/core');
+    const res = await fetch(convertFileSrc(entry.path));
+    if (!res.ok) throw new Error('Could not read that audio file');
+    const blob = await res.blob();
+    audioAssetPath = entry.path;
+    await useAudioFile(new File([blob], entry.name, { type: blob.type || 'audio/wav' }));
+    return;
+  }
+  const cached = await library.getAudio(entry?.name);
+  if (!cached) throw new Error('That audio file is not in the library.');
+  audioAssetPath = '';
+  await useAudioFile(cached);
+}
+
+function openStockAudio(on) {
+  const modal = $('stock-audio-modal');
+  if (!modal) return;
+  modal.hidden = !on;
+  if (!on) {
+    for (const node of $('stock-audio-results').querySelectorAll('audio')) node.pause();
+    return;
+  }
+  $('stock-audio-prompt')?.focus();
+}
+
+function paintStockAudio(hits) {
+  const list = $('stock-audio-results');
+  list.replaceChildren();
+  for (const hit of hits) {
+    const row = document.createElement('li');
+    row.className = 'stock-audio-row';
+    const meta = document.createElement('div');
+    meta.className = 'stock-audio-meta';
+    const title = document.createElement('b');
+    title.textContent = hit.title;
+    title.title = hit.title;
+    const time = document.createElement('span');
+    time.textContent = hit.duration || '';
+    meta.append(title, time);
+    const player = document.createElement('audio');
+    player.controls = true;
+    player.preload = 'none';
+    player.src = hit.url;
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Download';
+    save.addEventListener('click', () => saveStockAudio(hit, save));
+    row.append(meta, player, save);
+    list.append(row);
+  }
+}
+
+async function saveStockAudio(hit, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  const previous = button.textContent;
+  button.textContent = 'Downloading…';
+  try {
+    if (isTauri()) {
+      const { invoke, convertFileSrc } = await import('@tauri-apps/api/core');
+      const path = await invoke('download_audio', { url: hit.url, filename: hit.title });
+      window.dispatchEvent(new CustomEvent('vj-global-media'));
+      globalLibrary?.refresh();
+      const res = await fetch(convertFileSrc(path));
+      if (!res.ok) throw new Error('Saved, but the file could not be played');
+      const blob = await res.blob();
+      const leaf = String(path).split(/[\\/]/).pop() || `${hit.title}.wav`;
+      audioAssetPath = path;
+      await useAudioFile(new File([blob], leaf, { type: 'audio/wav' }));
+      showToast(`Saved ${leaf} to Media Manager`);
+    } else {
+      const res = await fetch(hit.url);
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const file = new File([blob], hit.title, { type: blob.type || 'audio/ogg' });
+      await useAudioFile(file);
+      showToast('Playing in this session. The desktop app also saves it into Media Manager.');
+    }
+    button.textContent = 'Saved';
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = previous;
+    showToast(err?.message || 'Could not download that audio file', true);
+  }
+}
+
+async function runStockAudioSearch() {
+  const prompt = $('stock-audio-prompt').value.trim();
+  const status = $('stock-audio-status');
+  if (!prompt) {
+    status.textContent = 'Type what you want to hear.';
+    return;
+  }
+  $('stock-audio-search').disabled = true;
+  status.textContent = 'Searching stock audio…';
+  $('stock-audio-results').replaceChildren();
+  try {
+    const hits = await searchStockAudio(prompt);
+    paintStockAudio(hits);
+    status.textContent = hits.length ? `${hits.length} clips` : 'Nothing matched that search.';
+  } catch (err) {
+    status.textContent = err?.message || 'Search failed';
+  } finally {
+    $('stock-audio-search').disabled = false;
+  }
+}
+
+$('stock-audio-open')?.addEventListener('click', () => openStockAudio(true));
+$('stock-audio-close')?.addEventListener('click', () => openStockAudio(false));
+$('stock-audio-modal')?.addEventListener('click', (e) => {
+  if (e.target === $('stock-audio-modal')) openStockAudio(false);
+});
+$('stock-audio-search')?.addEventListener('click', () => { runStockAudioSearch(); });
+$('stock-audio-prompt')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') runStockAudioSearch();
+});
+$('stock-audio-results')?.addEventListener('play', (e) => {
+  for (const node of $('stock-audio-results').querySelectorAll('audio')) {
+    if (node !== e.target) node.pause();
+  }
+}, true);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || $('stock-audio-modal')?.hidden) return;
+  openStockAudio(false);
+  e.stopPropagation();
+}, true);
+
 $('audio-file').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
+  audioAssetPath = '';
   try { await useAudioFile(file); }
   catch (err) { setStatus($('audio-status'), err.message, true); }
 });
@@ -2809,6 +4099,7 @@ drop.addEventListener('drop', async (e) => {
     setStatus($('audio-status'), 'Drop an .mp3, .wav, or .aiff.', true);
     return;
   }
+  audioAssetPath = '';
   try { await useAudioFile(file); }
   catch (err) { setStatus($('audio-status'), err.message, true); }
 });
@@ -2887,9 +4178,10 @@ $('audio-mute').addEventListener('click', () => {
   persistDesk();
 });
 $('audio-master').addEventListener('input', (e) => {
-  params.set('audioGain', Number(e.target.value));
+  params.set('audioGain', Number(e.target.value), { history: 'drag' });
   $('audio-master-out').textContent = Number(e.target.value).toFixed(2);
 });
+$('audio-master').addEventListener('change', () => params.history?.commit());
 showAudioMode(audioMode);
 
 // ---------------------------------------------------------------- MIDI UI
@@ -2914,11 +4206,11 @@ function renderMomentary() {
     b.dataset.midi = `moment:${pad.id}`;
     const map = midi.mappingFor(`moment:${pad.id}`);
     b.innerHTML = '<b></b><i></i>';
-    b.querySelector('b').textContent = pad.label;
+    b.querySelector('b').textContent = pad.short || pad.label;
     b.querySelector('i').textContent = map || 'unmapped';
     b.classList.toggle('held', momentary.held.has(pad.id));
     b.classList.toggle('mapped', !!map);
-    b.title = map ? `${pad.label} · ${map}` : `${pad.label}. Turn on MIDI Learn, click this pad, then hit a drum pad.`;
+    b.title = map ? `${pad.label} · ${map}` : pad.label;
     b.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       if (midi.learnArmed) return;
@@ -3027,7 +4319,7 @@ midi.onActivity = (key, value) => {
   lastMidi = `${key} = ${value.toFixed(2)}`;
 };
 midi.onTrigger = (sceneId) => {
-  triggerScene(sceneId);
+  triggerScene(sceneId, undefined, { history: true });
 };
 $('midi-enable').addEventListener('click', async () => {
   try {
@@ -3187,7 +4479,9 @@ function bindHudChrome() {
   hud.applyChrome(style);
   syncPresetSelect();
 
+  let hudHist = { ...style };
   const persist = () => {
+    const prev = hudHist;
     const next = {
       glyph: $('hud-glyph').value,
       color: $('hud-color').value,
@@ -3211,11 +4505,40 @@ function bindHudChrome() {
     hud.applyChrome(next);
     pushOverlay(true);
     persistDesk();
+    hudHist = next;
+    params.history?.edit('hudStyle', prev, next, (saved) => {
+      hudHist = saved;
+      $('hud-glyph').value = saved.glyph;
+      $('hud-color').value = saved.color;
+      $('hud-size').value = String(saved.size);
+      $('hud-leading').value = String(saved.leading);
+      $('hud-mix').value = String(saved.mix);
+      $('hud-bg').value = String(saved.bg);
+      $('hud-automask').checked = !!saved.automask;
+      localStorage.setItem(HUD_STYLE_KEY.glyph, saved.glyph);
+      localStorage.setItem(HUD_STYLE_KEY.color, saved.color);
+      localStorage.setItem(HUD_STYLE_KEY.size, String(saved.size));
+      localStorage.setItem(HUD_STYLE_KEY.mix, String(saved.mix));
+      localStorage.setItem(HUD_STYLE_KEY.bg, String(saved.bg));
+      localStorage.setItem(HUD_STYLE_KEY.automask, saved.automask ? '1' : '0');
+      localStorage.setItem(HUD_STYLE_KEY.leading, String(saved.leading));
+      $('hud-size-out').textContent = String(Math.round(saved.size));
+      $('hud-leading-out').textContent = Number(saved.leading).toFixed(2);
+      $('hud-mix-out').textContent = Number(saved.mix).toFixed(2);
+      $('hud-bg-out').textContent = Number(saved.bg).toFixed(2);
+      hud.applyChrome(saved);
+      pushOverlay(true);
+      persistDesk();
+    }, 'drag');
   };
   for (const id of ['hud-glyph', 'hud-color', 'hud-size', 'hud-leading', 'hud-mix', 'hud-bg']) {
     $(id).addEventListener('input', persist);
+    $(id).addEventListener('change', () => params.history?.commit());
   }
-  $('hud-automask').addEventListener('change', persist);
+  $('hud-automask').addEventListener('change', () => {
+    persist();
+    params.history?.commit();
+  });
   $('hud-mode').addEventListener('change', () => {
     setHudDisplay($('hud-mode').value);
     syncPresetSelect();
@@ -3236,18 +4559,26 @@ function syncPresetSelect() {
 function applyHudPreset(id) {
   const preset = HUD_PRESETS.find((p) => p.id === id);
   if (!preset) return;
-  $('hud-glyph').value = preset.glyph;
-  $('hud-glyph').dispatchEvent(new Event('input', { bubbles: true }));
-  setHudDisplay(preset.mode);
-  try { localStorage.setItem('vj.hudPreset', id); } catch { /* ignore */ }
+  const run = () => {
+    $('hud-glyph').value = preset.glyph;
+    $('hud-glyph').dispatchEvent(new Event('input', { bubbles: true }));
+    setHudDisplay(preset.mode);
+    try { localStorage.setItem('vj.hudPreset', id); } catch { /* ignore */ }
+  };
+  if (params.history) params.history.group(run);
+  else run();
 }
 
 function setHudDisplay(mode) {
+  const prev = hud.display;
   hud.setDisplay(mode);
   $('hud-mode').value = hud.display;
   localStorage.setItem(HUD_STYLE_KEY.mode, hud.display);
   pushOverlay(true);
   persistDesk();
+  if (prev !== hud.display) {
+    params.history?.edit('hudMode', prev, hud.display, (v) => setHudDisplay(v), 'commit');
+  }
 }
 bindHudChrome();
 
@@ -3360,14 +4691,23 @@ function bindHudMotion() {
   });
 }
 
-function setHudEnabled(on) {
+function setHudEnabled(on, { history = false } = {}) {
+  const prev = hudWant;
   const next = !!on;
   hudWant = next;
   $('hud-enable').checked = next;
-  const hudState = document.querySelector('#live-tools .hud-toggle .hud-state');
+  const hudState = document.querySelector('#code-trigger .hud-state');
   if (hudState) hudState.textContent = next ? 'On' : 'Off';
+  const codeBtn = $('code-trigger');
+  if (codeBtn) {
+    codeBtn.classList.toggle('on', next);
+    codeBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+  }
   try { localStorage.setItem('vj.hud', next ? '1' : '0'); } catch { /* ignore */ }
   persistDesk();
+  if (history && prev !== next) {
+    params.history?.edit('hud', prev, next, (v) => setHudEnabled(v), 'commit');
+  }
   const frame = $('hud-frame');
   if (next) {
     const resume = hudMotion.playing && hudMotion.dismissing;
@@ -3508,7 +4848,7 @@ loadHudBox();
 bindHudBox();
 bindHudMotion();
 if (localStorage.getItem('vj.hud') === '1') setHudEnabled(true);
-$('hud-enable').addEventListener('change', () => setHudEnabled($('hud-enable').checked));
+$('hud-enable').addEventListener('change', () => setHudEnabled($('hud-enable').checked, { history: true }));
 setHudPerform(localStorage.getItem('vj.hudPerform') === '1');
 $('hud-perform').addEventListener('change', () => setHudPerform($('hud-perform').checked));
 $('hud-dpi').checked = dpiState.auto;
@@ -3519,27 +4859,39 @@ $('hud-dpi').addEventListener('change', () => {
 });
 
 let deskMode = 'live';
+let deskReturn = 'live';
 let midiMap = 'apc-mini-mk2';
 
 function applyMidiSurface() {
   const mini = midiMap === 'apc-mini-mk2' && deskMode === 'midi';
+  const xdj = midiMap === 'xdj-700' && deskMode === 'midi';
   $('apc-view').hidden = !mini;
+  const decks = $('xdj-view');
+  if (decks) decks.hidden = !xdj;
   const note = $('midi-map-note');
   if (note) {
-    note.hidden = midiMap === 'apc-mini-mk2';
-    note.textContent = midiMap === 'apc40-mk2'
-      ? 'APC40 mk2 is selected. Its controls go to MIDI Learn and the saved mappings.'
-      : 'Custom / Generic. Every control goes to MIDI Learn and the saved mappings.';
+    if (midiMap === 'apc-mini-mk2') {
+      note.hidden = true;
+    } else if (midiMap === 'xdj-700') {
+      note.hidden = false;
+      note.textContent = 'Pioneer XDJ-700. A Pro DJ Link beat runs the assignment on that deck’s Beat pad.';
+    } else {
+      note.hidden = false;
+      note.textContent = midiMap === 'apc40-mk2'
+        ? 'APC40 mk2 is selected. Its controls go to MIDI Learn and the saved mappings.'
+        : 'Custom / Generic. Every control goes to MIDI Learn and the saved mappings.';
+    }
   }
   if (mini) apcView?.refresh();
 }
 
 function setMidiMap(id) {
-  midiMap = id === 'apc40-mk2' || id === 'custom' ? id : 'apc-mini-mk2';
+  midiMap = id === 'apc40-mk2' || id === 'custom' || id === 'xdj-700' ? id : 'apc-mini-mk2';
   const select = $('midi-map');
   if (select && select.value !== midiMap) select.value = midiMap;
   try { localStorage.setItem('vj.midi.map', midiMap); } catch { /* ignore */ }
   applyMidiSurface();
+  persistProjectView(true);
 }
 
 apcView = new ApcView({
@@ -3548,14 +4900,14 @@ apcView = new ApcView({
   scenes,
   bus,
   panel,
-  launch: (id) => triggerScene(id),
+  launch: (id) => triggerScene(id, undefined, { history: true }),
   setHud: (on) => {
-    setHudEnabled(on);
+    setHudEnabled(on, { history: true });
     apcView?.refresh();
   },
   getHud: () => ({ on: hudWant, size: Number($('hud-size').value) }),
   getClips: () => library.names,
-  setClip: (layer, name) => setLayerMedia(layer, `file:${name}`),
+  setClip: (layer, name) => setLayerMedia(layer, `file:${name}`, { history: true }),
   getMedia: () => currentMedia(),
   momentary,
   getPulse: () => beatClock.pulse,
@@ -3563,9 +4915,9 @@ apcView = new ApcView({
     tap: tapTempo,
     autoBpm: () => setBpmMode('auto'),
     masterStop,
-    setSpeed: setMasterSpeed,
+    setSpeed: (value) => setMasterSpeed(value),
     getSpeed: () => masterSpeed,
-    setFade: (value) => timeline.set('fadeSec', value),
+    setFade: (value) => timeline.set('fadeSec', value, { history: false }),
     getFade: () => timeline.fadeSec,
     setMacro: (index, value) => {
       macros.setValue(`CC 1:${54 + index}`, value);
@@ -3621,11 +4973,10 @@ function syncMidiTags() {
   place(cards[0], 'F7');
   place(cards[1], 'F8');
   document.querySelectorAll('#momentary-pads .moment-pad').forEach((pad, i) => place(pad, `TRK${i + 1}`));
-  document.querySelectorAll('#live-tools .sting-fire').forEach((btn, i) => place(btn, `TRK${i + 6}`));
+  document.querySelectorAll('.logo-triggers .sting-fire').forEach((btn, i) => place(btn, `TRK${i + 6}`));
   place($('shuffle-layer-fx'), '⇧TRK7');
-  place(document.querySelector('label.hud-toggle'), '⇧TRK8');
+  place($('code-trigger'), '⇧TRK8');
   place($('bpm-tap'), 'SCN7');
-  place($('tl-tap'), 'SCN7');
   place($('bpm-mode'), '⇧SCN7');
   place($('master-stop'), '⇧SCN8');
 }
@@ -3636,6 +4987,7 @@ function setMidiLabels(on, save = true) {
   if (box) box.checked = !!on;
   if (save) {
     try { localStorage.setItem('vj.midi.labels', on ? '1' : '0'); } catch { /* ignore */ }
+    persistProjectView(true);
   }
   syncMidiTags();
 }
@@ -3645,57 +4997,112 @@ setMidiLabels(localStorage.getItem('vj.midi.labels') === '1', false);
   const storedMap = localStorage.getItem('vj.midi.map');
   setMidiMap(storedMap || (localStorage.getItem('vj.view') === 'apc' ? 'apc-mini-mk2' : 'apc-mini-mk2'));
 }
+$('code-record').addEventListener('change', () => setCodeRecord($('code-record').checked));
 $('hud-output').addEventListener('change', () => {
-  setCodeRecord($('hud-output').checked);
+  setCodeOutput($('hud-output').checked);
   pushOverlay();
 });
-$('hud-record')?.addEventListener('click', () => {
-  setCodeRecord(!codeRecordOn);
-  pushOverlay();
-});
-$('screen-record')?.addEventListener('click', () => setScreenRecord(!screenRecordOn));
+$('screen-record').addEventListener('change', () => setScreenRecord($('screen-record').checked));
+$('screen-output').addEventListener('change', () => setScreenOutput($('screen-output').checked));
+$('logo-record').addEventListener('change', () => setLogoRecord($('logo-record').checked));
+$('logo-output').addEventListener('change', () => setLogoOutput($('logo-output').checked));
 
 let codeRecordOn = false;
+let codeOutputOn = false;
 let screenRecordOn = false;
+let screenOutputOn = false;
+let logoRecordOn = true;
+let logoOutputOn = true;
 
-function paintRecordButton(id, on) {
-  const btn = $(id);
-  if (!btn) return;
-  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  const state = btn.querySelector('i');
-  if (state) state.textContent = on ? 'On' : 'Off';
+function recordFlags() {
+  return {
+    codeRecord: codeRecordOn,
+    codeOutput: codeOutputOn,
+    screenRecord: screenRecordOn,
+    screenOutput: screenOutputOn,
+    logoRecord: logoRecordOn,
+    logoOutput: logoOutputOn,
+  };
+}
+
+function syncRecordBox(id, on) {
+  const box = $(id);
+  if (box && box.checked !== on) box.checked = on;
 }
 
 function setCodeRecord(on, save = true) {
   codeRecordOn = !!on;
-  paintRecordButton('hud-record', codeRecordOn);
-  const box = $('hud-output');
-  if (box && box.checked !== codeRecordOn) box.checked = codeRecordOn;
-  if (outputWin.overlayOn !== codeRecordOn) outputWin.setOverlayOn(codeRecordOn);
-  if (save) project.setRecordOutput({ code: codeRecordOn, screen: screenRecordOn });
+  syncRecordBox('code-record', codeRecordOn);
+  if (save) project.setRecordOutput(recordFlags());
+}
+
+function setCodeOutput(on, save = true) {
+  codeOutputOn = !!on;
+  syncRecordBox('hud-output', codeOutputOn);
+  if (outputWin.overlayOn !== codeOutputOn) outputWin.setOverlayOn(codeOutputOn);
+  if (save) project.setRecordOutput(recordFlags());
 }
 
 function setScreenRecord(on, save = true) {
   screenRecordOn = !!on;
-  paintRecordButton('screen-record', screenRecordOn);
-  if (save) project.setRecordOutput({ code: codeRecordOn, screen: screenRecordOn });
+  syncRecordBox('screen-record', screenRecordOn);
+  if (save) project.setRecordOutput(recordFlags());
+}
+
+function setScreenOutput(on, save = true) {
+  screenOutputOn = !!on;
+  syncRecordBox('screen-output', screenOutputOn);
+  if (save) project.setRecordOutput(recordFlags());
+}
+
+function setLogoRecord(on, save = true) {
+  logoRecordOn = !!on;
+  syncRecordBox('logo-record', logoRecordOn);
+  if (save) project.setRecordOutput(recordFlags());
+}
+
+function setLogoOutput(on, save = true) {
+  logoOutputOn = !!on;
+  syncRecordBox('logo-output', logoOutputOn);
+  if (save) project.setRecordOutput(recordFlags());
+}
+
+function legacyLogoDefault() {
+  const fromDesk = project.desk?.code?.logoOutput;
+  if (typeof fromDesk === 'boolean') return fromDesk;
+  try {
+    if (localStorage.getItem('vj.logoOutput') === '0') return false;
+  } catch { /* ignore */ }
+  return true;
 }
 
 function showRecordOutput(raw = {}) {
-  const code = typeof raw.code === 'boolean' ? raw.code : !!$('hud-enable')?.checked;
-  const screen = typeof raw.screen === 'boolean' ? raw.screen : false;
-  setCodeRecord(code, false);
-  setScreenRecord(screen, false);
-  return {
-    code,
-    screen,
-    dirty: typeof raw.code !== 'boolean' || typeof raw.screen !== 'boolean',
+  const codeDefault = !!$('hud-enable')?.checked;
+  const logoDefault = legacyLogoDefault();
+  const flags = {
+    codeRecord: typeof raw.codeRecord === 'boolean' ? raw.codeRecord : codeDefault,
+    codeOutput: typeof raw.codeOutput === 'boolean' ? raw.codeOutput : codeDefault,
+    screenRecord: typeof raw.screenRecord === 'boolean' ? raw.screenRecord : false,
+    screenOutput: typeof raw.screenOutput === 'boolean' ? raw.screenOutput : false,
+    logoRecord: typeof raw.logoRecord === 'boolean' ? raw.logoRecord : logoDefault,
+    logoOutput: typeof raw.logoOutput === 'boolean' ? raw.logoOutput : logoDefault,
   };
+  setCodeRecord(flags.codeRecord, false);
+  setCodeOutput(flags.codeOutput, false);
+  setScreenRecord(flags.screenRecord, false);
+  setScreenOutput(flags.screenOutput, false);
+  setLogoRecord(flags.logoRecord, false);
+  setLogoOutput(flags.logoOutput, false);
+  const dirty = Object.keys(flags).some((key) => typeof raw[key] !== 'boolean');
+  return { ...flags, dirty };
 }
 
 {
   const shown = showRecordOutput(project.recordOutput);
-  if (shown.dirty) project.setRecordOutput({ code: shown.code, screen: shown.screen });
+  if (shown.dirty) {
+    const { dirty, ...flags } = shown;
+    project.setRecordOutput(flags);
+  }
 }
 
 function screenFontFamily() {
@@ -3708,7 +5115,7 @@ function screenFontFamily() {
 
 function screenRecordSpec(nowMs) {
   const lines = String(screenText).replace(/\r\n/g, '\n').split('\n').map((text) => ({ text }));
-  lines.push({ text: SCREEN_CREDIT, credit: true });
+  if (screenCredit) lines.push({ text: SCREEN_CREDIT, credit: true });
   return {
     lines,
     fontFamily: screenFontFamily(),
@@ -3718,19 +5125,6 @@ function screenRecordSpec(nowMs) {
     scale: brandScale,
     nowMs,
   };
-}
-function logoIncluded() {
-  return $('logo-output')?.checked !== false;
-}
-{
-  const logoOut = $('logo-output');
-  if (logoOut) {
-    logoOut.checked = localStorage.getItem('vj.logoOutput') !== '0';
-    logoOut.addEventListener('change', () => {
-      try { localStorage.setItem('vj.logoOutput', logoOut.checked ? '1' : '0'); } catch { /* ignore */ }
-      persistDesk();
-    });
-  }
 }
 
 let outputBtnOn = null;
@@ -3831,6 +5225,7 @@ $('stock-dir-pick').addEventListener('click', async () => {
   if (typeof picked !== 'string' || !picked) return;
   try { localStorage.setItem(STOCK_DIR_KEY, picked); } catch { /* private mode */ }
   paintStockDir(picked);
+  window.dispatchEvent(new CustomEvent('vj-global-media'));
 });
 $('prefs-btn').addEventListener('click', () => {
   $('file-menu').hidden = true;
@@ -3858,8 +5253,38 @@ function setUiScale(percent) {
   $('ui-scale').value = String(pct);
   $('ui-scale-out').textContent = `${pct}%`;
   try { localStorage.setItem('vj.uiScale', String(pct)); } catch { /* ignore */ }
+  persistProjectView();
 }
 $('ui-scale').addEventListener('input', (e) => setUiScale(e.target.value));
+
+function openInMode() {
+  try {
+    const saved = localStorage.getItem('vj.openIn');
+    if (saved === 'live' || saved === 'prep' || saved === 'midi') return saved;
+  } catch { /* ignore */ }
+  return 'live';
+}
+
+function paintMachinePrefs() {
+  const openIn = $('open-in');
+  if (openIn) openIn.value = openInMode();
+  const reopen = $('reopen-project');
+  if (reopen) {
+    try { reopen.checked = localStorage.getItem('vj.reopenProject') === '1'; } catch { reopen.checked = false; }
+  }
+}
+
+function setOpenIn(mode) {
+  const next = mode === 'prep' || mode === 'midi' ? mode : 'live';
+  try { localStorage.setItem('vj.openIn', next); } catch { /* ignore */ }
+  paintMachinePrefs();
+}
+
+$('open-in')?.addEventListener('change', (e) => setOpenIn(e.target.value));
+$('reopen-project')?.addEventListener('change', (e) => {
+  try { localStorage.setItem('vj.reopenProject', e.target.checked ? '1' : '0'); } catch { /* ignore */ }
+});
+paintMachinePrefs();
 try {
   const rawScale = localStorage.getItem('vj.uiScale');
   const savedScale = rawScale == null || rawScale === '' ? NaN : Number(rawScale);
@@ -3876,6 +5301,7 @@ function savePanes() {
       dock: read('--dock-h'),
     }));
   } catch { /* ignore */ }
+  persistProjectView();
 }
 try {
   const panes = JSON.parse(localStorage.getItem('vj.panes') || 'null');
@@ -3923,7 +5349,7 @@ function bindSplit(el) {
     start = pane === 'dock' ? e.clientY : e.clientX;
     origin = parseFloat(getComputedStyle($('app')).getPropertyValue(prop));
     if (!Number.isFinite(origin)) {
-      const box = (pane === 'dock' ? document.querySelector('.dock') : document.querySelector(pane === 'library' ? '.library' : '.inspector')).getBoundingClientRect();
+      const box = (pane === 'dock' ? document.querySelector('#master-bus') : document.querySelector(pane === 'library' ? '.library' : '.inspector')).getBoundingClientRect();
       origin = (pane === 'dock' ? box.height : box.width) / uiZoom();
     }
     el.classList.add('dragging');
@@ -3934,6 +5360,177 @@ function bindSplit(el) {
 }
 for (const id of ['split-library', 'split-inspector', 'split-dock']) bindSplit($(id));
 
+let topHeightPercent = 42;
+function clampPreviewSplit(percent) {
+  return Math.min(80, Math.max(15, percent));
+}
+function applyPreviewSplit(percent, save = false) {
+  topHeightPercent = clampPreviewSplit(percent);
+  const center = document.querySelector('.center');
+  const centerH = center.getBoundingClientRect().height || window.innerHeight;
+  const target = (topHeightPercent / 100) * window.innerHeight;
+  const px = Math.min(centerH * 0.8, Math.max(centerH * 0.15, target));
+  center.style.setProperty('--preview-h', `${(px / centerH) * 100}%`);
+  if (save) {
+    try { localStorage.setItem('vj.previewSplit', String(topHeightPercent)); } catch { /* ignore */ }
+    persistProjectView();
+  }
+}
+function bindPreviewSplit(el) {
+  if (!el) return;
+  let pointer = 0;
+  const onMove = (e) => {
+    if (e.pointerId !== pointer) return;
+    applyPreviewSplit((e.clientY / window.innerHeight) * 100);
+  };
+  const onUp = (e) => {
+    if (e.pointerId !== pointer) return;
+    pointer = 0;
+    el.classList.remove('dragging');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    applyPreviewSplit(topHeightPercent, true);
+  };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || isPerformMode) return;
+    e.preventDefault();
+    pointer = e.pointerId;
+    try { el.setPointerCapture(e.pointerId); } catch { /* synthetic press */ }
+    el.classList.add('dragging');
+    applyPreviewSplit((e.clientY / window.innerHeight) * 100);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+}
+{
+  const saved = localStorage.getItem('vj.previewSplit');
+  const savedPercent = Number(saved);
+  if (saved != null && Number.isFinite(savedPercent)) topHeightPercent = clampPreviewSplit(savedPercent);
+  applyPreviewSplit(topHeightPercent);
+  bindPreviewSplit($('split-preview'));
+  window.addEventListener('resize', () => applyPreviewSplit(topHeightPercent));
+}
+
+const TIMELINE_PANE_MIN = 44;
+const TIMELINE_PANE_MAX = 420;
+const TIMELINE_BAR_PX_MIN = 4;
+const TIMELINE_BAR_PX_MAX = 160;
+let timelineBarPx = 28;
+
+function timelinePaneLimit() {
+  const split = document.querySelector('.timeline-split');
+  const splitH = split ? split.getBoundingClientRect().height : window.innerHeight;
+  const divider = 18;
+  return Math.min(TIMELINE_PANE_MAX, Math.max(TIMELINE_PANE_MIN, Math.round(splitH - divider)));
+}
+
+function timelineBarCount() {
+  return Math.max(1, sceneBar?.timeline?.bars || Number($('tl-bars')?.value) || 16);
+}
+
+function applyTimelineSplit(height, save = false) {
+  const pane = document.querySelector('.timeline-pane');
+  if (!pane) return 0;
+  const next = Math.round(Math.min(timelinePaneLimit(), Math.max(TIMELINE_PANE_MIN, height)));
+  pane.style.height = `${next}px`;
+  pane.style.maxHeight = 'none';
+  pane.style.minHeight = `${TIMELINE_PANE_MIN}px`;
+  if (save) {
+    try { localStorage.setItem('vj.timelineH', String(next)); } catch { /* ignore */ }
+    persistProjectView();
+  }
+  return next;
+}
+
+function applyTimelineZoom(px, save = false) {
+  const scroll = $('tl-scroll');
+  const track = $('tl-track');
+  if (!scroll || !track) return;
+  const next = Math.round(Math.min(TIMELINE_BAR_PX_MAX, Math.max(TIMELINE_BAR_PX_MIN, px)) * 10) / 10;
+  const prevWidth = track.getBoundingClientRect().width || scroll.clientWidth || 1;
+  const anchor = scroll.scrollLeft + scroll.clientWidth / 2;
+  const fraction = anchor / prevWidth;
+  timelineBarPx = next;
+  const width = Math.max(scroll.clientWidth, Math.round(timelineBarCount() * next));
+  track.style.width = `${width}px`;
+  scroll.scrollLeft = Math.max(0, fraction * width - scroll.clientWidth / 2);
+  sceneBar?.renderLabels();
+  if (save) {
+    try { localStorage.setItem('vj.timelinePx', String(next)); } catch { /* ignore */ }
+    persistProjectView();
+  }
+}
+
+function bindTimelineZoom(el) {
+  if (!el) return;
+  let pointer = 0;
+  let startY = 0;
+  let originH = 120;
+  const onMove = (e) => {
+    if (e.pointerId !== pointer) return;
+    const dy = (e.clientY - startY) / uiZoom();
+    applyTimelineSplit(originH + dy);
+  };
+  const onUp = (e) => {
+    if (e.pointerId !== pointer) return;
+    pointer = 0;
+    el.classList.remove('dragging');
+    document.body.classList.remove('timeline-resizing');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    applyTimelineSplit(document.querySelector('.timeline-pane')?.getBoundingClientRect().height || originH, true);
+  };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || isPerformMode) return;
+    e.preventDefault();
+    pointer = e.pointerId;
+    startY = e.clientY;
+    originH = document.querySelector('.timeline-pane')?.getBoundingClientRect().height || 120;
+    try { el.setPointerCapture(e.pointerId); } catch { /* synthetic press */ }
+    el.classList.add('dragging');
+    document.body.classList.add('timeline-resizing');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+}
+{
+  const savedH = Number(localStorage.getItem('vj.timelineH'));
+  applyTimelineSplit(Number.isFinite(savedH) && savedH > 0 ? savedH : 120);
+  const savedPx = Number(localStorage.getItem('vj.timelinePx'));
+  const view = $('tl-scroll')?.clientWidth || 640;
+  const fitted = view / Math.min(timelineBarCount(), 32);
+  applyTimelineZoom(Number.isFinite(savedPx) && savedPx > 0 ? savedPx : fitted);
+  bindTimelineZoom(document.querySelector('.timeline-resizable-divider'));
+  $('tl-scroll')?.addEventListener('wheel', (e) => {
+    if (isPerformMode) return;
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 1 / 1.12 : 1.12;
+    applyTimelineZoom(timelineBarPx * factor, true);
+  }, { passive: false });
+  $('tl-bars')?.addEventListener('change', () => applyTimelineZoom(timelineBarPx));
+  window.addEventListener('resize', () => {
+    applyTimelineSplit(document.querySelector('.timeline-pane')?.getBoundingClientRect().height || 120);
+    applyTimelineZoom(timelineBarPx);
+  });
+}
+
+window.addEventListener('keydown', (e) => {
+  const key = e.key.toLowerCase();
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const redo = (key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey);
+  const undo = key === 'z' && !e.shiftKey;
+  if (!redo && !undo) return;
+  const el = e.target;
+  if (el instanceof HTMLElement && (el.isContentEditable || el.closest('input, textarea'))) return;
+  e.preventDefault();
+  if (redo) params.history.redo();
+  else params.history.undo();
+});
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   $('screen-menu').hidden = true;
@@ -3952,20 +5549,20 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
     const slot = Number(e.code.slice(5)) - 1;
     const scene = slot < sceneBar.bankSize ? scenes.scenes[sceneBar.bank * sceneBar.bankSize + slot] : null;
-    if (scene) triggerScene(scene.id);
+    if (scene) triggerScene(scene.id, undefined, { history: true });
   } else if (k === ' ') {
     if (e.target?.matches?.('button, select, input')) return;
     e.preventDefault();
     if (masterTransport.state === 'playing') masterPause();
     else masterPlay();
-  } else if (/^[1-9]$/.test(k) && Number(k) <= MODES.length) {
-    params.set(layerParam(panel.selected, 'mode'), Number(k) - 1);
+  } else if (/^[1-9]$/.test(k) && SHADER_KEY_MODES[Number(k) - 1] != null) {
+    params.set(layerParam(panel.selected, 'mode'), SHADER_KEY_MODES[Number(k) - 1], { history: 'commit' });
   } else if (k === 'q' || k === 'w' || k === 'e') {
     panel.selectLayer(LAYERS['qwe'.indexOf(k)]);
   } else if (k === 't') tapTempo();
   else if (isPerformMode && (k === 'l' || k === 'h' || k === 'c' || k === 'p')) return;
   else if (k === 'l') setUiMode(document.body.classList.contains('live-mode') ? 'timeline' : 'live');
-  else if (k === 'h') setHudEnabled(!hudWant);
+  else if (k === 'h') setHudEnabled(!hudWant, { history: true });
   else if (k === 'c') {
     setHudDisplay(HUD_MODES[(HUD_MODES.indexOf(hud.display) + 1) % HUD_MODES.length]);
   }
@@ -4042,7 +5639,7 @@ function frame(stamp) {
   const tempoChanged = bpmEngine.consumeChange();
   if (heard === 'locked') {
     closeBpmEditor();
-    timeline.set('bpm', bpmEngine.bpm);
+    timeline.set('bpm', bpmEngine.bpm, { history: false });
     syncTempoUi();
     const readout = $('bpm-value');
     if (readout) {
@@ -4062,7 +5659,7 @@ function frame(stamp) {
     setBpmMode('manual');
     showBpmNotice('No clear beat - try again', 2000);
   } else if (tempoChanged) {
-    timeline.set('bpm', bpmEngine.bpm);
+    timeline.set('bpm', bpmEngine.bpm, { history: false });
   }
   shared.uBeat.value = beatClock.pulse;
   shared.uBeatPhase.value = beatClock.phase;
@@ -4334,7 +5931,7 @@ function frame(stamp) {
       $('rec-time').textContent = recText;
     }
 
-  const paintHud = hud.visible && (!isPerformMode || document.body.classList.contains('hud-perform') || outputWin.overlayOn);
+  const paintHud = hud.visible && (!isPerformMode || document.body.classList.contains('hud-perform') || outputWin.overlayOn || codeRecordOn);
   if (paintHud) {
     const sel = selectedLayer();
     if (hud.display === 'scan') {
@@ -4401,12 +5998,15 @@ function frame(stamp) {
   }
   // Copy the finished WebGL frame after the HUD text has settled, so the recording
   // and the output window do not grab a line that is still scrolling into place.
-  const hudFrame = codeRecordOn && hud.visible ? hud.recordOverlay() : null;
   const frameSource = bakedPlate || renderer.domElement;
-  const logos = logoIncluded() && stings.live ? stings.outputPose() : null;
-  const screensaver = screenRecordOn ? screenRecordSpec(nowMs) : null;
-  if (recorder.recording) recorder.paint(frameSource, hudFrame, logos, screensaver);
-  outputWin.mirror(hudFrame, logos, frameSource, screensaver);
+  const hudRecord = codeRecordOn && hud.visible ? hud.recordOverlay() : null;
+  const hudOutput = codeOutputOn && hud.visible ? hud.recordOverlay() : null;
+  const logosRecord = logoRecordOn && stings.live ? stings.outputPose() : null;
+  const logosOutput = logoOutputOn && stings.live ? stings.outputPose() : null;
+  const screensaverRecord = screenRecordOn ? screenRecordSpec(nowMs) : null;
+  const screensaverOutput = screenOutputOn ? screenRecordSpec(nowMs) : null;
+  if (recorder.recording) recorder.paint(frameSource, hudRecord, logosRecord, screensaverRecord);
+  outputWin.mirror(hudOutput, logosOutput, frameSource, screensaverOutput);
   if (performHolding) paintPerformHold();
 }
 
@@ -4517,6 +6117,7 @@ function syncFrameClock() {
 
 function setDeskMode(mode) {
   const next = mode === 'prep' || mode === 'midi' ? mode : 'live';
+  if (next === 'prep' && deskMode !== 'prep') deskReturn = deskMode === 'midi' ? 'midi' : 'live';
   deskMode = next;
   const prep = next === 'prep';
   const midiOn = next === 'midi';
@@ -4535,11 +6136,15 @@ function setDeskMode(mode) {
     $('file-menu-btn').setAttribute('aria-expanded', 'false');
     $('screen-menu').hidden = true;
   }
-  if (prep) idleFrameClock();
+  if (prep) {
+    idleFrameClock();
+    globalLibrary?.refresh();
+  }
   else syncFrameClock();
   applyMidiSurface();
   apcView?.refresh();
   try { localStorage.setItem('vj.workspace', next); } catch { /* ignore */ }
+  persistProjectView(true);
 }
 
 document.addEventListener('visibilitychange', syncFrameClock);
@@ -4588,7 +6193,7 @@ bindPictureSources(() => {
 });
 syncFrameClock();
 $('mode-live').addEventListener('click', () => setDeskMode('live'));
-$('mode-prep').addEventListener('click', () => setDeskMode('prep'));
+$('mode-prep').addEventListener('click', () => setDeskMode(deskMode === 'prep' ? deskReturn : 'prep'));
 $('mode-midi').addEventListener('click', () => setDeskMode('midi'));
 if (isLinuxSystem()) {
   const label = document.querySelector('label[for="output-size"]');
@@ -4616,15 +6221,35 @@ if (isLinuxSystem()) {
   });
 }
 {
-  const workspace = localStorage.getItem('vj.workspace')
-    || (localStorage.getItem('vj.view') === 'apc' ? 'midi' : 'live');
-  if (workspace === 'prep' || workspace === 'midi') setDeskMode(workspace);
+  const openIn = openInMode();
+  if (openIn !== 'live') setDeskMode(openIn);
 }
 bindMediaPrep({ library, ensureStockDir, showToast });
+globalLibrary = bindGlobalLibrary({
+  library,
+  showToast,
+  inBin: (name) => project.mediaPool.some((item) => item.name === name),
+  projectSnapshot,
+  onDeleted: (name) => {
+    if (library.has(name)) library.remove(name);
+    refreshLibraryUi();
+    refreshMediaSelect();
+  },
+  onAdd: (entry, { quiet } = {}) => {
+    const added = addToBin(entry);
+    if (!quiet) {
+      showToast(added ? `Sent ${entry.name} to Project Media` : `${entry.name} is already in this project`);
+      globalLibrary?.refresh();
+    }
+    return !!added;
+  },
+});
 if (project.desk) applyDesk(project.desk);
 deskReady = true;
 if (!project.desk) project.setDesk(captureDesk());
+if (project.view) applyProjectView(project.view);
 restoreCachedMedia().then(async () => {
+  await reopenLastProject();
   paintAudioRecent();
   await restoreLogoFiles();
 });

@@ -173,11 +173,12 @@ export function createNumericSlider(def, api) {
     window.removeEventListener('pointercancel', onUp);
     try { track.releasePointerCapture(e.pointerId); } catch { /* already released */ }
     api.onHold(false);
+    api.onCommit?.();
     paint(api.get(), api.get());
   };
   const onMove = (e) => {
     if (!dragging) return;
-    api.set(valueFromPointer(e));
+    api.set(valueFromPointer(e), { history: 'drag' });
   };
   const onUp = (e) => endDrag(e);
 
@@ -190,7 +191,7 @@ export function createNumericSlider(def, api) {
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onUp);
     api.onHold(true);
-    api.set(valueFromPointer(e));
+    api.set(valueFromPointer(e), { history: 'drag' });
   });
   track.addEventListener('dblclick', (e) => {
     e.preventDefault();
@@ -215,7 +216,7 @@ export function createNumericSlider(def, api) {
     const raw = editor.value.trim();
     if (commitValue && raw !== '') {
       const v = clampTyped(raw, def.min, def.max, def.step);
-      if (v != null) api.set(v);
+      if (v != null) api.set(v, { history: 'commit' });
     }
     paint(api.get(), api.get());
   };

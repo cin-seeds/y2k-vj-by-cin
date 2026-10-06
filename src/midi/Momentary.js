@@ -5,11 +5,11 @@ import { ENGINE_FX, ENGINE_PARTICLES, ENGINES } from '../engines/constants.js';
 import { layerParam } from '../params.js';
 
 export const MOMENTARY = [
-  { id: 'strobe', label: 'Strobe/Flash' },
-  { id: 'y2k', label: 'Y2K Crash' },
-  { id: 'shatter', label: 'Particle Scatter' },
-  { id: 'invert', label: 'Invert Colors' },
-  { id: 'glitch', label: 'Max Glitch' },
+  { id: 'strobe', label: 'Strobe/Flash', short: 'Strobe' },
+  { id: 'y2k', label: 'Y2K Crash', short: 'Y2K' },
+  { id: 'shatter', label: 'Particle Scatter', short: 'Parts' },
+  { id: 'invert', label: 'Invert Colors', short: 'Invert' },
+  { id: 'glitch', label: 'Max Glitch', short: 'Glitch' },
 ];
 
 export class MomentaryPads {

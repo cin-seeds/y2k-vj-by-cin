@@ -10,6 +10,8 @@ import { LAYERS } from '../params.js';
 const STORAGE_KEY = 'vj.scenes';
 const PAD_COLORS = ['#00f0ff', '#ff2bd6', '#7dffb0', '#ffd23f', '#9b7bff', '#ff7a3d', '#3df5c5', '#ff4f7b'];
 
+export { PAD_COLORS };
+
 const smooth = (k) => k * k * (3 - 2 * k);
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -53,6 +55,7 @@ export class SceneManager {
   }
 
   save(name) {
+    const before = this.#clone();
     const n = this.scenes.length + 1;
     const scene = {
       id: uid(),
@@ -64,28 +67,44 @@ export class SceneManager {
     this.scenes.push(scene);
     this.activeId = scene.id;
     this.#changed();
+    this.#record(before);
     return scene;
   }
 
   overwrite(id) {
     const s = this.get(id);
     if (!s) return;
+    const before = this.#clone();
     Object.assign(s, this.capture());
     this.#changed();
+    this.#record(before);
   }
 
   rename(id, name) {
     const s = this.get(id);
     if (s && name?.trim()) {
+      const before = this.#clone();
       s.name = name.trim();
       this.#changed();
+      this.#record(before);
     }
   }
 
+  setColor(id, color) {
+    const s = this.get(id);
+    if (!s || !PAD_COLORS.includes(color) || s.color === color) return;
+    const before = this.#clone();
+    s.color = color;
+    this.#changed();
+    this.#record(before);
+  }
+
   remove(id) {
+    const before = this.#clone();
     this.scenes = this.scenes.filter((s) => s.id !== id);
     if (this.activeId === id) this.activeId = null;
     this.#changed();
+    this.#record(before);
   }
 
   get(id) {
@@ -190,6 +209,24 @@ export class SceneManager {
 
   onChange(fn) {
     this.listeners.add(fn);
+  }
+
+  #clone() {
+    return { scenes: structuredClone(this.scenes), activeId: this.activeId };
+  }
+
+  #record(before) {
+    if (typeof this.onHistory !== 'function') return;
+    const after = this.#clone();
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    this.onHistory(before, after);
+  }
+
+  restoreHistory(snap) {
+    if (!snap) return;
+    this.replaceAll(snap.scenes || []);
+    this.activeId = snap.activeId || null;
+    this.#emit();
   }
 
   #changed() {

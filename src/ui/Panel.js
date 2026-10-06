@@ -7,7 +7,7 @@
 
 import { MOD_ROUTES, createModRow } from '../audio/ModMatrix.js';
 import { ENGINE_FX, ENGINE_HYDRA, ENGINE_PARTICLES, ENGINES } from '../engines/constants.js';
-import { BLEND_MENU, CATEGORY_ORDER, LAYERS, MODE_LABELS, MODES, layerParam, neutralOf } from '../params.js';
+import { BLEND_MENU, CATEGORY_ORDER, LAYERS, MODE_LABELS, MODES, RETIRED_SHADER_MODES, SHADER_KEY_MODES, layerParam, neutralOf, shaderMode } from '../params.js';
 import { bindRangeReadout } from './NumericSlider.js';
 
 const FOLD_KEY = 'vj.fxFold';
@@ -31,7 +31,7 @@ import { createNumericSlider } from './NumericSlider.js';
 import { flashControl } from './Diagnostics.js';
 
 /** Two thumbs on one track. Values stay in 0..1 and cannot cross. */
-function createBoundControl(onInput) {
+function createBoundControl(onInput, onCommit) {
   let lo = 0;
   let hi = 1;
   let drag = '';
@@ -93,8 +93,13 @@ function createBoundControl(onInput) {
     start(Math.abs(t - lo) <= Math.abs(t - hi) ? 'min' : 'max')(e);
   });
   track.addEventListener('pointermove', move);
-  track.addEventListener('pointerup', () => { drag = ''; });
-  track.addEventListener('pointercancel', () => { drag = ''; });
+  const stop = () => {
+    if (!drag) return;
+    drag = '';
+    onCommit?.();
+  };
+  track.addEventListener('pointerup', stop);
+  track.addEventListener('pointercancel', stop);
   paint(0, 1);
   return {
     el: root,
@@ -173,6 +178,21 @@ export class Panel {
       thumb.draggable = false;
       const info = document.createElement('span');
       info.className = 'strip-info';
+      const look = document.createElement('div');
+      look.className = 'strip-look';
+      const fx = document.createElement('select');
+      fx.className = 'strip-fx';
+      fx.title = `Effect for layer ${L}`;
+      fx.setAttribute('aria-label', `Effect for layer ${L}`);
+      MODE_LABELS.forEach((name, i) => {
+        if (RETIRED_SHADER_MODES.has(i)) return;
+        fx.add(new Option(`FX · ${name}`, String(i)));
+      });
+      fx.addEventListener('pointerdown', (e) => e.stopPropagation());
+      fx.addEventListener('change', () => {
+        this.params.set(layerParam(L, 'mode'), Number(fx.value), { history: 'commit' });
+      });
+      look.append(fx, info);
       const solo = document.createElement('button');
       solo.type = 'button';
       solo.className = 'ms solo';
@@ -197,7 +217,7 @@ export class Panel {
       engine.title = 'Engine for this layer. Opacity and blend still composite it with the others.';
       engineDef.options.forEach((name, i) => engine.add(new Option(name, String(i))));
       engine.value = String(this.params.get(engineDef.id));
-      engine.addEventListener('change', () => this.params.set(engineDef.id, parseFloat(engine.value)));
+      engine.addEventListener('change', () => this.params.set(engineDef.id, parseFloat(engine.value), { history: 'commit' }));
       engine.addEventListener('pointerdown', (e) => e.stopPropagation());
       engine.hidden = L !== this.selected;
       this.#engineSlot().append(engine);
@@ -211,7 +231,7 @@ export class Panel {
       invert.addEventListener('click', (e) => {
         e.stopPropagation();
         const id = layerParam(L, 'blendInvert');
-        this.params.set(id, this.params.get(id) > 0.5 ? 0 : 1);
+        this.params.set(id, this.params.get(id) > 0.5 ? 0 : 1, { history: 'commit' });
       });
       const flags = document.createElement('div');
       flags.className = 'strip-flags';
@@ -226,7 +246,7 @@ export class Panel {
         this.onSyncToggle?.(L);
       });
       flags.append(mute, solo, invert, sync);
-      head.append(letter, thumb, info, tab, flags);
+      head.append(letter, thumb, look, tab, flags);
 
       const comp = document.createElement('div');
       comp.className = 'strip-comp';
@@ -237,7 +257,7 @@ export class Panel {
       blend.dataset.midi = blendDef.id;
       for (const i of BLEND_MENU) blend.add(new Option(blendDef.options[i], String(i)));
       blend.value = String(this.params.get(blendDef.id));
-      blend.addEventListener('change', () => this.params.set(blendDef.id, Number(blend.value)));
+      blend.addEventListener('change', () => this.params.set(blendDef.id, Number(blend.value), { history: 'commit' }));
       blend.addEventListener('pointerdown', (e) => e.stopPropagation());
 
       const opacityId = layerParam(L, 'opacity');
@@ -251,20 +271,23 @@ export class Panel {
       mix.max = '1';
       mix.step = '0.01';
       mix.value = String(this.params.get(opacityId));
-      mix.title = 'Layer opacity';
+      mix.title = 'Layer opacity. Full is at the top.';
+      mix.setAttribute('aria-orientation', 'vertical');
       const mixOut = document.createElement('output');
       mixOut.className = 'strip-mix-out';
       const mixDrag = this.#bindFader(mix, (v) => {
         mixOut.textContent = `${Math.round(v * 100)}%`;
-        this.params.set(opacityId, v);
+        this.params.set(opacityId, v, { history: 'drag' });
       }, {
+        vertical: true,
         onDrag: (down) => {
           if (down) this.held.add(opacityId);
           else this.held.delete(opacityId);
         },
+        onCommit: () => this.params.history?.commit(),
       });
       mixWrap.append(mix, mixOut);
-      comp.append(blend, mixWrap);
+      comp.append(blend);
 
       const mod = document.createElement('div');
       mod.className = 'strip-mod';
@@ -308,7 +331,10 @@ export class Panel {
       const depthDrag = this.#bindFader(depth, (v) => {
         depthOut.textContent = this.#depthText(v);
         this.#setLayerDepth(L, v);
-      }, { onDrag: (down) => { if (!down) this.#syncCardMod(L); } });
+      }, {
+        onDrag: (down) => { if (!down) this.#syncCardMod(L); },
+        onCommit: () => this.params.history?.commit(),
+      });
       tune.append(this.#tuneRow('Depth', depth, depthOut));
       const gate = document.createElement('input');
       gate.type = 'range';
@@ -319,15 +345,23 @@ export class Panel {
       const gateOut = document.createElement('output');
       const gateDrag = this.#bindFader(gate, (v) => {
         gateOut.textContent = `${Math.round(v * 100)}%`;
+        const prev = structuredClone(this.mods.get(opacityId));
         this.mods.set(opacityId, { gate: v });
-      });
+        this.params.history?.edit(`mod:${opacityId}`, prev, structuredClone(this.mods.get(opacityId)), (lane) => {
+          this.mods.set(opacityId, lane);
+          this.#syncCardMod(L);
+        }, 'drag');
+      }, { onCommit: () => this.params.history?.commit() });
       tune.append(this.#tuneRow('Gate', gate, gateOut));
       mod.append(pick, tune);
 
-      strip.append(head, comp, mod);
+      const main = document.createElement('div');
+      main.className = 'strip-main';
+      main.append(head, comp, mod);
+      strip.append(mixWrap, main);
       this.mixerEl.append(strip);
       this.strips.set(L, {
-        strip, tab, thumb, info, solo, mute, invert, sync, blend, mix, mixOut, mixDrag, engine,
+        strip, tab, thumb, info, fx, solo, mute, invert, sync, blend, mix, mixOut, mixDrag, engine,
         source, lfoBtn, audioBtn, depth, depthOut, depthDrag, gate, gateOut, gateDrag,
       });
     }
@@ -341,8 +375,6 @@ export class Panel {
       const bucket = d.category || d.group;
       if (!d.layer && d.id === 'master') {
         document.getElementById('brightness-slot')?.append(row.row);
-      } else if (!d.layer && d.id === 'crtBarrel') {
-        document.getElementById('project-barrel')?.append(row.row);
       } else if (d.layer && d.key === 'mode') {
         const slot = document.createElement('div');
         slot.className = 'shader-slot';
@@ -350,7 +382,14 @@ export class Panel {
         const title = document.createElement('h2');
         title.textContent = 'Layer Shader';
         row.input.classList.add('strip-engine');
-        slot.append(title, row.input);
+        const shuffle = document.createElement('button');
+        shuffle.type = 'button';
+        shuffle.className = 'shader-shuffle';
+        shuffle.textContent = 'Shuffle';
+        shuffle.title = 'Pick a random effect from this list';
+        const layer = d.layer;
+        shuffle.addEventListener('click', () => this.#shuffleShader(layer));
+        slot.append(title, row.input, shuffle);
         this.strips.get(d.layer).engine.insertAdjacentElement('afterend', slot);
         row.row = slot;
       } else if (!d.layer) this.#block('master', bucket).body.append(row.row);
@@ -402,7 +441,7 @@ export class Panel {
     label.title = 'Double-click to snap back to the zero-effect value';
     label.addEventListener('dblclick', (e) => {
       e.preventDefault();
-      this.params.set(d.id, neutralOf(d), { exact: true });
+      this.params.set(d.id, neutralOf(d), { exact: true, history: 'commit' });
     });
     const info = document.createElement('button');
     info.type = 'button';
@@ -424,9 +463,15 @@ export class Panel {
     let out = null;
     if (d.options) {
       input = document.createElement('select');
-      d.options.forEach((name, i) => input.add(new Option(name, String(i))));
-      input.value = this.params.get(d.id);
-      input.addEventListener('input', () => this.params.set(d.id, parseFloat(input.value)));
+      d.options.forEach((name, i) => {
+        if (d.key === 'mode' && RETIRED_SHADER_MODES.has(i)) return;
+        input.add(new Option(name, String(i)));
+      });
+      const stored = this.params.get(d.id);
+      const initial = d.key === 'mode' ? shaderMode(stored) : stored;
+      if (d.key === 'mode' && initial !== stored) this.params.set(d.id, initial);
+      input.value = String(initial);
+      input.addEventListener('change', () => this.params.set(d.id, parseFloat(input.value), { history: 'commit' }));
     } else {
       slider = createNumericSlider(d, {
         get: () => this.params.get(d.id),
@@ -435,7 +480,11 @@ export class Panel {
           if (down) this.held.add(d.id);
           else this.held.delete(d.id);
         },
-        onReset: () => this.params.set(d.id, neutralOf(d), { exact: true }),
+        onCommit: () => this.params.history?.commit(),
+        onReset: () => {
+          this.params.set(d.id, neutralOf(d), { exact: true, history: 'commit' });
+          this.params.history?.coalesce(d.id);
+        },
       });
       input = slider.input;
     }
@@ -467,9 +516,11 @@ export class Panel {
       auto.textContent = 'A';
       auto.title = 'Automate (LFO)';
       auto.addEventListener('click', () => {
+        const prev = this.#lfoSnap(d.id);
         this.lfo.toggle(d.id);
         this.#syncLfo(d.id);
         if (d.layer && d.key === 'opacity') this.#syncCardMod(d.layer);
+        this.#noteLfo(d.id, prev, 'commit');
       });
       row.append(auto);
 
@@ -495,7 +546,8 @@ export class Panel {
       amt.title = 'Automation depth. 100% sweeps this slider across its full range.';
       amtOut = document.createElement('output');
       amtOut.textContent = '100%';
-      const apply = () => {
+      const apply = (kind) => {
+        const prev = this.#lfoSnap(d.id);
         this.lfo.set(d.id, {
           on: true,
           shape: Number(shape.value),
@@ -504,13 +556,16 @@ export class Panel {
         });
         amtOut.textContent = `${Math.round(Number(amt.value) * 100)}%`;
         if (d.layer && d.key === 'opacity') this.#syncCardMod(d.layer);
+        this.#noteLfo(d.id, prev, kind);
       };
-      shape.addEventListener('change', apply);
-      rate.addEventListener('change', apply);
-      amt.addEventListener('input', apply);
+      shape.addEventListener('change', () => apply('commit'));
+      rate.addEventListener('change', () => apply('commit'));
+      amt.addEventListener('input', () => apply('drag'));
+      amt.addEventListener('change', () => this.params.history?.commit());
       bindRangeReadout(amtOut, amt);
       depth.append(depthLabel, amt, amtOut);
       bounds = createBoundControl((minBound, maxBound) => {
+        const prev = this.#lfoSnap(d.id);
         this.lfo.set(d.id, {
           on: true,
           shape: Number(shape.value),
@@ -520,7 +575,8 @@ export class Panel {
           maxBound,
         });
         this.#syncLfo(d.id);
-      });
+        this.#noteLfo(d.id, prev, 'drag');
+      }, () => this.params.history?.commit());
       lfoRow.append(shape, rate, depth, bounds.el);
       wrap.append(row, lfoRow);
     } else {
@@ -528,7 +584,7 @@ export class Panel {
     }
 
     if (!bare && isAutomatable(d) && d.key !== 'audioGain' && d.id !== 'audioGain') {
-      wrap.append(createModRow(this.mods, d.id));
+      wrap.append(createModRow(this.mods, d.id, this.params.history));
     }
 
     return { row: wrap, param: row, input, out, slider, learn, auto, lfoRow, lfoShape: shape, lfoRate: rate, lfoAmt: amt, lfoAmtOut: amtOut, lfoBounds: bounds, labelEl: label, infoEl: info, def: d };
@@ -605,6 +661,7 @@ export class Panel {
       'Color & Texture': 0,
       'Distortion & Glitch': 1,
       'Motion & Timing': 2,
+      Barrel: 3,
     };
     const rank = (el) => {
       if (host === this.layerEl) return this.#layerRank(el.dataset.group);
@@ -619,11 +676,20 @@ export class Panel {
   }
 
   #toggleMute(layer, category) {
+    const before = [...this.muted];
     const key = `${layer}:${category}`;
     if (this.muted.has(key)) this.muted.delete(key);
     else this.muted.add(key);
     try { localStorage.setItem(MUTE_KEY, JSON.stringify([...this.muted])); } catch { /* ignore */ }
     this.#paintMute();
+    this.onLayout?.();
+    const after = [...this.muted];
+    this.params.history?.edit('cat-mute', before, after, (list) => {
+      this.muted = new Set(list);
+      try { localStorage.setItem(MUTE_KEY, JSON.stringify([...this.muted])); } catch { /* ignore */ }
+      this.#paintMute();
+      this.onLayout?.();
+    }, 'commit');
   }
 
   #rebuildBypass() {
@@ -651,20 +717,12 @@ export class Panel {
   /** Live override: continuous params in a muted category render at their neutral value. */
   isBypassed(def) {
     if (!def || def.options) return false;
-    if (!def.layer && (def.id === 'master' || def.id === 'crtBarrel' || def.id === 'audioGain')) return false;
+    if (!def.layer && (def.id === 'master' || def.id === 'audioGain')) return false;
     const scope = def.layer || 'master';
     return this.muted.has(`${scope}:${def.category}`);
   }
 
-  showHelp(d) {
-    if (!d) return;
-    const prefix = d.layer ? 'param-help' : 'master-help';
-    const title = document.getElementById(`${prefix}-title`);
-    const body = document.getElementById(`${prefix}-body`);
-    if (!title || !body) return;
-    title.textContent = d.friendlyLabel || d.label;
-    const unit = d.unit === 'turn' ? '°' : (d.unit || '');
-    body.textContent = `${d.description || 'Changes this control on the picture.'}${unit ? ` Unit: ${unit}.` : ''}`;
+  showHelp() {
   }
 
   /** Pick a new value inside each slider's min/max. Dropdowns stay put. */
@@ -674,42 +732,64 @@ export class Panel {
 
   shuffleGroup(layer, group) {
     if (this.isSectionLocked(layer, group)) return;
-    for (const def of this.params.defs.values()) {
-      const mine = layer === 'master' ? !def.layer : def.layer === layer;
-      if (!mine || def.category !== group || def.options) continue;
-      this.#shuffleOne(def);
-    }
+    const run = () => {
+      for (const def of this.params.defs.values()) {
+        const mine = layer === 'master' ? !def.layer : def.layer === layer;
+        if (!mine || def.category !== group || def.options) continue;
+        this.#shuffleOne(def);
+      }
+    };
+    if (this.params.history) this.params.history.group(run);
+    else run();
   }
 
   /**
-   * Randomize every visible effect slider on the selected layer.
-   * Mode, mix, geometry, and dropdowns stay put. Matrix routes are not touched.
+   * Randomize the live effect sliders on layers A, B, and C, plus the composition
+   * effects. Barrel, mix, geometry, source, and dropdowns stay put.
    */
+  #shuffleShader(layer) {
+    const id = layerParam(layer, 'mode');
+    const current = shaderMode(this.params.get(id));
+    const pool = SHADER_KEY_MODES.filter((mode) => mode !== current);
+    const next = pool[Math.floor(Math.random() * pool.length)];
+    if (next == null) return;
+    this.params.set(id, next, { history: 'commit' });
+  }
+
   shuffleSelectedLayer() {
-    const layer = this.selected;
-    const skipGroups = new Set(['Geometry & Scale', 'Mix & Composite', 'Source & Playback']);
-    const skipKeys = new Set(['mode', 'opacity', 'blend', 'blendInvert', 'scale', 'posX', 'posY', 'engine']);
-    const visible = [];
-    for (const { row, def } of this.rows.values()) {
-      if (def.layer !== layer || row.hidden || def.options || skipKeys.has(def.key)) continue;
+    const run = () => this.#shuffleSelected();
+    if (this.params.history) this.params.history.group(run);
+    else run();
+  }
+
+  #layerEffectActive(def) {
+    const mode = MODES[this.params.get(layerParam(def.layer, 'mode'))];
+    const engine = ENGINES[this.params.get(layerParam(def.layer, 'engine'))] || ENGINE_FX;
+    if (def.key === 'colorDepth' && this.params.get(layerParam(def.layer, 'palette')) !== 0) return false;
+    if (def.modes) return engine === ENGINE_FX && def.modes.includes(mode);
+    if (engine === ENGINE_FX && (def.group === 'fx' || def.group === mode)) return true;
+    if (engine === ENGINE_PARTICLES && def.group === 'particles') return true;
+    if (engine === ENGINE_HYDRA && def.group === 'hydra') return true;
+    if (def.group === 'video' && this.isVideo(def.layer)) return true;
+    if (def.group === 'image' && this.isImage(def.layer)) return true;
+    return def.group === 'layer';
+  }
+
+  #shuffleSelected() {
+    const skipGroups = new Set(['Geometry & Scale', 'Mix & Composite', 'Source & Playback', 'Barrel']);
+    const skipKeys = new Set(['mode', 'opacity', 'blend', 'blendInvert', 'scale', 'posX', 'posY', 'engine', 'crtBarrel', 'master', 'audioGain']);
+    const compGroups = new Set(['Color & Texture', 'Distortion & Glitch', 'Motion & Timing']);
+    for (const def of this.params.defs.values()) {
+      if (def.options || skipKeys.has(def.key)) continue;
       const group = def.category || def.group;
-      if (skipGroups.has(group)) continue;
-      visible.push(def);
-    }
-    const groups = new Set(visible.map((def) => def.category || def.group));
-    for (const group of groups) {
-      if (this.isSectionLocked(layer, group)) continue;
-      const inGroup = [...this.params.defs.values()].filter((def) => {
-        if (def.layer !== layer || def.options || skipKeys.has(def.key)) return false;
-        return (def.category || def.group) === group;
-      });
-      const allShown = inGroup.every((def) => visible.some((item) => item.id === def.id));
-      if (allShown) this.shuffleGroup(layer, group);
-      else {
-        for (const def of visible) {
-          if ((def.category || def.group) === group) this.#shuffleOne(def);
-        }
+      if (!group || skipGroups.has(group)) continue;
+      if (!def.layer) {
+        if (!compGroups.has(group) || this.isSectionLocked('master', group)) continue;
+        this.#shuffleOne(def);
+        continue;
       }
+      if (!this.#layerEffectActive(def) || this.isSectionLocked(def.layer, group)) continue;
+      this.#shuffleOne(def);
     }
   }
 
@@ -721,7 +801,7 @@ export class Panel {
       if (def.step) v = Math.round(v / def.step) * def.step;
       v = Math.min(def.max, Math.max(def.min, v));
     }
-    this.params.set(def.id, v);
+    this.params.set(def.id, v, { history: 'commit' });
   }
 
   #sync(id, v) {
@@ -775,11 +855,13 @@ export class Panel {
    * Track the pointer for the whole drag, including when it leaves the card.
    * Returns a function that is true while the finger or mouse is down.
    */
-  #bindFader(input, onValue, { onDrag } = {}) {
+  #bindFader(input, onValue, { onDrag, onCommit, vertical = false } = {}) {
     let dragging = false;
-    const valueFromX = (clientX) => {
+    const valueFromEvent = (e) => {
       const rect = input.getBoundingClientRect();
-      const t = Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));
+      const t = vertical
+        ? 1 - Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(1, rect.height)))
+        : Math.min(1, Math.max(0, (e.clientX - rect.left) / Math.max(1, rect.width)));
       const min = Number(input.min);
       const max = Number(input.max);
       const step = Number(input.step) || 0.01;
@@ -787,12 +869,12 @@ export class Panel {
       v = Math.round(v / step) * step;
       return Math.min(max, Math.max(min, Number(v.toFixed(4))));
     };
-    const apply = (clientX) => {
-      const v = valueFromX(clientX);
+    const apply = (e) => {
+      const v = valueFromEvent(e);
       input.value = String(v);
       onValue(v);
     };
-    const move = (e) => apply(e.clientX);
+    const move = (e) => apply(e);
     const up = () => {
       if (!dragging) return;
       dragging = false;
@@ -800,6 +882,7 @@ export class Panel {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
+      onCommit?.();
     };
     input.addEventListener('pointerdown', (e) => {
       if (e.button != null && e.button !== 0) return;
@@ -808,17 +891,51 @@ export class Panel {
       dragging = true;
       onDrag?.(true);
       try { input.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
-      apply(e.clientX);
+      apply(e);
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
       window.addEventListener('pointercancel', up);
     });
-    input.addEventListener('input', () => onValue(Number(input.value)));
+    input.addEventListener('input', () => {
+      onValue(Number(input.value));
+      if (!dragging) onCommit?.();
+    });
     return () => dragging;
+  }
+
+  #lfoSnap(id) {
+    const lane = this.lfo.get(id);
+    return lane ? structuredClone(lane) : null;
+  }
+
+  #noteLfo(id, prev, kind) {
+    const next = this.#lfoSnap(id);
+    this.params.history?.edit(`lfo:${id}`, prev, next, (lane) => {
+      this.lfo.write(id, lane);
+      this.#syncLfo(id);
+      const def = this.params.defs.get(id);
+      if (def?.layer && def.key === 'opacity') this.#syncCardMod(def.layer);
+    }, kind);
+  }
+
+  #mixSnap(id) {
+    return {
+      mod: structuredClone(this.mods.get(id)),
+      lfo: this.#lfoSnap(id),
+    };
+  }
+
+  #restoreMix(id, snap) {
+    this.mods.set(id, snap.mod);
+    this.lfo.write(id, snap.lfo);
+    this.#syncLfo(id);
+    const def = this.params.defs.get(id);
+    if (def?.layer) this.#syncCardMod(def.layer);
   }
 
   #applyLayerSource(L, source) {
     const id = layerParam(L, 'opacity');
+    const prev = this.#mixSnap(id);
     const s = this.strips.get(L);
     const depth = Number(s.depth.value);
     if (source === 'none') {
@@ -836,15 +953,18 @@ export class Panel {
     }
     this.#syncLfo(id);
     this.#syncCardMod(L);
+    this.params.history?.edit(`mix:${L}`, prev, this.#mixSnap(id), (snap) => this.#restoreMix(id, snap), 'commit');
   }
 
   #toggleLayerLfo(L) {
     const id = layerParam(L, 'opacity');
     const s = this.strips.get(L);
     if (this.lfo.isOn(id)) {
+      const prev = this.#mixSnap(id);
       this.lfo.set(id, { on: false });
       this.#syncLfo(id);
       this.#syncCardMod(L);
+      this.params.history?.edit(`mix:${L}`, prev, this.#mixSnap(id), (snap) => this.#restoreMix(id, snap), 'commit');
       return;
     }
     const source = s.source.value === 'lfo2' ? 'lfo2' : 'lfo1';
@@ -856,9 +976,11 @@ export class Panel {
     const id = layerParam(L, 'opacity');
     const s = this.strips.get(L);
     if (this.mods.get(id).route !== 'none') {
+      const prev = this.#mixSnap(id);
       s.lastAudio = this.mods.get(id).route;
       this.mods.set(id, { route: 'none' });
       this.#syncCardMod(L);
+      this.params.history?.edit(`mix:${L}`, prev, this.#mixSnap(id), (snap) => this.#restoreMix(id, snap), 'commit');
       return;
     }
     const remembered = ['sub', 'mid', 'treble'].includes(s.lastAudio) ? s.lastAudio : 'sub';
@@ -869,8 +991,10 @@ export class Panel {
 
   #setLayerDepth(L, v) {
     const id = layerParam(L, 'opacity');
+    const prev = this.#mixSnap(id);
     if (this.lfo.isOn(id)) this.lfo.set(id, { amount: Math.min(1, Math.abs(v)) });
     this.mods.set(id, { depth: v });
+    this.params.history?.edit(`mix:${L}`, prev, this.#mixSnap(id), (snap) => this.#restoreMix(id, snap), 'drag');
   }
 
   #cardSource(lane, mod) {
@@ -921,7 +1045,10 @@ export class Panel {
     const s = this.strips.get(L);
     if (!s) return;
     const engine = ENGINES[this.params.get(layerParam(L, 'engine'))] || ENGINE_FX;
-    const shader = this.params.defs.get(layerParam(L, 'mode')).options[this.params.get(layerParam(L, 'mode'))];
+    const storedMode = this.params.get(layerParam(L, 'mode'));
+    const modeIndex = shaderMode(storedMode);
+    if (modeIndex !== storedMode) this.params.set(layerParam(L, 'mode'), modeIndex);
+    const shader = this.params.defs.get(layerParam(L, 'mode')).options[modeIndex];
     const mode = engine === ENGINE_FX
       ? shader
       : engine === ENGINE_PARTICLES
@@ -931,9 +1058,13 @@ export class Panel {
     const engineName = this.params.defs.get(layerParam(L, 'engine')).options[this.params.get(layerParam(L, 'engine'))];
     const short = engine === ENGINE_PARTICLES ? 'Swarm' : engine === ENGINE_HYDRA ? 'Hydra' : 'FX';
     const media = s.mediaText ? ` · ${s.mediaText}` : '';
+    const showFx = engine === ENGINE_FX;
+    s.fx.hidden = !showFx;
+    if (showFx && document.activeElement !== s.fx) s.fx.value = String(modeIndex);
+    s.info.hidden = showFx && !s.mediaText;
     s.info.dataset.mode = mode;
     s.info.title = `${engineName}${media}`;
-    s.info.textContent = `${short} · ${mode}${media}`;
+    s.info.textContent = showFx ? (s.mediaText || '') : `${short} · ${mode}${media}`;
   }
 
   refreshLabels() {
@@ -1036,6 +1167,31 @@ export class Panel {
       localStorage.setItem(FOLD_KEY, JSON.stringify(this.folds));
       localStorage.setItem(FOLD_VER_KEY, FOLD_VER);
     } catch { /* ignore a full or private store */ }
+    this.onLayout?.();
+  }
+
+  layoutSnapshot() {
+    return {
+      folds: { ...this.folds },
+      muted: [...this.muted],
+    };
+  }
+
+  applyLayout(layout) {
+    if (!layout || typeof layout !== 'object') return;
+    if (layout.folds && typeof layout.folds === 'object' && !Array.isArray(layout.folds)) {
+      this.folds = {};
+      for (const [key, value] of Object.entries(layout.folds)) {
+        if (typeof key === 'string' && typeof value === 'boolean') this.folds[key] = value;
+      }
+      this.#saveFolds();
+    }
+    if (Array.isArray(layout.muted)) {
+      this.muted = new Set(layout.muted.filter((key) => typeof key === 'string'));
+      try { localStorage.setItem(MUTE_KEY, JSON.stringify([...this.muted])); } catch { /* ignore */ }
+      this.#paintMute();
+    }
+    this.applyFoldDefaults();
   }
 
   #setFold(el, collapsed, remember = true) {
@@ -1048,16 +1204,21 @@ export class Panel {
     this.#saveFolds();
   }
 
-  /** A composition module is in use when one of its controls has left the zero-effect value. */
-  #groupHot(layer, group) {
-    for (const def of this.params.defs.values()) {
-      const scope = def.layer || 'master';
-      if (scope !== layer || (def.category || def.group) !== group) continue;
-      const value = this.params.get(def.id);
-      if (!Number.isFinite(value)) continue;
-      if (Math.abs(value - neutralOf(def)) > 0.001) return true;
+  /** Color, Distortion, and Motion begin closed. A click still opens that header. */
+  #masterStartsClosed(group) {
+    return group === 'Color & Texture' || group === 'Distortion & Glitch' || group === 'Motion & Timing' || group === 'Barrel';
+  }
+
+  /** Shader sections follow the layer's current look. Source, Geometry, and Audio stay put. */
+  #foldShaderGroups(layer) {
+    const mode = MODES[this.params.get(layerParam(layer, 'mode'))];
+    const current = MODE_LABELS[MODES.indexOf(mode)];
+    for (const block of this.blocks.values()) {
+      if (block.el.dataset.layer !== layer) continue;
+      const group = block.el.dataset.group;
+      if (!MODE_LABELS.includes(group)) continue;
+      this.#setFold(block.el, group !== current, false);
     }
-    return false;
   }
 
   /**
@@ -1066,26 +1227,22 @@ export class Panel {
    * Closing a section only hides its sliders.
    */
   applyFoldDefaults() {
-    const master = [...this.blocks.values()]
-      .filter((block) => block.el.dataset.layer === 'master')
-      .sort((a, b) => {
-        const rank = (el) => {
-          const i = CATEGORY_ORDER.indexOf(el.dataset.group);
-          return i < 0 ? 99 : i;
-        };
-        return rank(a.el) - rank(b.el);
-      });
-    const hot = master.find((block) => this.#groupHot('master', block.el.dataset.group));
-    const masterOpen = (hot || master[0])?.el.dataset.group;
     for (const block of this.blocks.values()) {
       const { layer, group } = block.el.dataset;
       const key = `${layer}:${group}`;
+      if (layer === 'master' && this.#masterStartsClosed(group)) {
+        this.#setFold(block.el, true, false);
+        continue;
+      }
+      if (layer !== 'master' && MODE_LABELS.includes(group)) {
+        this.#foldShaderGroups(layer);
+        continue;
+      }
       if (Object.prototype.hasOwnProperty.call(this.folds, key)) {
         this.#setFold(block.el, !!this.folds[key], false);
         continue;
       }
-      const collapsed = layer === 'master' ? group !== masterOpen : group !== 'Source & Playback';
-      this.#setFold(block.el, collapsed, false);
+      this.#setFold(block.el, group !== 'Source & Playback', false);
     }
   }
 
@@ -1168,6 +1325,7 @@ export class Panel {
       const any = [...block.body.children].some((row) => !row.hidden);
       block.el.hidden = !any;
     }
+    this.#foldShaderGroups(this.selected);
   }
 
   refreshMidi() {

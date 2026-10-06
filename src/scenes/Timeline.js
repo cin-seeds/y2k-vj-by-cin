@@ -4,9 +4,12 @@
 import { normalizeMarker } from '../project/ProjectState.js';
 
 const STORAGE_KEY = 'vj.timeline';
+const BARS_MAX = 2048;
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 export class Timeline {
+  #batching = false;
+
   constructor(project = null) {
     this.project = project;
     this.bpm = 120;
@@ -19,6 +22,8 @@ export class Timeline {
     this.playing = false;
     this.beat = 0;
     this.onTrigger = () => {};
+    this.onEdit = null;
+    this.historyCommit = null;
     this.listeners = new Set();
     if (project) this.#fromProject(project);
     else this.#load();
@@ -42,7 +47,7 @@ export class Timeline {
 
   load(data = {}) {
     this.bpm = clamp(Number(data.bpm) || 120, 20, 300);
-    this.bars = clamp(Math.round(Number(data.bars) || 16), 1, 128);
+    this.bars = clamp(Math.round(Number(data.bars) || 16), 1, BARS_MAX);
     this.loop = data.loop ?? true;
     this.fadeBeats = clamp(Number(data.fadeBeats ?? 4), 0, 32);
     this.fadeSec = clamp(Number(data.fadeSec ?? (this.fadeBeats * 60) / this.bpm), 0, 10);
@@ -54,10 +59,24 @@ export class Timeline {
     this.#changed();
   }
 
-  set(field, value) {
+  /** Several cue edits become one undo step. */
+  batch(fn) {
+    if (this.#batching) return fn();
+    const before = this.#snap();
+    this.#batching = true;
+    try {
+      return fn();
+    } finally {
+      this.#batching = false;
+      this.#note(before, 'batch', 'commit');
+    }
+  }
+
+  set(field, value, opts = {}) {
+    const before = this.#snap();
     if (field === 'bpm') this.bpm = clamp(Number(value) || this.bpm, 20, 300);
     else if (field === 'bars') {
-      this.bars = clamp(Math.round(Number(value)) || this.bars, 1, 128);
+      this.bars = clamp(Math.round(Number(value)) || this.bars, 1, BARS_MAX);
       this.cues = this.cues.filter((c) => c.beat < this.lengthBeats);
       this.beat = Math.min(this.beat, this.lengthBeats);
     } else if (field === 'loop') this.loop = !!value;
@@ -65,9 +84,11 @@ export class Timeline {
     else if (field === 'fadeSec') this.fadeSec = clamp(Number(value), 0, 10);
     else if (field === 'fadeStyle') this.fadeStyle = clamp(Math.round(Number(value) || 0), 0, 2);
     this.#changed();
+    this.#note(before, field, opts.history);
   }
 
-  addCue(beat, sceneId) {
+  addCue(beat, sceneId, opts = {}) {
+    const before = this.#snap();
     const b = clamp(Math.round(beat), 0, this.lengthBeats - 1);
     // One cue per beat: dropping onto an occupied beat replaces it.
     this.cues = this.cues.filter((c) => c.beat !== b);
@@ -79,13 +100,15 @@ export class Timeline {
     };
     this.cues.push(cue);
     this.#changed();
+    this.#note(before, 'cues', opts.history);
     return cue;
   }
 
   /** A library clip on a layer track, starting at a beat. */
-  addClip(beat, { mediaId, mediaName, layerId } = {}) {
+  addClip(beat, { mediaId, mediaName, layerId } = {}, opts = {}) {
     const name = String(mediaName || mediaId || '').trim();
     if (!name) return null;
+    const before = this.#snap();
     const b = clamp(Math.round(beat), 0, this.lengthBeats - 1);
     this.cues = this.cues.filter((c) => c.beat !== b);
     const cue = {
@@ -99,6 +122,7 @@ export class Timeline {
     };
     this.cues.push(cue);
     this.#changed();
+    this.#note(before, 'cues', opts.history);
     return cue;
   }
 
@@ -109,26 +133,32 @@ export class Timeline {
     return { ...norm, beat, bar: Math.floor(beat / 4) };
   }
 
-  moveCue(id, beat) {
+  moveCue(id, beat, opts = {}) {
     const cue = this.cues.find((c) => c.id === id);
     if (!cue) return;
+    const before = this.#snap();
     const b = clamp(Math.round(beat), 0, this.lengthBeats - 1);
     if (b === cue.beat) return;
     this.cues = this.cues.filter((c) => c.id === id || c.beat !== b);
     cue.beat = b;
     cue.bar = Math.floor(b / 4);
     this.#changed();
+    this.#note(before, `cue:${id}`, opts.history);
   }
 
-  removeCue(id) {
+  removeCue(id, opts = {}) {
+    const before = this.#snap();
     this.cues = this.cues.filter((c) => c.id !== id);
     this.#changed();
+    this.#note(before, 'cues', opts.history);
   }
 
-  removeScene(sceneId) {
-    const before = this.cues.length;
+  removeScene(sceneId, opts = {}) {
+    const before = this.#snap();
+    const count = this.cues.length;
     this.cues = this.cues.filter((c) => c.sceneId !== sceneId);
-    if (this.cues.length !== before) this.#changed();
+    if (this.cues.length !== count) this.#changed();
+    this.#note(before, 'cues', opts.history);
   }
 
   play() {
@@ -200,6 +230,17 @@ export class Timeline {
     this.listeners.add(fn);
   }
 
+  #snap() {
+    return structuredClone(this.toJSON());
+  }
+
+  #note(before, field, history = 'commit') {
+    if (history === false || this.#batching || typeof this.onEdit !== 'function') return;
+    const after = this.#snap();
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    this.onEdit(before, after, field, history === true ? 'commit' : history);
+  }
+
   #changed() {
     if (this.project) {
       this.project.adoptTimeline(this.cues, {
@@ -233,7 +274,7 @@ export class Timeline {
       const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (raw) {
         this.bpm = clamp(Number(raw.bpm) || 120, 20, 300);
-        this.bars = clamp(Math.round(Number(raw.bars) || 16), 1, 128);
+        this.bars = clamp(Math.round(Number(raw.bars) || 16), 1, BARS_MAX);
         this.loop = raw.loop ?? true;
         this.fadeBeats = clamp(Number(raw.fadeBeats ?? 4), 0, 32);
         this.fadeSec = clamp(Number(raw.fadeSec ?? (this.fadeBeats * 60) / this.bpm), 0, 10);

@@ -550,7 +550,7 @@ export class Layer {
           incoming.dispose();
           this.missing = name;
           this.mediaError = true;
-          this.mediaStatus = `missing: add "${name}" to the media library`;
+          this.mediaStatus = `missing: send "${name}" from Media Manager`;
           return;
         }
         this.mediaStatus = 'loading...';
@@ -578,7 +578,7 @@ export class Layer {
           incoming.dispose();
           this.missing = name;
           this.mediaError = true;
-          this.mediaStatus = `missing: add "${name}" to the media library`;
+          this.mediaStatus = `missing: send "${name}" from Media Manager`;
           return;
         }
         this.mediaStatus = 'loading...';

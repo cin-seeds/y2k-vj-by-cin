@@ -1,6 +1,6 @@
 // Media Prep. The live desk hides while this queue is up. Transcoding runs
-// in the desktop app: FFmpeg is a Tauri sidecar and writes into the shared
-// media library folder (the Stock Media Download Folder, or Videos/Y2K VJ).
+// in the desktop app: FFmpeg is a Tauri sidecar and writes H.264 into the
+// permanent global library (app data / global_media).
 
 import { isTauri } from '../output/OutputWindow.js';
 
@@ -137,18 +137,23 @@ async function stageFile(job, saveDir) {
   return path;
 }
 
-async function fileFromOutput(outputPath) {
-  const leaf = outputPath.split(/[\\/]/).pop();
-  if (!leaf) throw new Error('That video has no file name.');
-  const { convertFileSrc } = await import('@tauri-apps/api/core');
-  const response = await fetch(convertFileSrc(outputPath));
-  if (!response.ok) throw new Error('Could not read that video.');
-  const blob = await response.blob();
-  return new File([blob], leaf, { type: blob.type || 'video/mp4' });
+function noteGlobalSave() {
+  window.dispatchEvent(new CustomEvent('vj-global-media'));
 }
 
-async function importPrepared(outputPath) {
-  libraryRef.add([await fileFromOutput(outputPath)]);
+async function importPrepared() {
+  noteGlobalSave();
+}
+
+async function resolveSaveDir(ensureStockDir) {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const dir = await invoke('global_media_dir');
+      if (dir) return dir;
+    } catch { /* the stock folder is the fallback */ }
+  }
+  return ensureStockDir();
 }
 
 let libraryRef = null;
@@ -170,15 +175,25 @@ async function bypassDirect(job) {
     await invoke('transcode_cancel', { jobId: job.id }).catch(() => {});
   }
   try {
-    let file = job.file;
-    if (!file && job.path && isTauri()) file = await fileFromOutput(job.path);
+    if (job.path && isTauri()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('copy_into_global_media', { inputPath: job.path });
+      job.settled = true;
+      setPercent(job, 100);
+      paintJob(job, 'Saved to Media Manager', 'done');
+      prepShowToast?.('Saved to Media Manager');
+      noteGlobalSave();
+      return;
+    }
+    const file = job.file;
     if (!file) throw new Error('Drop the video again to add it without transcoding.');
     const added = libraryRef.add([file]);
     if (!added.length) throw new Error('That file is not a video the library can use.');
     job.settled = true;
     setPercent(job, 100);
-    paintJob(job, 'Added to library', 'done');
-    prepShowToast?.(`Added ${added[0]}`);
+    paintJob(job, 'Saved to Media Manager', 'done');
+    prepShowToast?.(`Saved ${added[0]} to Media Manager`);
+    noteGlobalSave();
   } catch (err) {
     job.bypassed = false;
     job.bypass.disabled = false;
@@ -196,7 +211,7 @@ async function runJob(job, ensureStockDir, showToast) {
   try {
     await ensureListen();
     if (job.bypassed) return;
-    const saveDir = await ensureStockDir();
+    const saveDir = await resolveSaveDir(ensureStockDir);
     let inputPath = job.path;
     if (!inputPath) {
       if (!job.file) throw new Error('That video has no file path.');
@@ -223,8 +238,8 @@ async function runJob(job, ensureStockDir, showToast) {
     setPercent(job, 100);
     const leaf = String(output).split(/[\\/]/).pop() || job.name;
     paintJob(job, `Saved ${leaf}`, 'done');
-    showToast(`Saved ${leaf}`);
-    try { await importPrepared(output); } catch { /* the file is already in the library folder */ }
+    showToast(`Saved ${leaf} to Media Manager`);
+    try { await importPrepared(); } catch { /* the file is already in the global folder */ }
   } catch (err) {
     if (job.bypassed) return;
     paintJob(job, err?.message || String(err) || 'Transcode failed', 'failed');
@@ -245,6 +260,10 @@ async function pump(ensureStockDir, showToast) {
 function enqueue(name, path, file, ensureStockDir, showToast) {
   addJob(name, path, file);
   pump(ensureStockDir, showToast);
+}
+
+export function queueMediaPrep(name, path, file) {
+  enqueue(name, path, file, async () => '', prepShowToast || (() => {}));
 }
 
 export function bindMediaPrep({ library, ensureStockDir, showToast }) {

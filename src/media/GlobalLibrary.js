@@ -1,0 +1,686 @@
+// Global Media Library. Files live in the app-data folder (or, in the browser
+// preview, in the IndexedDB cache). A project only keeps the names it pulls in.
+
+import { isTauri } from '../output/OutputWindow.js';
+import { queueMediaPrep } from './mediaPrep.js';
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
+const AUDIO_EXT = /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i;
+
+function isAudioRow(row) {
+  return AUDIO_EXT.test(row?.name || '') || AUDIO_EXT.test(row?.path || '');
+}
+
+export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSnapshot, showToast }) {
+  const modal = document.getElementById('global-library');
+  const grid = document.getElementById('prep-grid');
+  const empty = document.getElementById('prep-gallery-empty');
+  const drop = document.getElementById('global-drop');
+  const send = document.getElementById('prep-send');
+  const thumbs = new Map();
+  const selected = new Set();
+  const tagInput = document.getElementById('prep-tag-input');
+  const tagAdd = document.getElementById('prep-tag-add');
+  const tagFilters = document.getElementById('prep-tag-filters');
+  let mediaTags = readMediaTags();
+  let tagFilter = '';
+  const block = document.getElementById('global-delete');
+  const preview = document.createElement('video');
+  preview.className = 'gallery-preview';
+  preview.muted = true;
+  preview.loop = true;
+  preview.playsInline = true;
+  preview.preload = 'auto';
+  let previewUrl = '';
+  let previewToken = 0;
+  let thumbChain = Promise.resolve();
+  let open = false;
+  let pendingDelete = null;
+  let latest = [];
+
+  function close() {
+    open = false;
+    modal.hidden = true;
+  }
+
+  async function catalog() {
+    const disk = [];
+    if (isTauri()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const rows = await invoke('list_global_media', { saveDir: stockSaveDir() });
+        if (Array.isArray(rows)) disk.push(...rows);
+      } catch (err) {
+        showToast?.(err?.message || 'Could not read Media Manager', true);
+      }
+    }
+    const seen = new Set(disk.map((row) => row.name));
+    const local = [];
+    for (const name of library.names) {
+      if (seen.has(name)) continue;
+      const item = library.mediaItem(name);
+      local.push({
+        name,
+        path: '',
+        thumbnail: item?.thumbnail || '',
+      });
+    }
+    return [...disk, ...local];
+  }
+
+  function paintSend() {
+    const waiting = [...selected].filter((name) => !inBin(name));
+    if (send) {
+      send.disabled = waiting.length === 0;
+      send.textContent = waiting.length ? `Send ${waiting.length} to Project Media` : 'Send to Project Media';
+    }
+  }
+
+  function toggleSelect(name) {
+    if (selected.has(name)) selected.delete(name);
+    else selected.add(name);
+    paint(latest);
+  }
+
+  function stopPreview() {
+    previewToken += 1;
+    preview.pause();
+    preview.remove();
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      previewUrl = '';
+    }
+    preview.removeAttribute('src');
+  }
+
+  async function startPreview(card, row) {
+    if (isAudioRow(row) || IMAGE_EXT.test(row.name) || IMAGE_EXT.test(row.path || '')) return;
+    const token = ++previewToken;
+    preview.pause();
+    preview.remove();
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      previewUrl = '';
+    }
+    const src = await previewSrc(row);
+    if (!src || token !== previewToken || !card.isConnected || !card.matches(':hover')) {
+      if (previewUrl && token === previewToken) {
+        URL.revokeObjectURL(previewUrl);
+        previewUrl = '';
+      }
+      return;
+    }
+    preview.src = src;
+    card.append(preview);
+    preview.play().catch(() => {});
+  }
+
+  async function previewSrc(row) {
+    if (row.path && isTauri()) {
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      return convertFileSrc(row.path);
+    }
+    const item = library.mediaItem?.(row.name);
+    if (item?.url) return item.url;
+    if (item?.file) {
+      previewUrl = URL.createObjectURL(item.file);
+      return previewUrl;
+    }
+    return '';
+  }
+
+  function paint(rows) {
+    latest = rows;
+    const live = new Set(rows.map((row) => row.name));
+    for (const name of [...selected]) if (!live.has(name)) selected.delete(name);
+    const visible = tagFilter
+      ? rows.filter((row) => tagsFor(row.name).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase()))
+      : rows;
+    stopPreview();
+    grid.innerHTML = '';
+    if (empty) {
+      empty.hidden = visible.length > 0;
+      empty.textContent = rows.length && !visible.length
+        ? `No clips tagged ${tagFilter}.`
+        : 'No media stored yet. Drop a video above.';
+    }
+    for (const row of visible) {
+      const card = document.createElement('div');
+      const present = inBin(row.name);
+      card.className = 'global-card';
+      card.classList.toggle('in-bin', present);
+      card.classList.toggle('is-selected', selected.has(row.name));
+      card.tabIndex = 0;
+      card.role = 'button';
+      card.title = present ? `${row.name} is in this project` : `Select ${row.name}`;
+      card.setAttribute('aria-pressed', selected.has(row.name) ? 'true' : 'false');
+      const audio = isAudioRow(row);
+      const img = document.createElement('img');
+      img.alt = '';
+      const cached = audio ? '' : (row.thumbnail || thumbs.get(row.path || row.name) || '');
+      if (cached) img.src = cached;
+      else img.hidden = true;
+      const label = document.createElement('span');
+      label.className = 'global-name';
+      label.textContent = present ? `${row.name} · in project` : row.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'global-delete';
+      remove.textContent = '\u00d7';
+      remove.title = `Delete ${row.name}`;
+      remove.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        requestDelete(row);
+      });
+      const tagged = tagsFor(row.name);
+      const tags = document.createElement('span');
+      tags.className = 'global-tags';
+      tags.textContent = tagged.join(' · ');
+      tags.title = tagged.join(', ');
+      if (!tagged.length) tags.hidden = true;
+      if (audio) {
+        card.classList.add('is-audio');
+        const mark = document.createElement('i');
+        mark.className = 'audio-mark';
+        mark.textContent = '\u266A';
+        mark.title = 'Audio';
+        card.append(mark, tags, label, remove);
+      } else {
+        card.append(img, tags, label, remove);
+      }
+      card.addEventListener('click', () => toggleSelect(row.name));
+      card.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') toggleSelect(row.name);
+      });
+      card.addEventListener('pointerenter', () => startPreview(card, row));
+      card.addEventListener('pointerleave', () => {
+        if (preview.parentElement === card) stopPreview();
+      });
+      grid.append(card);
+      if (!audio && !cached && row.path) queueThumb(row, img);
+    }
+    paintSend();
+    paintTagFilters();
+  }
+
+  function tagsFor(name) {
+    return Array.isArray(mediaTags[name]) ? mediaTags[name] : [];
+  }
+
+  function writeMediaTags() {
+    try {
+      if (!Object.keys(mediaTags).length) localStorage.removeItem(MEDIA_TAG_KEY);
+      else localStorage.setItem(MEDIA_TAG_KEY, JSON.stringify(mediaTags));
+    } catch { /* ignore */ }
+  }
+
+  function knownTag(value) {
+    const next = cleanTag(value);
+    const key = next.toLowerCase();
+    if (!key) return '';
+    for (const list of Object.values(mediaTags)) {
+      const found = list.find((tag) => tag.toLowerCase() === key);
+      if (found) return found;
+    }
+    return next;
+  }
+
+  function collectedTags() {
+    const seen = new Map();
+    for (const row of latest) {
+      for (const tag of tagsFor(row.name)) {
+        const key = tag.toLowerCase();
+        if (!seen.has(key)) seen.set(key, tag);
+      }
+    }
+    return [...seen.values()];
+  }
+
+  function paintTagFilters() {
+    if (!tagFilters) return;
+    const tags = collectedTags();
+    if (tagFilter && !tags.some((tag) => tag.toLowerCase() === tagFilter.toLowerCase())) tagFilter = '';
+    tagFilters.hidden = tags.length === 0;
+    tagFilters.innerHTML = '';
+    for (const tag of tags) {
+      const on = tag.toLowerCase() === tagFilter.toLowerCase();
+      const chip = document.createElement('div');
+      chip.className = 'prep-tag';
+      chip.classList.toggle('is-on', on);
+      const name = document.createElement('button');
+      name.type = 'button';
+      name.className = 'prep-tag-name';
+      name.textContent = tag;
+      name.title = on ? `Showing ${tag}` : `Show clips tagged ${tag}`;
+      name.addEventListener('click', () => {
+        tagFilter = on ? '' : tag;
+        paint(latest);
+      });
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'prep-tag-x';
+      remove.textContent = '\u00d7';
+      remove.title = `Remove ${tag}`;
+      remove.addEventListener('click', () => clearTag(tag));
+      chip.append(name, remove);
+      tagFilters.append(chip);
+    }
+  }
+
+  function applyTag() {
+    const tag = knownTag(tagInput?.value || '');
+    if (!tag) return;
+    if (!selected.size) {
+      showToast?.('Select clips, then tag them');
+      return;
+    }
+    for (const name of selected) {
+      const list = tagsFor(name).slice();
+      if (!list.some((item) => item.toLowerCase() === tag.toLowerCase())) list.push(tag);
+      mediaTags[name] = list.slice(0, 8);
+    }
+    writeMediaTags();
+    if (tagInput) tagInput.value = '';
+    if (tagAdd) tagAdd.disabled = true;
+    paint(latest);
+  }
+
+  function clearTag(tag) {
+    const key = tag.toLowerCase();
+    for (const name of Object.keys(mediaTags)) {
+      const list = tagsFor(name).filter((item) => item.toLowerCase() !== key);
+      if (list.length) mediaTags[name] = list;
+      else delete mediaTags[name];
+    }
+    if (tagFilter.toLowerCase() === key) tagFilter = '';
+    writeMediaTags();
+    paint(latest);
+  }
+
+  function queueThumb(row, img) {
+    thumbChain = thumbChain.then(() => captureSquare(row.path).then((url) => {
+      if (!url) return;
+      thumbs.set(row.path, url);
+      if (!img.isConnected) return;
+      img.src = url;
+      img.hidden = false;
+    }).catch(() => {}));
+  }
+
+  async function render() {
+    const rows = await catalog();
+    paint(rows);
+  }
+
+  function sendSelected() {
+    const picked = latest.filter((row) => selected.has(row.name) && !inBin(row.name));
+    if (!picked.length) {
+      showToast?.('Select clips that are not already in this project');
+      return;
+    }
+    let sent = 0;
+    for (const row of picked) {
+      if (onAdd(row, { quiet: true })) sent += 1;
+    }
+    selected.clear();
+    paint(latest);
+    if (!sent) {
+      showToast?.('Those clips are already in this project');
+      return;
+    }
+    showToast?.(sent === 1 ? `Sent ${picked[0].name} to Project Media` : `Sent ${sent} clips to Project Media`);
+  }
+
+  function show() {
+    open = true;
+    modal.hidden = false;
+    render();
+  }
+
+  function ingest(files, event) {
+    let queued = 0;
+    for (const file of files) {
+      const name = file.name || 'media';
+      const video = file.type.startsWith('video/') || VIDEO_EXT.test(name);
+      const image = file.type.startsWith('image/') || IMAGE_EXT.test(name);
+      if (!video && !image) continue;
+      const path = pathFrom(file, event);
+      if (isTauri() && video) {
+        queueMediaPrep(name, path, path ? null : file);
+        queued += 1;
+        continue;
+      }
+      if (isTauri() && image && path) {
+        import('@tauri-apps/api/core').then(({ invoke }) => invoke('copy_into_global_media', { inputPath: path }))
+          .then(() => window.dispatchEvent(new CustomEvent('vj-global-media')))
+          .catch((err) => showToast?.(err?.message || 'Could not save that image', true));
+        queued += 1;
+        continue;
+      }
+      library.add([file]);
+      queued += 1;
+    }
+    if (queued && !isTauri()) render();
+    return queued;
+  }
+
+  async function choose() {
+    if (isTauri()) {
+      const { open: pick } = await import('@tauri-apps/plugin-dialog');
+      const picked = await pick({
+        multiple: true,
+        title: 'Media for Media Manager',
+        filters: [{
+          name: 'Media',
+          extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpg', 'mpeg', 'png', 'jpg', 'jpeg', 'gif', 'webp'],
+        }],
+      });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      for (const path of paths) {
+        const name = String(path).split(/[\\/]/).pop() || 'media';
+        if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null);
+        else if (IMAGE_EXT.test(name)) {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('copy_into_global_media', { inputPath: path });
+        }
+      }
+      window.dispatchEvent(new CustomEvent('vj-global-media'));
+      showToast?.('Saving to Media Manager');
+      return;
+    }
+    document.getElementById('media-files').click();
+  }
+
+  document.getElementById('global-close').addEventListener('click', close);
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) close();
+  });
+  function hideBlock() {
+    pendingDelete = null;
+    block.hidden = true;
+  }
+
+  function showBlock(row, uses) {
+    const names = [...new Set(uses.map((item) => item.project).filter(Boolean))];
+    const lead = names.length ? names.join(', ') : 'a saved project';
+    document.getElementById('global-delete-lead').textContent = `Cannot delete: This file is currently used in ${lead}.`;
+    const list = document.getElementById('global-delete-uses');
+    list.innerHTML = '';
+    for (const item of uses) {
+      const li = document.createElement('li');
+      const places = Array.isArray(item.places) && item.places.length ? item.places.join(', ') : 'Project Media';
+      li.textContent = `${item.project}: ${places}`;
+      list.append(li);
+    }
+    document.getElementById('global-delete-note').textContent = `Delete anyway and ${lead} will keep a missing file named ${row.name}.`;
+    block.hidden = false;
+  }
+
+  async function finishDelete(row, uses) {
+    onDeleted?.(row.name);
+    thumbs.delete(row.path || row.name);
+    const names = [...new Set((uses || []).map((item) => item.project).filter(Boolean))];
+    if (names.length) showToast?.(`Deleted ${row.name}. Missing file in ${names.join(', ')}.`);
+    else showToast?.(`Deleted ${row.name}`);
+    await render();
+  }
+
+  async function requestDelete(row, force = false) {
+    const snapshot = projectSnapshot?.() || { name: 'This project', path: '', document: '{}' };
+    let outcome;
+    try {
+      outcome = await checkDelete(row, snapshot, force);
+    } catch (err) {
+      showToast?.(err?.message || String(err) || 'Could not delete that file', true);
+      return;
+    }
+    if (!outcome?.deleted) {
+      const uses = outcome?.uses || [];
+      if (!uses.length) {
+        showToast?.('Could not delete that file', true);
+        return;
+      }
+      pendingDelete = row;
+      showBlock(row, uses);
+      return;
+    }
+    hideBlock();
+    await finishDelete(row, outcome.uses || []);
+  }
+
+  document.getElementById('global-delete-cancel').addEventListener('click', hideBlock);
+  document.getElementById('global-delete-force').addEventListener('click', () => {
+    if (pendingDelete) requestDelete(pendingDelete, true);
+  });
+  block.addEventListener('click', (event) => {
+    if (event.target === block) hideBlock();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (!block.hidden) {
+      hideBlock();
+      return;
+    }
+    if (open) close();
+  });
+  window.addEventListener('vj-global-media', () => render());
+  library.onChange(() => render());
+  send?.addEventListener('click', sendSelected);
+  tagInput?.addEventListener('input', () => {
+    if (tagAdd) tagAdd.disabled = !cleanTag(tagInput.value);
+  });
+  tagInput?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    applyTag();
+  });
+  tagAdd?.addEventListener('click', applyTag);
+  drop.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    drop.classList.add('over');
+  });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    drop.classList.remove('over');
+    const count = ingest([...(event.dataTransfer?.files || [])], event);
+    if (count && isTauri()) showToast?.('Saving to Media Manager');
+  });
+  drop.addEventListener('click', () => choose());
+  document.getElementById('global-upload').addEventListener('click', (event) => {
+    event.stopPropagation();
+    choose();
+  });
+
+  render();
+  return { open: show, refresh: render, ingest, close };
+}
+
+function stockSaveDir() {
+  try { return localStorage.getItem('vj.stockDir')?.trim() || ''; } catch { return ''; }
+}
+
+const MEDIA_TAG_KEY = 'vj.mediaTags';
+
+function cleanTag(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 24);
+}
+
+function readMediaTags() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MEDIA_TAG_KEY) || '{}');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out = {};
+    for (const [name, tags] of Object.entries(raw)) {
+      const list = [];
+      const seen = new Set();
+      for (const tag of Array.isArray(tags) ? tags : []) {
+        const next = cleanTag(tag);
+        const key = next.toLowerCase();
+        if (!next || seen.has(key)) continue;
+        seen.add(key);
+        list.push(next);
+      }
+      if (name && list.length) out[name] = list.slice(0, 8);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function pathFrom(file, event) {
+  if (typeof file?.path === 'string' && file.path) return file.path;
+  const uri = event?.dataTransfer?.getData?.('text/uri-list') || '';
+  const line = uri.split(/\r?\n/).map((part) => part.trim()).find((part) => part.startsWith('file:'));
+  if (!line) return '';
+  try {
+    const url = new URL(line);
+    let path = decodeURIComponent(url.pathname);
+    if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
+    return path;
+  } catch {
+    return '';
+  }
+}
+
+function paintCover(source, sw, sh) {
+  const size = 80;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  ctx.fillStyle = '#070a14';
+  ctx.fillRect(0, 0, size, size);
+  if (sw > 0 && sh > 0) {
+    const scale = Math.max(size / sw, size / sh);
+    const w = sw * scale;
+    const h = sh * scale;
+    ctx.drawImage(source, (size - w) / 2, (size - h) / 2, w, h);
+  }
+  return canvas.toDataURL('image/jpeg', 0.7);
+}
+
+async function captureSquare(filePath) {
+  const { convertFileSrc } = await import('@tauri-apps/api/core');
+  const src = convertFileSrc(filePath);
+  if (IMAGE_EXT.test(filePath)) {
+    const img = new Image();
+    img.src = src;
+    await new Promise((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('thumb'));
+    });
+    return paintCover(img, img.naturalWidth, img.naturalHeight);
+  }
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  video.src = src;
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('thumb')), 8000);
+    video.onloadeddata = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    video.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error('thumb'));
+    };
+  });
+  const at = Number.isFinite(video.duration) ? Math.min(0.25, Math.max(0, video.duration * 0.1)) : 0;
+  if (at > 0) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1500);
+      video.onseeked = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      video.currentTime = at;
+    });
+  }
+  const url = paintCover(video, video.videoWidth, video.videoHeight);
+  video.removeAttribute('src');
+  video.load();
+  return url;
+}
+
+async function checkDelete(row, snapshot, force) {
+  if (isTauri() && row.path) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('delete_global_media', {
+      path: row.path,
+      force,
+      projects: [snapshot],
+      saveDir: stockSaveDir(),
+    });
+  }
+  let doc = {};
+  try { doc = JSON.parse(snapshot.document || '{}'); } catch { doc = {}; }
+  const uses = usesInDocument(doc, snapshot.name || 'This project', row);
+  if (uses.length && !force) return { deleted: false, uses };
+  return { deleted: true, uses };
+}
+
+function sameName(left, right) {
+  const a = String(left || '').trim();
+  const b = String(right || '').trim();
+  return a.length > 0 && a.toLowerCase() === b.toLowerCase();
+}
+
+function samePath(left, right) {
+  const norm = (value) => String(value || '').replace(/\\/g, '/').trim().replace(/\/+$/, '').toLowerCase();
+  const a = norm(left);
+  const b = norm(right);
+  return a.length > 0 && a === b;
+}
+
+function keyName(key) {
+  const text = String(key || '');
+  const cut = text.lastIndexOf(':');
+  return cut >= 0 ? text.slice(cut + 1) : text;
+}
+
+function slotUses(slot, filePath, leaf) {
+  if (!slot || typeof slot !== 'object') return false;
+  const key = slot.key || '';
+  const name = keyName(key);
+  return sameName(name, leaf) || sameName(slot.label, leaf) || samePath(name, filePath) || samePath(key, filePath);
+}
+
+function usesInDocument(doc, projectName, row) {
+  const leaf = row.name || '';
+  const filePath = row.path || '';
+  const places = [];
+  const pool = Array.isArray(doc.mediaPool) ? doc.mediaPool : [];
+  if (pool.some((item) => item && (sameName(item.name || item.id, leaf) || samePath(item.path, filePath) || samePath(item.name, filePath)))) {
+    places.push('Project Media');
+  }
+  const scenes = Array.isArray(doc.scenes) ? doc.scenes : [];
+  for (const scene of scenes) {
+    const sceneName = scene?.name || 'Untitled scene';
+    const media = scene?.media && typeof scene.media === 'object' ? scene.media : {};
+    for (const [layer, slot] of Object.entries(media)) {
+      if (slotUses(slot, filePath, leaf)) places.push(`Scene "${sceneName}" on layer ${layer}`);
+    }
+  }
+  const cues = Array.isArray(doc.timeline) ? doc.timeline : [];
+  for (const cue of cues) {
+    const mediaName = cue?.mediaName || cue?.mediaId || '';
+    if (sameName(mediaName, leaf) || samePath(mediaName, filePath)) {
+      places.push(`Timeline clip on layer ${cue.layerId || 'A'}`);
+    }
+  }
+  const live = doc.live?.media && typeof doc.live.media === 'object' ? doc.live.media : {};
+  for (const [layer, slot] of Object.entries(live)) {
+    if (slotUses(slot, filePath, leaf)) places.push(`Live layer ${layer}`);
+  }
+  const unique = [...new Set(places)];
+  if (!unique.length) return [];
+  return [{ project: projectName || 'This project', places: unique }];
+}

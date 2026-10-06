@@ -8,7 +8,7 @@ export const BAND = { all: 0, bass: 1, mids: 2, treble: 3, off: 4 };
 
 /** Natural audio band per look. Particles and Hydra engines also use bass. */
 export const NATURAL_BANDS = {
-  bass: ['glitch', 'y2k', 'dither', 'eater', 'starfield', 'flash', 'ps1', 'win98', 'ascii', 'points', 'mesh', 'metal'],
+  bass: ['glitch', 'y2k', 'dither', 'eater', 'starfield', 'flash', 'ps1', 'win98', 'ascii', 'metal'],
   treble: ['vhs', 'retro'],
   off: ['clean', 'minidv'],
 };

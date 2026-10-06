@@ -9,19 +9,19 @@
     <div class="app" id="app">
       <header class="topbar">
         <div class="file-launch">
-          <button id="file-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Project and view">File</button>
+          <button id="file-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Project and view">Hello</button>
           <div id="file-menu" class="file-menu" hidden role="menu">
             <p class="menu-label">Project</p>
             <button id="scenes-new" type="button" role="menuitem">New Project</button>
             <button id="scenes-import" type="button" role="menuitem">Load Project</button>
-            <button id="scenes-export" type="button" role="menuitem">Save</button>
+            <button id="scenes-export" type="button" role="menuitem" title="Save this project's media, audio, levels, output, recording settings, and which Hello views are open.">Save</button>
             <button id="scenes-save-new" type="button" role="menuitem">Save New</button>
             <button id="prefs-btn" type="button" role="menuitem" title="UI scale">Preferences</button>
             <button id="guide-btn" type="button" role="menuitem">Guide</button>
             <input id="scenes-import-file" type="file" accept=".vjproj,.json,application/json" hidden />
             <p class="menu-label">View</p>
             <label class="menu-check"><input id="view-timeline" type="checkbox" checked /> Timeline</label>
-            <label class="menu-check"><input id="view-library" type="checkbox" checked /> Media Library</label>
+            <label class="menu-check"><input id="view-library" type="checkbox" checked /> Project Media</label>
             <label class="menu-check"><input id="view-inspector" type="checkbox" checked /> Inspector</label>
             <label class="menu-check"><input id="view-layer-a" type="checkbox" checked /> Layer A</label>
             <label class="menu-check"><input id="view-layer-b" type="checkbox" checked /> Layer B</label>
@@ -30,11 +30,15 @@
           </div>
         </div>
         <div class="desk-mode" role="group" aria-label="Workspace">
-          <button id="mode-prep" type="button" aria-pressed="false">Media Manager</button>
+          <button id="mode-prep" type="button" aria-pressed="false" title="Open Media Manager. Click again to return to Live or Perform.">Media Manager</button>
           <button id="mode-live" type="button" class="on" aria-pressed="true">Live</button>
           <button id="mode-midi" type="button" aria-pressed="false">Perform</button>
         </div>
         <span class="logo">Y2K&nbsp;VJ<em>//</em>BY&nbsp;CÍN</span>
+        <div class="history-launch">
+          <button id="undo-btn" type="button" title="Undo (Ctrl+Z)" disabled>Undo</button>
+          <button id="redo-btn" type="button" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" disabled>Redo</button>
+        </div>
         <div class="top-status">
           <span id="fps" class="fps">-- fps</span>
           <div class="master-transport" role="group" aria-label="Master transport">
@@ -43,15 +47,8 @@
             <button id="master-stop" type="button" aria-pressed="false" title="Stop. Synced video returns to the first frame, the timeline returns to the start, and the output goes black.">&#x25A0;</button>
           </div>
           <div class="top-tools">
-            <select id="rec-aspect" title="Frame written into the recording. Native keeps the current render size.">
-              <option value="16:9">16:9</option>
-              <option value="9:16">9:16</option>
-              <option value="1:1">1:1</option>
-              <option value="native">Native</option>
-            </select>
             <button id="rec-btn" type="button" class="rec">&#x25CF; REC</button>
             <span id="rec-time" class="status"></span>
-            <button id="diag-toggle" type="button" title="Open the routing and performance helper">Diagnostics</button>
           </div>
         </div>
       </header>
@@ -60,7 +57,7 @@
       <section id="media-prep" class="media-prep" hidden>
         <header class="prep-head">
           <h2>Media Manager</h2>
-          <p>Drop a video. It is fitted to 1920×1080, encoded for smooth WebGL playback, and saved into the media library folder.</p>
+          <p>Drop a video to fit it to 1920×1080 and store it here. Every file keeps a thumbnail. Hover a video to preview it, select the ones you want, and send them to Project Media.</p>
         </header>
         <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
           <b>Drop a video here</b>
@@ -68,6 +65,17 @@
         </div>
         <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
         <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
+        <div class="prep-gallery-bar">
+          <h3>Gallery</h3>
+          <div class="prep-tag-tools">
+            <input id="prep-tag-input" type="text" maxlength="24" placeholder="trees" spellcheck="false" autocomplete="off" aria-label="Tag for the selected clips" />
+            <button id="prep-tag-add" type="button" disabled title="Tag the selected clips">Tag</button>
+            <button id="prep-send" type="button" disabled>Send to Project Media</button>
+          </div>
+        </div>
+        <div id="prep-tag-filters" class="prep-tag-filters" hidden></div>
+        <div id="prep-grid" class="global-grid prep-grid"></div>
+        <p id="prep-gallery-empty" class="hint">No media stored yet. Drop a video above.</p>
       </section>
 
       <section id="midi-desk" class="midi-desk" hidden>
@@ -78,6 +86,7 @@
               <option value="apc-mini-mk2">APC Mini mk2</option>
               <option value="apc40-mk2">APC40 mk2</option>
               <option value="custom">Custom / Generic</option>
+              <option value="xdj-700">Pioneer XDJ-700</option>
             </select>
           </label>
           <span id="midi-status" class="status"></span>
@@ -114,6 +123,20 @@
           </section>
         </div>
         <div id="apc-view" hidden></div>
+        <div id="xdj-view" class="xdj" hidden>
+          <div class="xdj-bar">
+            <span class="xdj-title">Pioneer XDJ-700</span>
+            <label class="menu-field" for="xdj-count">Decks
+              <select id="xdj-count" title="How many decks are visible">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+              </select>
+            </label>
+          </div>
+          <div id="xdj-decks" class="xdj-row"></div>
+        </div>
         <details id="acc-macros" class="fold" open>
           <summary>Macro Knobs</summary>
           <div id="macro-list" class="macro-list"></div>
@@ -123,8 +146,10 @@
       </section>
 
       <aside class="library" id="library">
-        <h2 class="col-title">Project</h2>
-        <div id="project-barrel" class="project-barrel"></div>
+        <header class="library-head">
+          <h2 class="col-title">Project</h2>
+          <input id="project-name" class="project-name" type="text" maxlength="48" placeholder="Name" spellcheck="false" autocomplete="off" aria-label="Project name" />
+        </header>
         <details id="diag-panel" class="fold diag">
           <summary>Helper / Diagnostics <i id="diag-nominal" class="diag-nominal" hidden>All Systems Nominal</i><i id="diag-badge" class="diag-badge" hidden>0</i></summary>
           <p class="hint">Click a warning to select that layer, open its group, and flash the slider for two seconds.</p>
@@ -138,15 +163,16 @@
           <ul id="diag-readable" class="diag-list"></ul>
         </details>
         <details id="acc-media" class="fold" open>
-          <summary>Media Library</summary>
-          <div class="row">
-            <button id="media-add" type="button">+ Add media files</button>
+          <summary>Project Media</summary>
+          <div class="row bin-row">
+            <button id="media-add" type="button" class="bin-add" title="Open Media Manager">+</button>
+            <span class="hint">Clips sent from Media Manager</span>
             <input id="media-files" type="file" multiple hidden
               accept="image/*,video/*,.mp4,.mov,.m4v,.webm" />
           </div>
           <div id="media-list" class="media-grid"></div>
           <p id="media-missing" class="status error" hidden></p>
-          <p class="hint">Drop files on the preview to add them. Hover a clip and send it to a layer. A single file also goes onto the selected layer. Uploads are cached in this browser so scenes reload their clips automatically.</p>
+          <p class="hint">Only the clips you sent from Media Manager for this project. Hover a clip and send it to a layer.</p>
           <div id="online-source" class="online-source">
             <label for="online-prompt">Live Text-to-Visual</label>
             <select id="online-mode" title="Source">
@@ -176,9 +202,10 @@
             <button id="audio-refresh" type="button" title="Refresh devices">&#x21bb;</button>
           </div>
           <div id="audio-file-row" hidden>
-            <div class="row">
+            <label class="audio-file-pick">Add local audio file
               <input id="audio-file" type="file" accept=".mp3,.wav,.aiff,.aif,audio/mpeg,audio/wav,audio/wave,audio/aiff,audio/x-aiff,audio/*" />
-            </div>
+            </label>
+            <button id="stock-audio-open" type="button">Search Stock Audio</button>
             <div id="audio-drop" class="audio-drop">Drop an .mp3, .wav, or .aiff</div>
             <ul id="audio-recent" hidden></ul>
             <div class="transport">
@@ -293,17 +320,17 @@
             </select>
           </div>
           <div class="row">
+            <select id="rec-aspect" title="Frame written into the recording. Native keeps the current render size.">
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+              <option value="1:1">1:1</option>
+              <option value="native">Native</option>
+            </select>
             <select id="rec-format"></select>
           </div>
           <div class="row">
             <label class="check"><input id="rec-audio" type="checkbox" checked /> Include audio</label>
           </div>
-          <p class="hint">
-            Keys: <b>Q W E</b> select layer &middot; <b>1-9</b> layer shader &middot; <b>Shift+1-9</b> launch scene
-            &middot; <b>Space</b> timeline play/pause &middot; <b>T</b> tap tempo &middot; <b>L</b> live/timeline
-            &middot; <b>H</b> code HUD &middot; <b>C</b> cycle overlay mode &middot; <b>P</b> hide UI &middot; <b>F</b> fullscreen &middot; <b>R</b> record
-            <br />Each layer picks its own engine. 3D shaders: drag the preview to orbit, scroll to zoom. Double-click a slider to reset it.
-          </p>
         </details>
 
         <details id="code-overlay" class="fold">
@@ -377,13 +404,21 @@
               <input id="hud-automask" type="checkbox" />
               Automask
             </label>
+            <label class="check" title="Draw the code overlay into the recorded file.">
+              <input id="code-record" type="checkbox" />
+              Include in Recording
+            </label>
             <label class="check" title="Copy the code overlay onto the projector. The desk preview can stay clean.">
               <input id="hud-output" type="checkbox" />
-              Show on Master Output
+              Include in Output
             </label>
-            <label class="check" title="Copy the logo onto the recording and the master output, in the same place as the preview.">
-              <input id="logo-output" type="checkbox" checked />
-              Include Logo in Recording/Output
+            <label class="check" title="Draw a triggered logo into the recorded file.">
+              <input id="logo-record" type="checkbox" />
+              Include Logo in Recording
+            </label>
+            <label class="check" title="Draw a triggered logo on the master output.">
+              <input id="logo-output" type="checkbox" />
+              Include Logo in Output
             </label>
             <label class="check" title="Keep the code overlay on the preview after Perform mode hides the desk panels.">
               <input id="hud-perform" type="checkbox" />
@@ -402,24 +437,30 @@
         <details id="screensaver" class="fold">
           <summary>Screensaver</summary>
           <label class="hud-field">Text
-            <textarea id="screen-text" rows="4" title="Lines on the drifting mark. The credit stays underneath.">Y2K VJ//BY CÍN
-CUSTOM CODED FOR LATE FUTURE</textarea>
+            <textarea id="screen-text" rows="4" title="Lines on the drifting mark.">Y2K VJ//BY CÍN
+CUSTOM CODED FOR LATE
+FUTURE</textarea>
+            <button id="screen-query" type="button" class="screen-query" title="Replace the screensaver text with a question.">? Query System</button>
+          </label>
+          <label class="check" title="Show the license line under the screensaver text.">
+            <input id="screen-credit" type="checkbox" checked />
+            License line
           </label>
           <label class="hud-field">Font
             <select id="screen-font" title="Typeface of the drifting mark.">
-              <option value="desk" selected>Desk</option>
+              <option value="desk">Desk</option>
               <option value="terminal">Terminal</option>
-              <option value="fixedsys">Fixedsys</option>
+              <option value="fixedsys" selected>Fixedsys</option>
               <option value="mssans">MS Sans</option>
             </select>
           </label>
           <label class="live-slider">Shade
-            <input id="screen-shade" type="range" min="0" max="8" step="1" value="8" title="Extruded shadow. 0 is flat text. 8 is the full Win98 extrusion." />
-            <output id="screen-shade-out">8</output>
+            <input id="screen-shade" type="range" min="0" max="8" step="1" value="0" title="Extruded shadow. 0 is flat text. 8 is the full Win98 extrusion." />
+            <output id="screen-shade-out">0</output>
           </label>
           <label class="live-slider">Background
-            <input id="screen-bg" type="range" min="0" max="1" step="0.01" value="1" title="Opacity of the black panel. 0 removes the box." />
-            <output id="screen-bg-out">1.00</output>
+            <input id="screen-bg" type="range" min="0" max="1" step="0.01" value="0.65" title="Opacity of the black panel. 0 removes the box." />
+            <output id="screen-bg-out">0.65</output>
           </label>
           <label class="hud-field">Color
             <select id="screen-color" title="Text colour.">
@@ -431,14 +472,23 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             </select>
           </label>
           <label class="live-slider">Size
-            <input id="brand-size" type="range" min="40" max="220" step="5" value="100" title="Screensaver size" />
-            <output id="brand-size-out" for="brand-size">100%</output>
+            <input id="brand-size" type="range" min="40" max="220" step="5" value="40" title="Screensaver size" />
+            <output id="brand-size-out" for="brand-size">40%</output>
+          </label>
+          <label class="check" title="Draw the screensaver into the recorded file.">
+            <input id="screen-record" type="checkbox" />
+            Include in Recording
+          </label>
+          <label class="check" title="Draw the screensaver on the master output.">
+            <input id="screen-output" type="checkbox" />
+            Include in Output
           </label>
         </details>
       </aside>
 
+      <div class="center">
       <main id="stage" class="preview">
-        <div id="brand-mark" class="brand-mark" hidden>Y2K VJ<em>//</em>BY CÍN<span>CUSTOM CODED FOR LATE FUTURE</span><span class="brand-notice">OS CC BY-NC-SA // <a href="https://github.com/cin-seeds/y2k-vj-by-cin" target="_blank" rel="noopener noreferrer">REPO ON GITHUB</a></span></div>
+        <div id="brand-mark" class="brand-mark" hidden>Y2K VJ<em>//</em>BY CÍN<span class="brand-line">CUSTOM CODED FOR LATE</span><span class="brand-line">FUTURE</span></div>
         <div id="preview-wrap" class="preview-wrap">
           <div id="hud-frame" class="hud-frame" hidden title="Drag to move the overlay. Drag a corner to resize. Double-click to swap a column and a landscape bar.">
             <pre id="hud" class="hud"></pre>
@@ -452,13 +502,110 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           <p id="dpi-readout" class="dpi-readout">[OUTPUT RATIO: 1.0 (PREVIEW 0.3)]</p>
         </div>
       </main>
+      <div id="split-preview" class="split-preview" role="separator" aria-orientation="horizontal" aria-label="Resize preview" title="Drag to resize the preview"></div>
+        <div class="center-lower">
+          <div id="glance-bar" class="glance-bar" aria-label="Tempo, playback, and crossfade">
+            <div class="clock-bar">
+              <div class="glance-row glance-sound">
+                <i id="beat-led" class="beat-led" title="Flashes on the beat"></i>
+                <span class="bpm-readout locked" title="Global tempo. Shaders read it as uBeat / uBeatPhase."><b id="bpm-value">120.0</b></span>
+                <input id="bpm-slider" type="range" min="20" max="300" step="0.1" value="120" title="Manual BPM (double-click for 120)" />
+                <button id="bpm-mode" type="button" aria-pressed="false" title="Read the tempo from the playing audio.">Auto: Read Live</button>
+                <div class="bpm-actions">
+                  <button id="bpm-tap" type="button" title="Tap a tempo, or tap once on the beat to align phase (T)">Tap/Phase</button>
+                  <button id="bpm-double" type="button" title="Double the tempo">x2</button>
+                  <button id="bpm-half" type="button" title="Halve the tempo">/2</button>
+                  <button id="bpm-nudge-up" type="button" title="Raise the tempo by 0.1">Nudge +</button>
+                  <button id="bpm-nudge-down" type="button" title="Lower the tempo by 0.1">Nudge -</button>
+                </div>
+              </div>
+              <div class="glance-row glance-play">
+                <button id="tl-loop" type="button" class="on" title="Loop the timeline">Loop</button>
+                <label class="tl-bars-field">Bars <input id="tl-bars" type="number" min="1" max="2048" step="1" value="16" title="Length of the timeline in bars. It can run to 2048. Scroll the timeline right to move along it." /></label>
+                <span id="tl-pos" class="tl-pos">1.1</span>
+                <label class="master-speed" title="Scales shader motion and automation. 0 freezes them. 1 is normal speed. 4 is four times faster.">
+                  Master Speed
+                  <input id="master-speed" type="range" min="0" max="4" step="0.01" value="1" />
+                  <output id="master-speed-out">1.00x</output>
+                </label>
+                <label class="fade-sec" title="Scene transition time">X-fade
+                  <input id="tl-fade-sec" type="range" min="0" max="10" step="0.1" value="1" />
+                  <output id="tl-fade-readout">1.0s</output>
+                </label>
+                <select id="tl-style" title="Transition style">
+                  <option value="0">Crossfade Alpha</option>
+                  <option value="1">Additive Bleed</option>
+                  <option value="2">Wiping Glitch</option>
+                </select>
+                <div id="brightness-slot" class="brightness-slot"></div>
+              </div>
+            </div>
+          </div>
+          <div class="timeline-split">
+          <div class="timeline-pane">
+          <div class="dock-timeline">
+            <div id="tl-scroll" class="tl-scroll">
+            <div id="tl-track" class="tl-track" title="Drop a scene or a library clip here. Click to move the playhead.">
+              <div id="tl-labels" class="tl-labels"></div>
+              <div id="tl-cues" class="tl-cues"></div>
+              <div id="tl-drop" class="tl-drop" hidden></div>
+              <div id="tl-head" class="tl-head"></div>
+            </div>
+            </div>
+          </div>
+          </div>
+          <div class="timeline-resizable-divider" role="separator" aria-orientation="horizontal" aria-label="Resize timeline" title="Drag up to shorten the timeline. Drag down to make it taller. Scroll over the timeline to zoom the bars."></div>
+          <div class="workspace-pane">
+          <div class="layer-toolbar">
+            <input id="scene-name" type="text" placeholder="Scene name (optional)" maxlength="40" />
+            <button id="scene-save" type="button" class="primary" title="Save the current state as a scene">Save Scene</button>
+            <div id="momentary-pads" class="momentary-pads"></div>
+            <div class="overlay-triggers">
+              <input id="hud-enable" type="checkbox" hidden />
+              <input id="screen-enable" type="checkbox" hidden />
+              <div class="overlay-pair">
+                <button id="code-trigger" type="button" class="moment-pad hud-toggle" aria-pressed="false" title="Code Overlay. Click to turn it on or off. Hold to open Code Overlay.">
+                  <b>Code</b>
+                  <i class="hud-state">Off</i>
+                </button>
+                <div class="logo-triggers">
+                  <button id="logos-trigger" type="button" class="moment-pad" title="Open the selected logo in Brand Overlay."><b>Logo</b></button>
+                  <select id="logo-slot-pick" class="logo-slot-pick" hidden title="Filled logo slots" aria-label="Logo slot"></select>
+                  <button type="button" class="sting-fire" data-sting="0" hidden><span class="sting-label">Logo 1</span></button>
+                  <button type="button" class="sting-fire" data-sting="1" hidden><span class="sting-label">Logo 2</span></button>
+                  <button type="button" class="sting-fire" data-sting="2" hidden><span class="sting-label">Logo 3</span></button>
+                </div>
+              </div>
+              <button id="screen-trigger" type="button" class="moment-pad hud-toggle" aria-pressed="false" title="Screensaver. Click to turn it on or off. Hold to open Screensaver.">
+                <b>Screen</b>
+                <i class="screen-state">Off</i>
+              </button>
+            </div>
+          </div>
+          <div class="control-deck">
+          <div id="scene-pads" class="scene-grid" aria-label="Scenes"></div>
+          </div>
+          <div id="mixer" class="mixer"></div>
+          </div>
+          </div>
+        </div>
+      </div>
 
       <aside class="inspector" id="inspector">
-        <h2 class="col-title">Inspector</h2>
+        <h2 class="col-title inspector-title"><span id="layer-name" class="layer-badge">A</span> Layer Inspector</h2>
         <section class="layer-editor" id="layer-editor">
-          <h2>Layer <span id="layer-name" class="layer-badge">A</span></h2>
           <div class="row">
-            <select id="layer-media" title="Media for this layer"></select>
+            <div class="layer-media-pick">
+              <button id="layer-media-open" type="button" aria-haspopup="listbox" aria-expanded="false" title="Project media for this layer">
+                <span id="layer-media-label">Test pattern</span>
+              </button>
+              <div id="layer-media-gallery" class="layer-media-gallery" hidden>
+                <button id="layer-media-none" type="button" class="layer-media-none">Test pattern</button>
+                <div id="layer-media-grid" class="layer-media-grid" role="listbox" aria-label="Project media"></div>
+                <div id="layer-media-sources" class="layer-media-sources" hidden></div>
+              </div>
+            </div>
+            <select id="layer-media" title="Media for this layer" hidden></select>
             <button id="layer-media-refresh" type="button" title="Refresh cameras and picture sources">&#x21bb;</button>
           </div>
           <div class="row layer-flags">
@@ -487,154 +634,68 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           </div>
           <div id="layer-params"></div>
         </section>
-        <div id="param-help" class="param-help">
-          <b id="param-help-title">Parameter</b>
-          <p id="param-help-body">Hover a slider to read what it changes on the picture.</p>
-        </div>
       </aside>
 
-      <footer id="dock" class="dock">
-        <div class="dock-stage">
-        <div id="mixer" class="mixer"></div>
-        <div class="dock-scenes">
-          <div class="scene-bar">
-            <div class="scene-save">
-              <input id="scene-name" type="text" placeholder="Scene name (optional)" maxlength="40" />
-              <button id="scene-save" type="button" class="primary">Save Current State as Scene</button>
-            </div>
-            <div id="scene-banks" class="scene-banks"></div>
-            <div class="tl-transport">
-            <button id="tl-play" type="button" title="Play or pause the timeline">&#x25B6;</button>
-            <button id="tl-stop" type="button" title="Stop and rewind">&#x25A0;</button>
-            <button id="tl-loop" type="button" class="on" title="Loop">Loop</button>
-            <label>BPM <input id="tl-bpm" type="number" min="20" max="300" step="1" value="120" /></label>
-            <button id="tl-tap" type="button" title="Tap tempo">Tap</button>
-            <label>Bars <input id="tl-bars" type="number" min="1" max="128" step="1" value="16" /></label>
-            <label class="fade-sec" title="Scene transition time">X-fade
-              <input id="tl-fade-sec" type="range" min="0" max="10" step="0.1" value="1" />
-              <output id="tl-fade-readout">1.0s</output>
-            </label>
-            <select id="tl-style" title="Transition style">
-              <option value="0">Crossfade Alpha</option>
-              <option value="1">Additive Bleed</option>
-              <option value="2">Wiping Glitch</option>
-            </select>
-            <span id="tl-pos" class="tl-pos">1.1</span>
-            </div>
-          </div>
-          <div class="scene-launcher">
-            <div id="scene-pads" class="scene-pads"></div>
-          </div>
-        </div>
-        <div class="dock-timeline">
-          <div id="tl-track" class="tl-track" title="Drop a scene or a library clip here. Click to move the playhead.">
-            <div id="tl-labels" class="tl-labels"></div>
-            <div id="tl-cues" class="tl-cues"></div>
-            <div id="tl-drop" class="tl-drop" hidden></div>
-            <div id="tl-head" class="tl-head"></div>
-          </div>
-        </div>
-        </div>
-        <section id="master-bus" class="master-bus" aria-label="Master bus">
-          <div class="master-pin">
+      <section id="master-bus" class="master-bus" aria-label="Master bus">
           <header class="master-bus-head">
-            <span class="strip-letter">M</span>
+            <span class="strip-letter">FX</span>
             <h2>Composition</h2>
           </header>
-          <div class="clock-bar" title="Global tempo. Shaders read it as uBeat / uBeatPhase.">
-            <i id="beat-led" class="beat-led" title="Flashes on the beat"></i>
-            <span class="bpm-readout locked"><b id="bpm-value">120.0</b></span>
-            <button id="bpm-mode" type="button" aria-pressed="false" title="Read the tempo from the playing audio.">Auto: Read Live</button>
-            <div class="bpm-actions">
-              <button id="bpm-tap" type="button" title="Tap a tempo, or tap once on the beat to align phase (T)">Tap/Phase</button>
-              <button id="bpm-double" type="button" title="Double the tempo">x2</button>
-              <button id="bpm-half" type="button" title="Halve the tempo">/2</button>
-              <button id="bpm-nudge-up" type="button" title="Raise the tempo by 0.1">Nudge +</button>
-              <button id="bpm-nudge-down" type="button" title="Lower the tempo by 0.1">Nudge -</button>
+          <div id="comp-slot-host">
+            <div class="comp-slots">
+              <button id="shuffle-layer-fx" type="button" title="Randomize the effect values on layers A, B, and C, and the composition effects. Barrel stays put.">&#x1F3B2; Shuffle Composition FX</button>
             </div>
-            <input id="bpm-slider" type="range" min="20" max="300" step="0.1" value="120" title="Manual BPM (double-click for 120)" />
           </div>
-          <label class="master-speed" title="Scales shader motion and automation. 0 freezes them. 1 is normal speed. 4 is four times faster.">
-            Master Speed
-            <input id="master-speed" type="range" min="0" max="4" step="0.01" value="1" />
-            <output id="master-speed-out">1.00x</output>
-          </label>
-          <div id="brightness-slot" class="brightness-slot"></div>
-          </div>
-          <section id="live-tools" class="live-tools" aria-label="Live performance tools">
-            <h3>Live Performance Tools</h3>
-            <button id="shuffle-layer-fx" type="button" title="Randomize the visible effect sliders on the selected layer">&#x1F3B2; Shuffle Layer FX</button>
-            <div id="momentary-pads" class="momentary-pads"></div>
-            <div id="prolink-settings" class="hardware-menu">
-              <h3>Pioneer Pro DJ Link (Ethernet)</h3>
-              <div class="mapping-row">
-                <label for="prolink-pulse">Strobe / Pulse (uPulse)</label>
-                <select id="prolink-pulse" title="Which deck drives the strobe flash">
-                  <option value="1">Deck 1</option>
-                  <option value="2">Deck 2</option>
-                  <option value="3">Deck 3</option>
-                  <option value="4">Deck 4</option>
-                </select>
-              </div>
-              <div class="mapping-row">
-                <label for="prolink-glitch">Distortion (uGlitch)</label>
-                <select id="prolink-glitch" title="Which deck drives the glitch">
-                  <option value="1">Deck 1</option>
-                  <option value="2" selected>Deck 2</option>
-                  <option value="3">Deck 3</option>
-                  <option value="4">Deck 4</option>
-                </select>
-              </div>
-            </div>
-            <div class="overlay-triggers">
-              <h3>Overlay Triggers</h3>
-              <div class="code-live">
-                <label class="moment-pad hud-toggle" title="Draw the code overlay on this monitor.">
-                  <input id="hud-enable" type="checkbox" />
-                  <b>Code Overlay</b>
-                  <i class="hud-state">Off</i>
-                </label>
-                <button id="code-define" type="button" class="moment-pad" title="Open Code Overlay in the project column."><b>Define in Project</b></button>
-                <button id="hud-record" type="button" class="moment-pad record-out" aria-pressed="false" title="Copy the code overlay into the recording and the master output.">
-                  <b>Record / Output</b>
-                  <i>Off</i>
-                </button>
-              </div>
-              <div class="logo-live">
-                <div class="logo-triggers">
-                  <button type="button" class="sting-fire" data-sting="0" hidden><span class="sting-label">Logo 1</span></button>
-                  <button type="button" class="sting-fire" data-sting="1" hidden><span class="sting-label">Logo 2</span></button>
-                  <button type="button" class="sting-fire" data-sting="2" hidden><span class="sting-label">Logo 3</span></button>
-                  <button id="brand-define" type="button" class="moment-pad brand-define" hidden><b>Define in Project</b></button>
-                </div>
-              </div>
-              <div class="code-live">
-                <label class="moment-pad hud-toggle" title="Draw the screensaver on this monitor.">
-                  <input id="screen-enable" type="checkbox" />
-                  <b>Screensaver</b>
-                  <i class="screen-state">Off</i>
-                </label>
-                <button id="screen-define" type="button" class="moment-pad" title="Open Screensaver in the project column."><b>Define in Project</b></button>
-                <button id="screen-record" type="button" class="moment-pad record-out" aria-pressed="false" title="Draw the screensaver into the recording and the master output.">
-                  <b>Record / Output</b>
-                  <i>Off</i>
-                </button>
-              </div>
-            </div>
-          </section>
           <div id="master-params" class="master-params"></div>
-          <div id="master-help" class="param-help">
-            <b id="master-help-title">Composition</b>
-            <p id="master-help-body">Hover a master slider to read what it does to the mixed picture.</p>
-          </div>
         </section>
-      </footer>
       <div id="split-library" class="split split-col" data-pane="library" title="Drag to resize the library"></div>
       <div id="split-inspector" class="split split-col" data-pane="inspector" title="Drag to resize the inspector"></div>
       <div id="split-dock" class="split split-row" data-pane="dock" title="Drag to resize the mixer"></div>
     </div>
 
     <div id="app-toast" class="app-toast" hidden></div>
+    <div id="stock-audio-modal" class="map-modal" hidden>
+      <div class="map-card stock-audio-card" role="dialog" aria-labelledby="stock-audio-title">
+        <header class="map-head">
+          <h2 id="stock-audio-title">Search Stock Audio</h2>
+          <button id="stock-audio-close" type="button">Close</button>
+        </header>
+        <p class="hint">Public-domain and Creative Commons audio from Wikimedia Commons. Preview a row, then download it into Media Manager.</p>
+        <div class="row">
+          <input id="stock-audio-prompt" type="text" placeholder="kick, vinyl, rain" autocomplete="off" spellcheck="false" />
+          <button id="stock-audio-search" type="button">Search</button>
+        </div>
+        <p id="stock-audio-status" class="hint"></p>
+        <ul id="stock-audio-results" class="stock-audio-list"></ul>
+      </div>
+    </div>
+    <div id="global-library" class="map-modal global-library" hidden>
+      <div class="map-card global-library-card" role="dialog" aria-labelledby="global-library-title">
+        <header class="map-head">
+          <h2 id="global-library-title">Media Manager</h2>
+          <button id="global-upload" type="button">Upload</button>
+          <button id="global-close" type="button">Close</button>
+        </header>
+        <p class="hint">Stored clips. Select them in Media Manager and send them to Project Media.</p>
+        <div id="global-drop" class="global-drop" tabindex="0">Drop media here, or click to choose files</div>
+        <div id="global-grid" class="global-grid"></div>
+        <p id="global-empty" class="hint">No media stored yet.</p>
+      </div>
+    </div>
+    <div id="global-delete" class="map-modal" hidden>
+      <div class="map-card" role="dialog" aria-labelledby="global-delete-title">
+        <header class="map-head">
+          <h2 id="global-delete-title">Cannot delete</h2>
+        </header>
+        <p id="global-delete-lead"></p>
+        <ul id="global-delete-uses" class="global-delete-uses"></ul>
+        <p id="global-delete-note" class="hint"></p>
+        <div class="row">
+          <button id="global-delete-cancel" type="button">Cancel</button>
+          <button id="global-delete-force" type="button">Delete anyway</button>
+        </div>
+      </div>
+    </div>
     <div id="guide-modal" class="map-modal" hidden>
       <div class="map-card guide-card" role="dialog" aria-labelledby="guide-title">
         <header class="map-head">
@@ -645,13 +706,13 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           <ol>
             <li>
               <h3>Media Manager</h3>
-              <p>Click <b>Media Manager</b>. Drop a video on the drop area, or click it to choose a file. The app fits it to 1920×1080, compresses it for smooth playback, and saves it into the Media Library. Wait until the row finishes. To skip the conversion, click <b>Bypass Transcode &amp; Add Directly</b>. Transcoding runs in the desktop app.</p>
+              <p>Click <b>Media Manager</b>. Drop a video on the drop area, or click it to choose a file. The app fits it to 1920×1080, encodes H.264, and stores it in the gallery. That store is kept across restarts and projects. Hover a thumbnail to play a preview. Click clips to select them, then <b>Send to Project Media</b>. To skip the conversion, click <b>Bypass Transcode &amp; Add Directly</b>. Transcoding runs in the desktop app.</p>
             </li>
             <li>
               <h3>Project: audio and media</h3>
-              <p>Open <b>File</b>. <b>New Project</b> starts clean. <b>Load Project</b> opens a saved show. <b>Save</b> and <b>Save New</b> write the desk, the scenes, and the left-column settings into a project file.</p>
-              <p>Open the <b>Audio</b> fold. Click <b>Live Hardware</b> and pick an input, or click <b>Local File</b> and drop an .mp3, .wav, or .aiff. Press <b>Play</b>. <b>Auto-Gain</b> keeps the level steady. <b>Master Gain</b> and <b>Mute</b> set how hard the sound hits the picture.</p>
-              <p>Open <b>Media Library</b>. Click <b>+ Add media files</b>, or use the clips Media Manager just made. On a card, click <b>A</b>, <b>B</b>, or <b>C</b> to put that clip on a layer.</p>
+              <p>Open <b>Hello</b>. <b>New Project</b> starts clean. <b>Load Project</b> opens a saved show. <b>Save</b> and <b>Save New</b> write the whole show: scenes, timeline, project media, audio, levels, output, recording settings, and which Hello views are open. In the desktop app the media, audio, and logo files are copied into a folder next to the project.</p>
+              <p>Open the <b>Audio</b> fold. Click <b>Live Hardware</b> and pick an input, or click <b>Local File</b> and drop an .mp3, .wav, or .aiff. <b>Search Stock Audio</b> finds free Wikimedia clips, plays a preview, and saves a 44.1 kHz wav into Media Manager. Press <b>Play</b>. <b>Auto-Gain</b> keeps the level steady. <b>Master Gain</b> and <b>Mute</b> set how hard the sound hits the picture.</p>
+              <p>Open <b>Project Media</b>. It lists only the clips sent to this project. Click <b>+</b> to open Media Manager and send more. On a card, click <b>A</b>, <b>B</b>, or <b>C</b> to put that clip on a layer.</p>
             </li>
             <li>
               <h3>Layers</h3>
@@ -686,30 +747,53 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
               <p>Open the <b>Output</b> fold. Pick the <b>Preview</b> shape. Click <b>Master Output</b> and choose a display. Pick an NDI / Syphon / SPOUT size and click <b>Send</b> when another app should receive the picture. Click <b>Advanced Output</b> to drag the corner pins onto a projector.</p>
               <p>Open <b>Recordings</b>. Set <b>Scale</b> to <b>Fill</b> or <b>Fit</b>, and <b>Render scale</b> to 0.5x, 0.75x, or 1x. Pick the format and leave <b>Include audio</b> on if the file should have sound. In the top bar, pick 16:9, 9:16, 1:1, or Native, then click <b>● REC</b>. Click <b>■ STOP</b> to finish.</p>
             </li>
+            <li>
+              <h3>Keys</h3>
+              <p><b>Q</b>, <b>W</b>, and <b>E</b> select a layer. <b>1</b>–<b>9</b> set that layer’s shader. <b>Shift+1</b>–<b>9</b> launches a scene in the current bank. <b>Space</b> plays or pauses. <b>T</b> taps the tempo. <b>L</b> switches Live and Timeline. <b>H</b> toggles the code overlay. <b>C</b> cycles the overlay mode. <b>P</b> hides the panels. <b>F</b> is fullscreen. <b>R</b> starts or stops recording.</p>
+            </li>
           </ol>
         </div>
       </div>
     </div>
 
     <div id="prefs-modal" class="map-modal" hidden>
-      <div class="map-card" role="dialog" aria-labelledby="prefs-title">
+      <div class="map-card prefs-card" role="dialog" aria-labelledby="prefs-title">
         <header class="map-head">
           <h2 id="prefs-title">Preferences</h2>
           <button id="prefs-close" type="button">Close</button>
         </header>
-        <div class="param">
-          <label for="ui-scale">Global UI Scale</label>
-          <input id="ui-scale" type="range" min="75" max="125" step="5" value="100" title="Shrink or enlarge every panel and the type together." />
-          <output id="ui-scale-out">100%</output>
-        </div>
-        <p class="hint">75% to 125%. Drag the edges between the library, the preview, and the inspector, and the top edge of the mixer, to resize those blocks.</p>
-        <div class="stock-dir-field">
-          <label for="stock-dir">Stock Media Download Folder</label>
-          <div class="row stock-dir-row">
-            <input id="stock-dir" type="text" readonly placeholder="Videos folder" />
-            <button id="stock-dir-pick" type="button">Choose</button>
+        <section class="prefs-block" aria-labelledby="prefs-interface">
+          <h3 id="prefs-interface">Interface</h3>
+          <div class="param">
+            <label for="ui-scale">Global UI Scale</label>
+            <input id="ui-scale" type="range" min="75" max="125" step="5" value="100" title="Shrink or enlarge every panel and the type together." />
+            <output id="ui-scale-out">100%</output>
           </div>
-        </div>
+          <p class="hint">75% to 125%. Drag the edges between the library, the preview, and the inspector, and the top edge of the mixer, to resize those blocks.</p>
+          <label class="prefs-open" for="open-in">
+            <span>Open in</span>
+            <select id="open-in">
+              <option value="live">Live</option>
+              <option value="midi">Perform</option>
+              <option value="prep">Media Manager</option>
+            </select>
+          </label>
+          <label class="check" for="reopen-project">
+            <input id="reopen-project" type="checkbox" />
+            Reopen the last project
+          </label>
+          <p class="hint">The desktop app loads the last project saved on this computer. A missing file starts empty.</p>
+        </section>
+        <section class="prefs-block" aria-labelledby="prefs-media">
+          <h3 id="prefs-media">Media</h3>
+          <div class="stock-dir-field">
+            <label for="stock-dir">Stock Media Download Folder</label>
+            <div class="row stock-dir-row">
+              <input id="stock-dir" type="text" readonly placeholder="Videos folder" />
+              <button id="stock-dir-pick" type="button">Choose</button>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
 

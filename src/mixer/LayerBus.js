@@ -10,12 +10,22 @@ export class LayerBus {
   }
 
   toggleMute(id) {
-    this.mute[id] = !this.mute[id];
+    const prev = !!this.mute[id];
+    this.mute[id] = !prev;
     this.#emit();
+    this.onEdit?.('mute', id, prev, !!this.mute[id]);
   }
 
   toggleSolo(id) {
-    this.solo[id] = !this.solo[id];
+    const prev = !!this.solo[id];
+    this.solo[id] = !prev;
+    this.#emit();
+    this.onEdit?.('solo', id, prev, !!this.solo[id]);
+  }
+
+  setFlag(kind, id, on) {
+    const bag = kind === 'solo' ? this.solo : this.mute;
+    bag[id] = !!on;
     this.#emit();
   }
 

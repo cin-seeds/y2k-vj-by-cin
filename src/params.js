@@ -12,7 +12,18 @@ export const MODE_LABELS = [
   '90s Retro Gaming', 'Clean (no FX)', 'Windows 98 Crash', 'PS1 / N64 CRT', 'ASCII / Pointillism',
   'Signal Eater', 'MiniDV', 'Flash MX', 'Starfield', 'Black Metallic Y2K',
 ];
+/** Removed looks. Their slots stay empty so every later shader keeps its saved number. */
+export const RETIRED_SHADER_MODES = new Set([4, 5]);
+export const CLEAN_SHADER_MODE = MODES.indexOf('clean');
+export const SHADER_KEY_MODES = MODES.map((_, i) => i).filter((i) => !RETIRED_SHADER_MODES.has(i));
 export const MODE_3D = new Set(['points', 'mesh']);
+
+export function shaderMode(index) {
+  const i = Math.round(Number(index));
+  if (!Number.isFinite(i)) return 0;
+  if (RETIRED_SHADER_MODES.has(i)) return CLEAN_SHADER_MODE;
+  return Math.min(MODES.length - 1, Math.max(0, i));
+}
 
 export const BLEND_LABELS = [
   'Normal', 'Multiply', 'Screen', 'Color Dodge', 'Difference',
@@ -179,7 +190,7 @@ export const LAYER_DEFS = [
 const LAYER_OVERRIDES = {
   A: { opacity: 1, mode: 0, reactivity: 1, audioBind: 0, beatSync: 0 },
   B: { opacity: 0, mode: 2, blend: 2, reactivity: 0.6, audioBind: 3, beatSync: 0 },
-  C: { opacity: 0, mode: 4, blend: 2, reactivity: 0.5, audioBind: 2, beatSync: 0 },
+  C: { opacity: 0, mode: 7, blend: 2, reactivity: 0.5, audioBind: 2, beatSync: 0 },
 };
 
 const NON_UNIFORM = new Set([
@@ -195,7 +206,7 @@ const lookSection = (mode) => MODE_LABELS[MODES.indexOf(mode)];
 export const CATEGORY_ORDER = [
   'Source & Playback',
   'Geometry & Scale',
-  ...MODE_LABELS.filter((name) => name !== 'Clean (no FX)'),
+  ...MODE_LABELS.filter((name, i) => name !== 'Clean (no FX)' && !RETIRED_SHADER_MODES.has(i)),
   ENGINE_LABELS[ENGINE_PARTICLES],
   ENGINE_LABELS[ENGINE_HYDRA],
   'Audio Reactivity',
@@ -211,7 +222,7 @@ const PARAM_META = {
   audioGain: { friendlyLabel: 'Analysis Gain', description: 'Raises or lowers the audio signal before the FFT. The speaker volume is separate.', unit: 'x', category: 'Audio Reactivity', neutralValue: 1 },
   crtScan: { friendlyLabel: 'Master Scanlines', description: 'Draws CRT scanlines across the whole mix so the layers read as one screen.', unit: '%', category: 'Distortion & Glitch', neutralValue: 0 },
   crtBleed: { friendlyLabel: 'Phosphor Bleed', description: 'Smears neighboring pixels sideways, like a CRT gun that cannot hold a sharp edge.', unit: '%', category: 'Color & Texture', neutralValue: 0 },
-  crtBarrel: { friendlyLabel: 'Barrel Curve', description: 'Bends the mixed frame outward from the center, the curve of a glass tube.', unit: '%', category: 'Geometry & Scale', neutralValue: 0 },
+  crtBarrel: { friendlyLabel: 'Barrel Curve', description: 'Bends the mixed frame outward from the center, the curve of a glass tube.', unit: '%', category: 'Barrel', neutralValue: 0 },
   gradeHue: { friendlyLabel: 'Global Hue', description: 'Rotates the hue of the entire mix. A full slider travel is one turn around the color wheel.', unit: 'turn', category: 'Color & Texture', neutralValue: 0 },
   gradeSat: { friendlyLabel: 'Saturation', description: 'Pulls the mix toward gray or pushes the colors past their natural strength.', unit: 'x', category: 'Color & Texture', neutralValue: 1 },
   gradeContrast: { friendlyLabel: 'Contrast', description: 'Spreads or crushes the mix around mid-gray. 1x leaves the picture untouched.', unit: 'x', category: 'Color & Texture', neutralValue: 1 },
@@ -362,7 +373,7 @@ function buildDefs() {
 export class ParamStore {
   constructor(defs = buildDefs()) {
     this.defs = new Map(defs.map((d) => [d.id, { step: 0, ...d }]));
-    this.values = new Map(defs.map((d) => [d.id, d.value]));
+    this.values = new Map(defs.map((d) => [d.id, d.key === 'mode' ? shaderMode(d.value) : d.value]));
     this.listeners = new Set();
   }
 
@@ -375,6 +386,7 @@ export class ParamStore {
     if (!d || !Number.isFinite(v)) return;
     if (d.options) {
       v = Math.min(d.max, Math.max(d.min, Math.round(v)));
+      if (d.key === 'mode') v = shaderMode(v);
     } else {
       const lo = Number.isFinite(d.min) ? d.min : -1e6;
       const hi = Number.isFinite(d.max) ? d.max : 1e6;
@@ -385,8 +397,10 @@ export class ParamStore {
         v = Math.min(hi, Math.max(lo, v));
       }
     }
-    if (v === this.values.get(id)) return;
+    const prev = this.values.get(id);
+    if (v === prev) return;
     this.values.set(id, v);
+    if (opts.history && this.history && !this.history.applying) this.history.note(id, prev, v, opts.history);
     for (const fn of this.listeners) fn(id, v);
   }
 

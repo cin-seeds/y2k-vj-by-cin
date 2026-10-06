@@ -77,6 +77,13 @@ export class LfoEngine {
     return lane;
   }
 
+  /** Replace or remove one lane without merging a patch. */
+  write(id, lane) {
+    if (!lane) this.lanes.delete(id);
+    else this.lanes.set(id, this.#normalize(lane));
+    this.#save();
+  }
+
   toJSON() {
     return Object.fromEntries(this.lanes);
   }

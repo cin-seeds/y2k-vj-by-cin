@@ -27,7 +27,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["$VIDEO/**", "$DOWNLOAD/**", "$HOME/**", "$DOCUMENT/**", "$TEMP/**"],
+          "allow": ["$VIDEO/**", "$DOWNLOAD/**", "$HOME/**", "$DOCUMENT/**", "$TEMP/**", "$APPDATA/**", "$APPLOCALDATA/**"],
           "requireLiteralLeadingDot": false
         }
       }

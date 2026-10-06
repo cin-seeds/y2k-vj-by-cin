@@ -56,8 +56,11 @@ export class ProjectState {
     this.timeline = [];
     this.transport = emptyTransport();
     this.locks = {};
-    this.recordOutput = { code: null, screen: null };
+    this.recordOutput = emptyRecordOutput();
+    this.compositions = emptyCompositions();
     this.desk = null;
+    this.view = null;
+    this.name = '';
     this.#load();
   }
 
@@ -72,12 +75,22 @@ export class ProjectState {
       timeline: this.timeline,
       transport: this.transport,
       locks: { ...this.locks },
-      recordOutput: {
-        code: this.recordOutput.code,
-        screen: this.recordOutput.screen,
-      },
+      recordOutput: { ...this.recordOutput },
+      compositions: this.compositions.map((slot) => (slot ? { ...slot } : null)),
       desk: this.desk,
+      view: this.view,
+      name: this.name,
     };
+  }
+
+  setName(name) {
+    this.name = normalizeProjectName(name);
+    this.#write();
+  }
+
+  setView(view) {
+    this.view = normalizeView(view);
+    this.#write();
   }
 
   setDesk(desk) {
@@ -92,6 +105,11 @@ export class ProjectState {
 
   setRecordOutput(next) {
     this.recordOutput = normalizeRecordOutput(next);
+    this.#write();
+  }
+
+  setCompositions(next) {
+    this.compositions = normalizeCompositions(next);
     this.#write();
   }
 
@@ -126,7 +144,10 @@ export class ProjectState {
     this.transport = doc.transport;
     this.locks = doc.locks;
     this.recordOutput = doc.recordOutput;
+    this.compositions = doc.compositions;
     this.desk = doc.desk;
+    this.view = doc.view;
+    this.name = doc.name;
     this.#write();
     return doc;
   }
@@ -136,8 +157,11 @@ export class ProjectState {
     this.timeline = [];
     this.transport = emptyTransport();
     this.locks = {};
-    this.recordOutput = { code: null, screen: null };
+    this.recordOutput = emptyRecordOutput();
+    this.compositions = emptyCompositions();
     this.desk = null;
+    this.view = null;
+    this.name = '';
     this.#write();
   }
 
@@ -162,7 +186,10 @@ export class ProjectState {
         this.transport = doc.transport;
         this.locks = doc.locks;
         this.recordOutput = doc.recordOutput;
+        this.compositions = doc.compositions;
         this.desk = doc.desk;
+        this.view = doc.view;
+        this.name = doc.name;
         return;
       }
     } catch { /* fall through to the older keys */ }
@@ -181,16 +208,100 @@ export class ProjectState {
     this.transport = doc.transport;
     this.locks = doc.locks;
     this.recordOutput = doc.recordOutput;
+    this.compositions = doc.compositions;
     this.desk = doc.desk;
+    this.view = doc.view;
+    this.name = doc.name;
     this.#write();
   }
 }
 
+function normalizeProjectName(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim().slice(0, 48);
+}
+
+function emptyRecordOutput() {
+  return {
+    codeRecord: null,
+    codeOutput: null,
+    screenRecord: null,
+    screenOutput: null,
+    logoRecord: null,
+    logoOutput: null,
+  };
+}
+
+function readRecordPair(raw, legacy, recordKey, outputKey) {
+  let record = null;
+  let output = null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { record, output };
+  const legacyValue = raw[legacy];
+  if (typeof legacyValue === 'boolean') {
+    record = legacyValue;
+    output = legacyValue;
+  } else if (legacyValue && typeof legacyValue === 'object' && !Array.isArray(legacyValue)) {
+    if (typeof legacyValue.record === 'boolean') record = legacyValue.record;
+    if (typeof legacyValue.output === 'boolean') output = legacyValue.output;
+  }
+  if (typeof raw[recordKey] === 'boolean') record = raw[recordKey];
+  if (typeof raw[outputKey] === 'boolean') output = raw[outputKey];
+  return { record, output };
+}
+
+const COMP_RANGES = [
+  ['gradeHue', 0, 1],
+  ['gradeSat', 0, 2],
+  ['gradeContrast', 0, 2],
+  ['crtBleed', 0, 1],
+  ['crtScan', 0, 1],
+  ['chroma', 0, 1],
+  ['strobe', 0, 1],
+  ['strobeSrc', 0, 2],
+  ['strobePol', 0, 1],
+  ['master', 0, 1],
+  ['speed', 0, 4],
+  ['bpm', 20, 300],
+];
+
+function emptyCompositions() {
+  return [null, null, null];
+}
+
+function normalizeComposition(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const slot = {};
+  for (const [key, min, max] of COMP_RANGES) {
+    const n = Number(raw[key]);
+    if (!Number.isFinite(n)) return null;
+    slot[key] = Math.min(max, Math.max(min, n));
+  }
+  slot.strobeSrc = Math.round(slot.strobeSrc);
+  slot.strobePol = Math.round(slot.strobePol);
+  if (typeof raw.code !== 'boolean' || typeof raw.screen !== 'boolean') return null;
+  slot.code = raw.code;
+  slot.screen = raw.screen;
+  return slot;
+}
+
+function normalizeCompositions(raw) {
+  const out = emptyCompositions();
+  if (!Array.isArray(raw)) return out;
+  for (let i = 0; i < 3; i += 1) out[i] = normalizeComposition(raw[i]);
+  return out;
+}
+
 function normalizeRecordOutput(raw) {
-  const out = { code: null, screen: null };
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
-  if (typeof raw.code === 'boolean') out.code = raw.code;
-  if (typeof raw.screen === 'boolean') out.screen = raw.screen;
+  const out = emptyRecordOutput();
+  const code = readRecordPair(raw, 'code', 'codeRecord', 'codeOutput');
+  const screen = readRecordPair(raw, 'screen', 'screenRecord', 'screenOutput');
+  const logo = readRecordPair(raw, 'logo', 'logoRecord', 'logoOutput');
+  out.codeRecord = code.record;
+  out.codeOutput = code.output;
+  out.screenRecord = screen.record;
+  out.screenOutput = screen.output;
+  out.logoRecord = logo.record;
+  out.logoOutput = logo.output;
   return out;
 }
 
@@ -205,7 +316,8 @@ export function coerceDocument(data = {}) {
     ? data.mediaPool.filter((item) => item && (item.name || item.id)).map((item) => ({
       id: String(item.id || item.name),
       name: String(item.name || item.id),
-      kind: item.kind === 'image' ? 'image' : 'video',
+      kind: item.kind === 'image' ? 'image' : item.kind === 'audio' ? 'audio' : 'video',
+      path: typeof item.path === 'string' ? item.path : '',
     }))
     : (Array.isArray(data.mediaFiles) ? data.mediaFiles.filter(Boolean).map((name) => ({
       id: String(name),
@@ -219,7 +331,10 @@ export function coerceDocument(data = {}) {
     transport,
     locks: normalizeLocks(data.locks),
     recordOutput: normalizeRecordOutput(data.recordOutput),
+    compositions: normalizeCompositions(data.compositions),
     desk: normalizeDesk(data.desk),
+    view: normalizeView(data.view),
+    name: normalizeProjectName(data.name),
     legacy: data,
   };
 }
@@ -245,9 +360,67 @@ function normalizeLogo(row) {
     motion,
     motionSec: clampNum(row.motionSec, 0.5, 0.1, 2),
     autoMask: !!row.autoMask,
+    path: typeof row.path === 'string' ? row.path.slice(0, 300) : '',
     fx: clampNum(row.fx, 0, 0, 4) | 0,
     fxAmt: clampNum(row.fxAmt, 0.5, 0, 1),
     fxReact: !!row.fxReact,
+  };
+}
+
+function normalizeFlagMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof key !== 'string' || !key || key.length > 80) continue;
+    if (Object.keys(out).length >= 80) break;
+    if (typeof value === 'boolean') out[key] = value;
+  }
+  return out;
+}
+
+function viewNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** Layout and show preferences that travel with the project. Null means an older file with none saved. */
+export function normalizeView(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const on = (key) => raw[key] !== false;
+  const panes = raw.panes && typeof raw.panes === 'object' ? raw.panes : {};
+  const bus = raw.bus && typeof raw.bus === 'object' ? raw.bus : {};
+  const mute = bus.mute && typeof bus.mute === 'object' ? bus.mute : {};
+  const solo = bus.solo && typeof bus.solo === 'object' ? bus.solo : {};
+  const maps = ['apc-mini-mk2', 'apc40-mk2', 'custom', 'xdj-700'];
+  return {
+    timeline: on('timeline'),
+    library: on('library'),
+    inspector: on('inspector'),
+    layerA: on('layerA'),
+    layerB: on('layerB'),
+    layerC: on('layerC'),
+    composition: on('composition'),
+    panes: {
+      library: viewNumber(panes.library, 160, 560),
+      inspector: viewNumber(panes.inspector, 220, 640),
+      dock: viewNumber(panes.dock, 200, 900),
+    },
+    previewSplit: viewNumber(raw.previewSplit, 15, 80),
+    timelineH: viewNumber(raw.timelineH, 44, 420),
+    timelinePx: viewNumber(raw.timelinePx, 4, 160),
+    folds: normalizeFlagMap(raw.folds),
+    fxFolds: normalizeFlagMap(raw.fxFolds),
+    catMute: Array.isArray(raw.catMute) ? raw.catMute.filter((key) => typeof key === 'string').slice(0, 80) : [],
+    workspace: raw.workspace === 'prep' || raw.workspace === 'midi' ? raw.workspace : 'live',
+    midiMap: maps.includes(raw.midiMap) ? raw.midiMap : 'apc-mini-mk2',
+    midiLabels: !!raw.midiLabels,
+    uiScale: viewNumber(raw.uiScale, 75, 125),
+    bus: {
+      mute: { A: !!mute.A, B: !!mute.B, C: !!mute.C },
+      solo: { A: !!solo.A, B: !!solo.B, C: !!solo.C },
+    },
+    masterSpeed: viewNumber(raw.masterSpeed, 0, 4) ?? 1,
   };
 }
 
@@ -280,13 +453,14 @@ export function normalizeDesk(raw) {
       box,
     },
     screen: {
-      on: !!screen.on,
-      text: typeof screen.text === 'string' ? screen.text.slice(0, 400) : '',
-      font: typeof screen.font === 'string' ? screen.font : 'desk',
-      shade: clampNum(screen.shade, 8, 0, 8),
-      bg: clampNum(screen.bg, 1, 0, 1),
+      on: typeof screen.on === 'boolean' ? screen.on : true,
+      text: typeof screen.text === 'string' ? screen.text.slice(0, 400) : 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE\nFUTURE',
+      credit: screen.credit !== false,
+      font: typeof screen.font === 'string' ? screen.font : 'fixedsys',
+      shade: clampNum(screen.shade, 0, 0, 8),
+      bg: clampNum(screen.bg, 0.65, 0, 1),
       color: typeof screen.color === 'string' ? screen.color : 'white',
-      size: clampNum(screen.size, 100, 40, 220),
+      size: clampNum(screen.size, 40, 40, 220),
     },
     audio: {
       mode: audio.mode === 'file' ? 'file' : 'device',
@@ -298,6 +472,7 @@ export function normalizeDesk(raw) {
       attack: clampNum(audio.attack, 0.01, 0.001, 0.08),
       release: clampNum(audio.release, 0.15, 0.02, 0.6),
       file: typeof audio.file === 'string' ? audio.file.slice(0, 180) : '',
+      path: typeof audio.path === 'string' ? audio.path.slice(0, 300) : '',
     },
     outputSize: typeof raw.outputSize === 'string' ? raw.outputSize : '',
     recAspect: typeof raw.recAspect === 'string' ? raw.recAspect : '',

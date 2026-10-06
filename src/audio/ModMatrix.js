@@ -100,7 +100,12 @@ export class ModMatrix {
     if (next.route === 'none' && next.depth === 0 && next.gate === 0) this.lanes.delete(id);
     else this.lanes.set(id, next);
     this.#save();
+    this.touch();
     return next;
+  }
+
+  touch() {
+    for (const fn of this.watchers) fn();
   }
 
   #save() {
@@ -141,7 +146,7 @@ export class ModMatrix {
 }
 
 /** Route, depth, and gate for one slider. Depth is signed; gate is 0..1. */
-export function createModRow(mods, id) {
+export function createModRow(mods, id, history) {
   const box = document.createElement('div');
   box.className = 'mod-row';
 
@@ -183,9 +188,28 @@ export function createModRow(mods, id) {
     box.classList.toggle('on', lane.route !== 'none');
   };
 
-  route.addEventListener('input', () => paint(mods.set(id, { route: route.value })));
-  depth.addEventListener('input', () => paint(mods.set(id, { depth: Number(depth.value) })));
-  gate.addEventListener('input', () => paint(mods.set(id, { gate: Number(gate.value) })));
+  const note = (prev, kind) => {
+    history?.edit(`mod:${id}`, prev, structuredClone(mods.get(id)), (lane) => {
+      mods.set(id, lane);
+    }, kind);
+  };
+  route.addEventListener('change', () => {
+    const prev = structuredClone(mods.get(id));
+    paint(mods.set(id, { route: route.value }));
+    note(prev, 'commit');
+  });
+  depth.addEventListener('input', () => {
+    const prev = structuredClone(mods.get(id));
+    paint(mods.set(id, { depth: Number(depth.value) }));
+    note(prev, 'drag');
+  });
+  gate.addEventListener('input', () => {
+    const prev = structuredClone(mods.get(id));
+    paint(mods.set(id, { gate: Number(gate.value) }));
+    note(prev, 'drag');
+  });
+  depth.addEventListener('change', () => history?.commit());
+  gate.addEventListener('change', () => history?.commit());
   bindRangeReadout(depthOut, depth);
   bindRangeReadout(gateOut, gate);
 

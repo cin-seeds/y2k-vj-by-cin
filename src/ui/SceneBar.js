@@ -4,6 +4,7 @@
 //   track:  click = seek, drag a cue to move it, double-click / right-click a cue to delete
 
 import { beginDrag, endDrag, endDragSoon, isOurDrag, readDrag } from './dragPayload.js';
+import { PAD_COLORS } from '../scenes/SceneManager.js';
 
 const BANK_SIZE = 8;
 const BANK_KEY = 'vj.sceneBank';
@@ -11,11 +12,12 @@ const BANK_KEY = 'vj.sceneBank';
 const $ = (id) => document.getElementById(id);
 
 export class SceneBar {
-  constructor({ scenes, timeline, midi, onLaunch, onSave, onExport, onSaveNew, onImport, onNew, onTap, clipLayer, hasMedia, onDropFiles }) {
+  constructor({ scenes, timeline, midi, onLaunch, onSave, onExport, onSaveNew, onImport, onPickProject, onNew, onTap, clipLayer, hasMedia, onDropFiles, groupEdit }) {
     this.scenes = scenes;
     this.timeline = timeline;
     this.midi = midi;
     this.onLaunch = onLaunch;
+    this.groupEdit = groupEdit || ((fn) => fn());
     this.onTap = onTap;
     this.clipLayer = clipLayer || (() => 'A');
     this.hasMedia = hasMedia || (() => true);
@@ -23,7 +25,6 @@ export class SceneBar {
     this.padEls = new Map();
 
     this.padsEl = $('scene-pads');
-    this.banksEl = $('scene-banks');
     this.bank = Math.max(0, Number(localStorage.getItem(BANK_KEY)) || 0);
     this.trackEl = $('tl-track');
     this.cuesEl = $('tl-cues');
@@ -39,7 +40,7 @@ export class SceneBar {
     $('scene-name').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') $('scene-save').click();
     });
-    this.#bindFileMenu(onExport, onSaveNew, onImport, onNew);
+    this.#bindFileMenu(onExport, onSaveNew, onImport, onNew, onPickProject);
     $('scenes-import-file').addEventListener('change', (e) => {
       const f = e.target.files[0];
       e.target.value = '';
@@ -49,15 +50,14 @@ export class SceneBar {
     this.#bindTransport();
     this.#bindTrack();
     this.#bindMenu();
+    this.#watchPadSpace();
 
     scenes.onChange(() => {
       this.#clampBank();
-      this.renderBanks();
       this.renderPads();
       this.renderCues();
     });
     timeline.onChange(() => this.renderTimeline());
-    this.renderBanks();
     this.renderPads();
     this.renderTimeline();
   }
@@ -76,26 +76,10 @@ export class SceneBar {
     const count = Math.max(1, Math.ceil(this.scenes.scenes.length / BANK_SIZE));
     this.bank = Math.min(count - 1, Math.max(0, index));
     try { localStorage.setItem(BANK_KEY, String(this.bank)); } catch { /* ignore */ }
-    this.renderBanks();
     this.renderPads();
   }
 
-  renderBanks() {
-    this.#clampBank();
-    const count = Math.max(1, Math.ceil(this.scenes.scenes.length / BANK_SIZE));
-    this.banksEl.innerHTML = '';
-    for (let i = 0; i < count; i++) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = `Bank ${i + 1}`;
-      b.classList.toggle('on', i === this.bank);
-      b.title = `Scenes ${i * BANK_SIZE + 1}–${i * BANK_SIZE + BANK_SIZE}`;
-      b.addEventListener('click', () => this.setBank(i));
-      this.banksEl.append(b);
-    }
-  }
-
-  #bindFileMenu(onExport, onSaveNew, onImport, onNew) {
+  #bindFileMenu(onExport, onSaveNew, onImport, onNew, onPickProject) {
     const btn = $('file-menu-btn');
     const menu = $('file-menu');
     const place = () => {
@@ -129,7 +113,9 @@ export class SceneBar {
     });
     $('scenes-import').addEventListener('click', () => {
       close();
-      $('scenes-import-file').click();
+      Promise.resolve(onPickProject?.()).then((handled) => {
+        if (!handled) $('scenes-import-file').click();
+      });
     });
     $('scenes-new')?.addEventListener('click', () => {
       close();
@@ -143,70 +129,103 @@ export class SceneBar {
   }
 
   // ------------------------------------------------------------- pads
+  // Two rows, filled down each column, then onward to the right.
+  // Empty cells fill the visible width and leave one free cell after the
+  // last saved scene. Extra scenes add columns and the row scrolls.
+  #watchPadSpace() {
+    this._slotCount = 0;
+    const sync = () => {
+      const next = this.#slotCount();
+      if (next === this._slotCount) return;
+      this.renderPads();
+    };
+    if (typeof ResizeObserver === 'function' && this.padsEl) {
+      this._padObserver = new ResizeObserver(sync);
+      for (const node of [this.padsEl, this.padsEl.parentElement, document.querySelector('.center'), document.querySelector('.workspace-pane')]) {
+        if (node) this._padObserver.observe(node);
+      }
+    }
+    window.addEventListener('resize', sync);
+    requestAnimationFrame(() => requestAnimationFrame(sync));
+    setTimeout(sync, 120);
+  }
+
+  #slotCount() {
+    const el = this.padsEl;
+    const gap = 8;
+    const slot = 148;
+    const w = el.clientWidth || 0;
+    const visible = Math.max(1, Math.floor((w + gap) / (slot + gap)));
+    const needed = this.scenes.scenes.length + 1;
+    return Math.max(visible, needed);
+  }
+
   renderPads() {
+    const scroll = this.padsEl.scrollLeft;
     this.padsEl.innerHTML = '';
     this.padEls.clear();
-    const start = this.bank * BANK_SIZE;
-    const page = this.scenes.scenes.slice(start, start + BANK_SIZE);
-    if (!this.scenes.scenes.length) {
-      const empty = document.createElement('span');
-      empty.className = 'pads-empty';
-      empty.textContent = 'No scenes yet. Set up your layers, then save the current state as a scene.';
-      this.padsEl.append(empty);
-      return;
+    const scenes = this.scenes.scenes;
+    const cells = this.#slotCount();
+    this._slotCount = cells;
+    for (let i = 0; i < cells; i++) {
+      const scene = scenes[i];
+      this.padsEl.append(scene ? this.#pad(scene, i) : this.#emptyCell());
     }
-    if (!page.length) {
-      const empty = document.createElement('span');
-      empty.className = 'pads-empty';
-      empty.textContent = 'This bank is empty.';
-      this.padsEl.append(empty);
-      return;
-    }
-    page.forEach((s, i) => {
-      const pad = document.createElement('button');
-      pad.type = 'button';
-      pad.className = 'pad';
-      pad.draggable = true;
-      pad.setAttribute('draggable', 'true');
-      pad.style.setProperty('--c', s.color);
-      pad.innerHTML = `<i>${i + 1}</i><span></span><b class="pad-progress"></b>`;
-      pad.querySelector('span').textContent = s.name;
-      pad.dataset.midi = `scene:${s.id}`;
-      const map = this.midi.mappingFor(`scene:${s.id}`);
-      pad.title = `${s.name}\nBank ${this.bank + 1} · slot ${i + 1}\nClick: launch \u00b7 Drag to timeline \u00b7 Right-click: menu` +
-        (map ? `\nMIDI: ${map}` : '\nShift-click, or MIDI Learn, to bind a pad');
-      pad.classList.toggle('mapped', !!map);
-      pad.classList.toggle('armed', this.midi.learnTarget === `scene:${s.id}`);
-      pad.classList.toggle('midi-hot', this.midi.learnTarget === `scene:${s.id}`);
-
-      pad.addEventListener('click', (e) => {
-        if (e.shiftKey) this.midi.learn(`scene:${s.id}`);
-        else this.onLaunch(s.id);
-      });
-      pad.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        this.#openMenu(s.id, e.clientX, e.clientY);
-      });
-      pad.addEventListener('dragstart', (e) => {
-        const itemData = { id: s.id, name: s.name, source: 'scene', color: s.color };
-        beginDrag(e, itemData);
-        e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('text/plain', JSON.stringify({
-          type: 'SCENE_OR_CLIP',
-          id: itemData.id,
-          name: itemData.name,
-          data: itemData,
-        }));
-        document.body.classList.add('dragging-scene');
-      });
-      pad.addEventListener('dragend', () => {
-        document.body.classList.remove('dragging-scene');
-        endDragSoon();
-      });
-      this.padsEl.append(pad);
-      this.padEls.set(s.id, pad);
-    });
+    this.padsEl.scrollLeft = scroll;
     this.updateActive();
+  }
+
+  #emptyCell() {
+    const cell = document.createElement('div');
+    cell.className = 'pad-empty';
+    cell.title = 'Empty';
+    cell.addEventListener('contextmenu', (e) => e.preventDefault());
+    return cell;
+  }
+
+  #pad(s, index) {
+    const pad = document.createElement('button');
+    pad.type = 'button';
+    pad.className = 'pad';
+    pad.draggable = true;
+    pad.setAttribute('draggable', 'true');
+    pad.style.setProperty('--c', s.color);
+    pad.innerHTML = `<i>${index + 1}</i><span></span><b class="pad-progress"></b>`;
+    pad.querySelector('span').textContent = s.name;
+    pad.dataset.midi = `scene:${s.id}`;
+    const map = this.midi.mappingFor(`scene:${s.id}`);
+    pad.title = `${s.name}\nClick: launch \u00b7 Drag to timeline \u00b7 Right-click: menu` +
+      (map ? `\nMIDI: ${map}` : '\nShift-click, or MIDI Learn, to bind a pad');
+    pad.classList.toggle('mapped', !!map);
+    pad.classList.toggle('armed', this.midi.learnTarget === `scene:${s.id}`);
+    pad.classList.toggle('midi-hot', this.midi.learnTarget === `scene:${s.id}`);
+
+    pad.addEventListener('click', (e) => {
+      if (e.shiftKey) this.midi.learn(`scene:${s.id}`);
+      else this.onLaunch(s.id);
+    });
+    pad.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      this.#openMenu(s.id, e.clientX, e.clientY);
+    });
+    pad.addEventListener('dragstart', (e) => {
+      const itemData = { id: s.id, name: s.name, source: 'scene', color: s.color };
+      beginDrag(e, itemData);
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('text/plain', JSON.stringify({
+        type: 'SCENE_OR_CLIP',
+        id: itemData.id,
+        name: itemData.name,
+        data: itemData,
+      }));
+      document.body.classList.add('dragging-scene');
+    });
+    pad.addEventListener('dragend', () => {
+      document.body.classList.remove('dragging-scene');
+      endDragSoon();
+    });
+    this.padEls.set(s.id, pad);
+    return pad;
   }
 
   updateActive() {
@@ -220,8 +239,24 @@ export class SceneBar {
 
   // ------------------------------------------------------------- pad menu
   #bindMenu() {
+    const colors = document.createElement('div');
+    colors.className = 'scene-colors';
+    colors.setAttribute('role', 'group');
+    colors.setAttribute('aria-label', 'Scene color');
+    for (const color of PAD_COLORS) {
+      const swatch = document.createElement('button');
+      swatch.type = 'button';
+      swatch.dataset.action = 'color';
+      swatch.dataset.color = color;
+      swatch.title = 'Scene color';
+      swatch.style.setProperty('--swatch', color);
+      swatch.setAttribute('aria-label', 'Scene color');
+      colors.append(swatch);
+    }
+    this.menuEl.insertBefore(colors, this.menuEl.querySelector('[data-action="delete"]'));
     this.menuEl.addEventListener('click', (e) => {
-      const action = e.target.dataset.action;
+      const hit = e.target.closest('[data-action]');
+      const action = hit?.dataset.action;
       const id = this.menuEl.dataset.scene;
       if (!action || !id) return;
       const scene = this.scenes.get(id);
@@ -233,10 +268,13 @@ export class SceneBar {
         if (name) this.scenes.rename(id, name);
       } else if (action === 'update') this.scenes.overwrite(id);
       else if (action === 'midi') this.midi.learn(`scene:${id}`);
+      else if (action === 'color') this.scenes.setColor(id, hit.dataset.color);
       else if (action === 'delete' && confirm(`Delete "${scene.name}"? Its timeline cues are removed too.`)) {
-        this.midi.clear(`scene:${id}`);
-        this.timeline.removeScene(id);
-        this.scenes.remove(id);
+        this.groupEdit(() => {
+          this.midi.clear(`scene:${id}`);
+          this.timeline.removeScene(id);
+          this.scenes.remove(id);
+        });
       }
     });
     window.addEventListener('pointerdown', (e) => {
@@ -249,6 +287,12 @@ export class SceneBar {
 
   #openMenu(id, x, y) {
     this.menuEl.dataset.scene = id;
+    const current = this.scenes.get(id)?.color;
+    for (const swatch of this.menuEl.querySelectorAll('.scene-colors button')) {
+      const on = swatch.dataset.color === current;
+      swatch.classList.toggle('is-on', on);
+      swatch.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
     this.menuEl.hidden = false;
     const r = this.menuEl.getBoundingClientRect();
     this.menuEl.style.left = `${Math.min(x, innerWidth - r.width - 8)}px`;
@@ -262,22 +306,16 @@ export class SceneBar {
   // ------------------------------------------------------------- transport
   #bindTransport() {
     const tl = this.timeline;
-    $('tl-play').addEventListener('click', () => tl.toggle());
-    $('tl-stop').addEventListener('click', () => tl.stop());
     $('tl-loop').addEventListener('click', () => tl.set('loop', !tl.loop));
-    $('tl-bpm').addEventListener('change', (e) => tl.set('bpm', e.target.value));
     $('tl-bars').addEventListener('change', (e) => tl.set('bars', e.target.value));
-    $('tl-fade-sec').addEventListener('input', (e) => tl.set('fadeSec', e.target.value));
+    $('tl-fade-sec').addEventListener('input', (e) => tl.set('fadeSec', e.target.value, { history: 'drag' }));
+    $('tl-fade-sec').addEventListener('change', () => tl.historyCommit?.());
     $('tl-style').addEventListener('change', (e) => tl.set('fadeStyle', e.target.value));
-    $('tl-tap').addEventListener('click', () => this.onTap());
   }
 
   renderTimeline() {
     const tl = this.timeline;
-    $('tl-play').innerHTML = tl.playing ? '&#x275A;&#x275A;' : '&#x25B6;';
-    $('tl-play').classList.toggle('on', tl.playing);
     $('tl-loop').classList.toggle('on', tl.loop);
-    if (document.activeElement !== $('tl-bpm')) $('tl-bpm').value = tl.bpm;
     if (document.activeElement !== $('tl-bars')) $('tl-bars').value = tl.bars;
     if (document.activeElement !== $('tl-fade-sec')) $('tl-fade-sec').value = String(tl.fadeSec);
     $('tl-fade-readout').textContent = `${tl.fadeSec.toFixed(1)}s`;
@@ -285,16 +323,42 @@ export class SceneBar {
 
     this.trackEl.style.setProperty('--bars', tl.bars);
     this.trackEl.style.setProperty('--beats', tl.lengthBeats);
-    const every = tl.bars > 32 ? 8 : tl.bars > 16 ? 4 : tl.bars > 8 ? 2 : 1;
-    this.labelsEl.innerHTML = '';
-    for (let b = 0; b < tl.bars; b += every) {
-      const s = document.createElement('span');
-      s.textContent = b + 1;
-      s.style.left = `${(b / tl.bars) * 100}%`;
-      this.labelsEl.append(s);
-    }
+    this.renderLabels();
     this.renderCues();
     this.updatePlayhead();
+  }
+
+  /** Bar numbers follow the zoom. Wide bars also show the beats inside each bar. */
+  renderLabels() {
+    const tl = this.timeline;
+    const bars = Math.max(1, tl.bars);
+    const width = this.trackEl.getBoundingClientRect().width || this.trackEl.clientWidth || 1;
+    const px = width / bars;
+    this.labelsEl.innerHTML = '';
+    const add = (barIndex, text, beat) => {
+      const s = document.createElement('span');
+      s.textContent = text;
+      if (beat) s.className = 'tl-beat';
+      s.style.left = `${(barIndex / bars) * 100}%`;
+      this.labelsEl.append(s);
+    };
+    if (px >= 120) {
+      for (let b = 0; b < bars; b++) {
+        add(b, String(b + 1), false);
+        for (let beat = 1; beat < 4; beat++) {
+          const mark = document.createElement('span');
+          mark.className = 'tl-beat';
+          mark.textContent = `${b + 1}.${beat + 1}`;
+          mark.style.left = `${((b + beat / 4) / bars) * 100}%`;
+          this.labelsEl.append(mark);
+        }
+      }
+      return;
+    }
+    let every = 1;
+    while (every * px < 40 && every < bars) every *= 2;
+    for (let b = 0; b < bars; b += every) add(b, String(b + 1), false);
+    if ((bars - 1) % every !== 0) add(bars - 1, String(bars), false);
   }
 
   renderCues() {
@@ -421,13 +485,14 @@ export class SceneBar {
         if (moved) {
           const b = this.#beatAt(ev.clientX);
           this.#showDrop(b);
-          this.timeline.moveCue(id, b);
+          this.timeline.moveCue(id, b, { history: 'drag' });
         }
       };
       const up = () => {
         track.removeEventListener('pointermove', move);
         track.removeEventListener('pointerup', up);
         this.dropEl.hidden = true;
+        if (moved) this.timeline.historyCommit?.();
       };
       track.addEventListener('pointermove', move);
       track.addEventListener('pointerup', up);
@@ -465,11 +530,13 @@ export class SceneBar {
       if (dropped.length && this.onDropFiles) {
         const names = this.onDropFiles(dropped) || [];
         const layerId = trackId === 'B' || trackId === 'C' || trackId === 'A' ? trackId : this.clipLayer();
-        names.forEach((name, index) => {
-          this.timeline.addClip(beat + index, {
-            mediaId: name,
-            mediaName: name,
-            layerId,
+        this.timeline.batch(() => {
+          names.forEach((name, index) => {
+            this.timeline.addClip(beat + index, {
+              mediaId: name,
+              mediaName: name,
+              layerId,
+            });
           });
         });
         return;

@@ -22,6 +22,7 @@
     "core:window:allow-show",
     "core:window:allow-close",
     "dialog:allow-open",
+    "dialog:allow-save",
     "shell:allow-spawn",
     "shell:allow-open",
     {
