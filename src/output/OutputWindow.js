@@ -342,8 +342,7 @@ export class OutputWindow {
       url,
       title: 'Y2K VJ by Cín - MASTER OUTPUT',
       decorations: false,
-      // Always-on-top before the move pins the window to the desk display.
-      alwaysOnTop: false,
+      alwaysOnTop: true,
       shadow: false,
       resizable: false,
       fullscreen: false,
@@ -389,19 +388,19 @@ export class OutputWindow {
       h: Math.max(2, Math.round(monitor.size.height)),
     };
     this.#publishDpi();
+    // Move and size the hidden window onto the chosen display, then show it
+    // and fullscreen. The frame already fills that monitor, so fullscreen
+    // covers the selected screen. No decorations and always-on-top keep the
+    // Mac menu bar off this window and leave the launcher where it is.
+    await win.setDecorations(false);
     await win.setPosition(origin);
     await win.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
-    try { await win.setDecorations(false); } catch { /* already undecorated */ }
-    // A point in the middle of the target. The corner can sit on the desk
-    // display, and setFullscreen() then ignores the monitor that was chosen.
-    const inside = new PhysicalPosition(
-      Math.round(Number(origin.x) + Number(monitor.size.width) / 2),
-      Math.round(Number(origin.y) + Number(monitor.size.height) / 2),
-    );
-    await win.setFullscreenOnMonitor(inside);
+    await win.setAlwaysOnTop(true);
     await win.show();
+    await win.setPosition(origin);
+    await win.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
+    await win.setFullscreen(true);
     if (!isMac()) {
-      try { await win.setAlwaysOnTop(true); } catch { /* borderless fullscreen still covers that display */ }
       try { await win.setFocus(); } catch { /* shown window still counts as open */ }
     }
     try {
