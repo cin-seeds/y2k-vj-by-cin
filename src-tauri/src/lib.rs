@@ -185,6 +185,38 @@ fn default_stock_dir() -> Result<String, String> {
   Ok(dir.to_string_lossy().to_string())
 }
 
+fn stock_api_host(url: &reqwest::Url) -> bool {
+  let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+  host == "commons.wikimedia.org"
+    || host.ends_with(".wikimedia.org")
+    || host == "archive.org"
+    || host.ends_with(".archive.org")
+}
+
+/// Search JSON for the desktop app. The Mac web view drops these requests, so
+/// the same Wikimedia and Archive calls go out through reqwest on every desktop.
+#[tauri::command]
+async fn fetch_stock_json(url: String) -> Result<String, String> {
+  let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "That search link is not valid.".to_string())?;
+  if parsed.scheme() != "https" || !stock_api_host(&parsed) {
+    return Err("That search host cannot be used.".into());
+  }
+  let client = reqwest::Client::builder()
+    .timeout(std::time::Duration::from_secs(20))
+    .user_agent("Y2KVJ/2.0 (https://github.com/cin-seeds/y2k-vj-by-cin; stock-video)")
+    .build()
+    .map_err(|err| err.to_string())?;
+  let response = client.get(parsed).send().await.map_err(|err| err.to_string())?;
+  if !response.status().is_success() {
+    return Err(format!("Search failed ({})", response.status()));
+  }
+  let text = response.text().await.map_err(|err| err.to_string())?;
+  if text.len() > 4 * 1024 * 1024 {
+    return Err("That search response is too large.".into());
+  }
+  Ok(text)
+}
+
 #[tauri::command]
 async fn download_video(
   app: tauri::AppHandle,
@@ -439,6 +471,7 @@ fn is_media_leaf(name: &str) -> bool {
     || lower.ends_with(".flac")
     || lower.ends_with(".aiff")
     || lower.ends_with(".aif")
+    || lower.ends_with(".m4a")
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -943,6 +976,24 @@ fn absolute_sanitized(path: &Path) -> Result<PathBuf, String> {
   Ok(clean)
 }
 
+fn audio_output(dir: &Path, input: &Path) -> PathBuf {
+  let stem = input.file_stem().and_then(|name| name.to_str()).unwrap_or("audio");
+  let mut dest = dir.join(format!("{stem}.m4a"));
+  if dest == input {
+    dest = dir.join(format!("{stem}-light.m4a"));
+  }
+  let base = dest.file_stem().and_then(|name| name.to_str()).unwrap_or("audio").to_string();
+  let mut n = 2;
+  while dest.exists() {
+    dest = dir.join(format!("{base}-{n}.m4a"));
+    n += 1;
+    if n > 99 {
+      break;
+    }
+  }
+  dest
+}
+
 fn prep_output(dir: &Path, input: &Path) -> PathBuf {
   let stem = input.file_stem().and_then(|name| name.to_str()).unwrap_or("video");
   let mut dest = dir.join(format!("{stem}.mp4"));
@@ -1102,6 +1153,7 @@ async fn transcode_media(
   job_id: String,
   input_path: String,
   save_dir: String,
+  keyint: Option<u32>,
 ) -> Result<String, String> {
   let _ = save_dir;
   let input = absolute_sanitized(Path::new(input_path.trim()))?;
@@ -1112,6 +1164,9 @@ async fn transcode_media(
   let dest = prep_output(&output_dir, &input);
   let output = dest.to_string_lossy().to_string();
   let input_arg = input.to_string_lossy().to_string();
+  let gop_n = keyint.unwrap_or(1).clamp(1, 250);
+  let gop = gop_n.to_string();
+  let preset = if gop_n > 1 { "veryfast" } else { "medium" };
 
   ensure_ffmpeg_sidecar()?;
   let (mut rx, child) = app
@@ -1119,16 +1174,20 @@ async fn transcode_media(
     .sidecar("ffmpeg")
     .map_err(|err| ffmpeg_launch_error(&err.to_string()))?
     .args([
+      "-y",
+      "-nostdin",
       "-i",
       &input_arg,
       "-vf",
       "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(1920-iw)/2:(1080-ih)/2",
       "-c:v",
       "libx264",
+      "-preset",
+      preset,
       "-pix_fmt",
       "yuv420p",
       "-g",
-      "1",
+      &gop,
       "-bf",
       "0",
       "-movflags",
@@ -1232,6 +1291,143 @@ async fn transcode_media(
   Ok(output)
 }
 
+/// Write a 44.1 kHz stereo AAC file into the global media library.
+/// A long wav or aiff becomes a much smaller .m4a the clock can still decode.
+#[tauri::command]
+async fn transcode_audio(
+  app: tauri::AppHandle,
+  job_id: String,
+  input_path: String,
+) -> Result<String, String> {
+  let input = absolute_sanitized(Path::new(input_path.trim()))?;
+  if !input.is_file() {
+    return Err("That audio file was not found.".into());
+  }
+  let output_dir = global_media_root(&app)?;
+  allow_media_dir(&app, &output_dir)?;
+  let dest = audio_output(&output_dir, &input);
+  let output = dest.to_string_lossy().to_string();
+  let input_arg = input.to_string_lossy().to_string();
+
+  ensure_ffmpeg_sidecar()?;
+  let (mut rx, child) = app
+    .shell()
+    .sidecar("ffmpeg")
+    .map_err(|err| ffmpeg_launch_error(&err.to_string()))?
+    .args([
+      "-y",
+      "-nostdin",
+      "-i",
+      &input_arg,
+      "-vn",
+      "-ar",
+      "44100",
+      "-ac",
+      "2",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-movflags",
+      "+faststart",
+      &output,
+    ])
+    .spawn()
+    .map_err(|err| ffmpeg_launch_error(&err.to_string()))?;
+  transcodes().insert(job_id.clone(), RunningTranscode { child, output: dest.clone() });
+  let from_incoming = input.components().any(|part| part.as_os_str() == "_incoming");
+
+  let mut duration = 0.0;
+  let mut pending = String::new();
+  let mut last_line = String::new();
+  let mut finished = false;
+  while let Some(event) = rx.recv().await {
+    match event {
+      CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+        pending.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(index) = pending.find(&['\n', '\r'][..]) {
+          let line = pending[..index].trim().to_string();
+          pending.replace_range(..=index, "");
+          if line.is_empty() {
+            continue;
+          }
+          last_line = line.clone();
+          if let Some(secs) = clock_after(&line, "Duration: ") {
+            duration = secs;
+          }
+          let mut percent = None;
+          if duration > 0.0 {
+            if let Some(secs) = clock_after(&line, "time=") {
+              percent = Some((secs / duration * 100.0).clamp(0.0, 99.0));
+            }
+          }
+          emit_prep(&app, PrepEvent {
+            id: job_id.clone(),
+            kind: "log".into(),
+            line,
+            percent,
+            output: String::new(),
+            error: String::new(),
+          });
+        }
+      }
+      CommandEvent::Error(err) => {
+        transcodes().remove(&job_id);
+        return Err(ffmpeg_launch_error(&err));
+      }
+      CommandEvent::Terminated(payload) => {
+        transcodes().remove(&job_id);
+        if cancelled_jobs().remove(&job_id) {
+          if from_incoming {
+            let _ = tokio::fs::remove_file(&input).await;
+          }
+          let _ = tokio::fs::remove_file(&dest).await;
+          return Err("Transcode cancelled".into());
+        }
+        let code = payload.code.unwrap_or(1);
+        if code != 0 {
+          let _ = tokio::fs::remove_file(&dest).await;
+          let message = if last_line.is_empty() {
+            format!("FFmpeg stopped ({code})")
+          } else {
+            last_line
+          };
+          emit_prep(&app, PrepEvent {
+            id: job_id.clone(),
+            kind: "error".into(),
+            line: String::new(),
+            percent: None,
+            output: String::new(),
+            error: message.clone(),
+          });
+          return Err(message);
+        }
+        finished = true;
+      }
+      _ => {}
+    }
+  }
+  transcodes().remove(&job_id);
+  if cancelled_jobs().remove(&job_id) {
+    return Err("Transcode cancelled".into());
+  }
+  if !finished {
+    return Err("FFmpeg stopped before the file was written.".into());
+  }
+  if from_incoming {
+    let _ = tokio::fs::remove_file(&input).await;
+  }
+  emit_prep(&app, PrepEvent {
+    id: job_id,
+    kind: "done".into(),
+    line: String::new(),
+    percent: Some(100.0),
+    output: output.clone(),
+    error: String::new(),
+  });
+  Ok(output)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -1252,6 +1448,7 @@ pub fn run() {
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
+      fetch_stock_json,
       download_video,
       download_audio,
       default_stock_dir,
@@ -1267,6 +1464,7 @@ pub fn run() {
       copy_into_global_media,
       delete_global_media,
       transcode_media,
+      transcode_audio,
       transcode_cancel,
       midi::midi_list,
       midi::midi_open,

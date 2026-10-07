@@ -8,6 +8,7 @@ import { addMediaTag, rememberMediaSource } from './GlobalLibrary.js';
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+const AUDIO_EXT = /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i;
 const jobs = new Map();
 let listening = false;
 let pumping = false;
@@ -15,6 +16,10 @@ const queue = [];
 
 function isVideo(file) {
   return file.type.startsWith('video/') || VIDEO_EXT.test(file.name || '');
+}
+
+function isAudio(file) {
+  return file.type.startsWith('audio/') || AUDIO_EXT.test(file.name || '');
 }
 
 function pathFromFile(file, event) {
@@ -176,15 +181,29 @@ async function bypassDirect(job) {
   }
   try {
     if (job.path && IS_TAURI) {
-      await invoke('copy_into_global_media', { inputPath: job.path });
+      const saved = await invoke('copy_into_global_media', { inputPath: job.path });
       job.settled = true;
       setPercent(job, 100);
       paintJob(job, 'Saved to Media Manager', 'done');
       prepShowToast?.('Saved to Media Manager');
       noteGlobalSave();
+      if (job.audio) noteAudioReady(saved, job.play);
       return;
     }
     const file = job.file;
+    if (job.audio && file) {
+      await libraryRef.cacheAudio(file);
+      rememberMediaSource(file.name, 'audio');
+      job.settled = true;
+      setPercent(job, 100);
+      paintJob(job, 'Saved to Media Manager', 'done');
+      prepShowToast?.(`Saved ${file.name} to Media Manager`);
+      noteGlobalSave();
+      window.dispatchEvent(new CustomEvent('vj-audio-ready', {
+        detail: { name: file.name, file, play: !!job.play },
+      }));
+      return;
+    }
     if (!file) throw new Error('Drop the video again to add it without transcoding.');
     const added = libraryRef.add([file]);
     if (!added.length) throw new Error('That file is not a video the library can use.');
@@ -223,11 +242,14 @@ async function runJob(job, ensureStockDir, showToast) {
     job.transcoding = true;
     let output;
     try {
-      output = await invoke('transcode_media', {
-        jobId: job.id,
-        inputPath,
-        saveDir,
-      });
+      output = job.audio
+        ? await invoke('transcode_audio', { jobId: job.id, inputPath })
+        : await invoke('transcode_media', {
+          jobId: job.id,
+          inputPath,
+          saveDir,
+          keyint: 1,
+        });
     } finally {
       job.transcoding = false;
     }
@@ -239,11 +261,25 @@ async function runJob(job, ensureStockDir, showToast) {
     paintJob(job, `Saved ${leaf}`, 'done');
     showToast(`Saved ${leaf} to Media Manager`);
     try { await importPrepared(); } catch { /* the file is already in the global folder */ }
+    if (job.audio) noteAudioReady(output, job.play, leaf);
   } catch (err) {
     if (job.bypassed) return;
-    paintJob(job, err?.message || String(err) || 'Transcode failed', 'failed');
+    const message = err?.message || String(err) || 'Transcode failed';
+    paintJob(job, message, 'failed');
     showToast('Transcode failed', true);
+    if (job.audio && job.play) {
+      window.dispatchEvent(new CustomEvent('vj-audio-ready', {
+        detail: { error: message, play: true },
+      }));
+    }
   }
+}
+
+function noteAudioReady(path, play, name) {
+  const leaf = name || String(path || '').split(/[\\/]/).pop() || '';
+  window.dispatchEvent(new CustomEvent('vj-audio-ready', {
+    detail: { path: path || '', name: leaf, play: !!play },
+  }));
 }
 
 async function pump(ensureStockDir, showToast) {
@@ -264,6 +300,23 @@ function enqueue(name, path, file, ensureStockDir, showToast) {
 
 export function queueMediaPrep(name, path, file) {
   enqueue(name, path, file, async () => '', prepShowToast || (() => {}));
+}
+
+export function queueAudioPrep(name, path, file, { play = false } = {}) {
+  rememberMediaSource(name, 'audio');
+  if (!IS_TAURI) {
+    if (!file) return;
+    libraryRef?.cacheAudio(file);
+    noteGlobalSave();
+    window.dispatchEvent(new CustomEvent('vj-audio-ready', {
+      detail: { name: file.name || name, file, play: !!play },
+    }));
+    return;
+  }
+  const job = addJob(name, path, file);
+  job.audio = true;
+  job.play = !!play;
+  pump(async () => '', prepShowToast || (() => {}));
 }
 
 export function bindMediaPrep({ library, ensureStockDir, showToast }) {
@@ -291,12 +344,15 @@ export function bindMediaPrep({ library, ensureStockDir, showToast }) {
   zone.addEventListener('drop', (event) => {
     allow(event);
     zone.classList.remove('over');
-    const files = [...(event.dataTransfer?.files || [])].filter(isVideo);
-    if (!files.length) {
-      showToast('Drop a video file.', true);
+    const files = [...(event.dataTransfer?.files || [])];
+    const videos = files.filter(isVideo);
+    const audio = files.filter(isAudio);
+    if (!videos.length && !audio.length) {
+      showToast('Drop a video, image, or audio file.', true);
       return;
     }
-    for (const file of files) enqueue(file.name, pathFromFile(file, event), file, ensureStockDir, showToast);
+    for (const file of videos) enqueue(file.name, pathFromFile(file, event), file, ensureStockDir, showToast);
+    for (const file of audio) queueAudioPrep(file.name, pathFromFile(file, event), file);
   });
   zone.addEventListener('click', () => chooseFiles(ensureStockDir, showToast));
   zone.addEventListener('keydown', (event) => {
@@ -312,25 +368,29 @@ async function chooseFiles(ensureStockDir, showToast) {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const picked = await open({
       multiple: true,
-      title: 'Videos to prepare',
-      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpg', 'mpeg'] }],
+      title: 'Media to prepare',
+      filters: [{
+        name: 'Media',
+        extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpg', 'mpeg', 'mp3', 'wav', 'aiff', 'aif', 'm4a', 'ogg', 'flac'],
+      }],
     });
     if (!picked) return;
     const paths = Array.isArray(picked) ? picked : [picked];
     for (const path of paths) {
-      const name = String(path).split(/[\\/]/).pop() || 'video';
-      if (!VIDEO_EXT.test(name)) continue;
-      enqueue(name, path, null, ensureStockDir, showToast);
+      const name = String(path).split(/[\\/]/).pop() || 'media';
+      if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
+      else if (VIDEO_EXT.test(name)) enqueue(name, path, null, ensureStockDir, showToast);
     }
     return;
   }
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = 'video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi,.mpg,.mpeg';
+  input.accept = 'video/*,audio/*,.mp4,.mov,.m4v,.mkv,.webm,.avi,.mpg,.mpeg,.mp3,.wav,.aiff,.aif,.m4a,.ogg,.flac';
   input.multiple = true;
   input.addEventListener('change', () => {
     for (const file of input.files || []) {
-      if (isVideo(file)) enqueue(file.name, '', file, ensureStockDir, showToast);
+      if (isAudio(file)) queueAudioPrep(file.name, '', file);
+      else if (isVideo(file)) enqueue(file.name, '', file, ensureStockDir, showToast);
     }
   });
   input.click();

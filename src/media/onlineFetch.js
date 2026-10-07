@@ -1,7 +1,10 @@
 // Stock video search. Every source returns the same clip shape, and every
 // videoUrl is a direct MP4 or WebM file the WebGL texture path can upload.
 
+import { IS_TAURI, invoke } from '../ipc.js';
+
 const DIRECT = /\.(mp4|webm)(\?|#|$)/i;
+const ARCHIVE_SOFT_CAP = 80 * 1024 * 1024;
 
 function directVideo(url) {
   const link = String(url || '').trim();
@@ -37,7 +40,16 @@ function clipOf({ id, title, thumbnail, videoUrl, source, alts }) {
 
 const APP_UA = 'Y2KVJ/2.0 (https://github.com/cin-seeds/y2k-vj-by-cin; stock-video)';
 
+function desktopSearch() {
+  return IS_TAURI && (/Mac/i.test(navigator.userAgent || '') || /Mac/i.test(navigator.platform || ''));
+}
+
 async function getJson(url, ms = 12000) {
+  if (desktopSearch()) {
+    const text = await invoke('fetch_stock_json', { url });
+    if (!text) throw new Error('Search failed');
+    return JSON.parse(text);
+  }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
@@ -103,33 +115,29 @@ async function attachCommonsFiles(pages) {
 }
 
 async function fetchWikimedia(prompt) {
-  try {
-    const params = new URLSearchParams({
-      action: 'query',
-      format: 'json',
-      origin: '*',
-      generator: 'search',
-      gsrsearch: `${prompt} filetype:video`,
-      gsrnamespace: '6',
-      gsrlimit: '15',
-      prop: 'imageinfo',
-      iiprop: 'url|mime|thumburl|size|mediatype',
-      iiurlwidth: '320',
-    });
-    const data = await getJson(`https://commons.wikimedia.org/w/api.php?${params}`);
-    const pages = Object.values(data?.query?.pages || {})
-      .sort((a, b) => (a.index || 0) - (b.index || 0));
-    await attachCommonsFiles(pages);
-    const clips = [];
-    for (const page of pages) {
-      const clip = commonsClip(page);
-      if (clip) clips.push(clip);
-      if (clips.length >= 8) break;
-    }
-    return clips;
-  } catch {
-    return [];
+  const params = new URLSearchParams({
+    action: 'query',
+    format: 'json',
+    origin: '*',
+    generator: 'search',
+    gsrsearch: `${prompt} filetype:video`,
+    gsrnamespace: '6',
+    gsrlimit: '15',
+    prop: 'imageinfo',
+    iiprop: 'url|mime|thumburl|size|mediatype',
+    iiurlwidth: '320',
+  });
+  const data = await getJson(`https://commons.wikimedia.org/w/api.php?${params}`);
+  const pages = Object.values(data?.query?.pages || {})
+    .sort((a, b) => (a.index || 0) - (b.index || 0));
+  await attachCommonsFiles(pages);
+  const clips = [];
+  for (const page of pages) {
+    const clip = commonsClip(page);
+    if (clip) clips.push(clip);
+    if (clips.length >= 8) break;
   }
+  return clips;
 }
 
 function archiveFileUrl(identifier, filename) {
@@ -146,7 +154,11 @@ function archiveMp4(files) {
     return formatOk && /\.(mp4|webm)$/i.test(name);
   });
   wanted.sort((a, b) => (Number(a.size) || Number.MAX_SAFE_INTEGER) - (Number(b.size) || Number.MAX_SAFE_INTEGER));
-  return wanted[0] || null;
+  const compact = wanted.find((file) => {
+    const size = Number(file.size);
+    return Number.isFinite(size) && size > 0 && size <= ARCHIVE_SOFT_CAP;
+  });
+  return compact || wanted[0] || null;
 }
 
 async function archiveClip(doc) {
@@ -184,22 +196,18 @@ function archiveQuery(prompt, mediatype) {
 }
 
 async function fetchArchive(prompt) {
-  try {
-    const params = new URLSearchParams({
-      q: archiveQuery(prompt, 'movies'),
-      output: 'json',
-      rows: '8',
-    });
-    params.append('fl[]', 'identifier');
-    params.append('fl[]', 'title');
-    params.append('sort[]', '-downloads');
-    const data = await getJson(`https://archive.org/advancedsearch.php?${params}`);
-    const docs = Array.isArray(data?.response?.docs) ? data.response.docs : [];
-    const settled = await Promise.allSettled(docs.map((doc) => archiveClip(doc)));
-    return settled.flatMap((result) => (result.status === 'fulfilled' && result.value ? [result.value] : []));
-  } catch {
-    return [];
-  }
+  const params = new URLSearchParams({
+    q: archiveQuery(prompt, 'movies'),
+    output: 'json',
+    rows: '8',
+  });
+  params.append('fl[]', 'identifier');
+  params.append('fl[]', 'title');
+  params.append('sort[]', '-downloads');
+  const data = await getJson(`https://archive.org/advancedsearch.php?${params}`);
+  const docs = Array.isArray(data?.response?.docs) ? data.response.docs : [];
+  const settled = await Promise.allSettled(docs.map((doc) => archiveClip(doc)));
+  return settled.flatMap((result) => (result.status === 'fulfilled' && result.value ? [result.value] : []));
 }
 
 function mixSources(clips) {
@@ -246,6 +254,12 @@ export async function fetchVideoLoop(source, prompt) {
       clips.push(clip);
     }
   }
-  if (!clips.length) throw new Error('No playable video for that search.');
+  if (!clips.length) {
+    const failed = settled.find((result) => result.status === 'rejected');
+    if (failed && settled.every((result) => result.status === 'rejected')) {
+      throw new Error(failed.reason?.message || 'No playable video for that search.');
+    }
+    throw new Error('No playable video for that search.');
+  }
   return mixSources(clips);
 }

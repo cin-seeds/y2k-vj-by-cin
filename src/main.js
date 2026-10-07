@@ -23,7 +23,7 @@ import { AudioEngine } from './audio/AudioEngine.js';
 import { applyDocumentSink, applyMediaSink, setAudioSink } from './audio/outputSink.js';
 import { ModMatrix, createModRow } from './audio/ModMatrix.js';
 import { BeatClock } from './clock/BeatClock.js';
-import { BpmEngine } from './clock/BpmEngine.js';
+import { BpmEngine, estimateBufferTempo } from './clock/BpmEngine.js';
 import { LayerBus } from './mixer/LayerBus.js';
 import { LfoEngine } from './lfo/LfoEngine.js';
 import { MidiManager } from './midi/MidiManager.js';
@@ -1315,10 +1315,13 @@ $('media-add').addEventListener('click', () => {
 });
 $('media-files').addEventListener('change', (e) => {
   const files = [...(e.target.files || [])];
-  library.add(files);
-  for (const file of files) rememberMediaSource(file.name, 'user');
+  const audioFiles = files.filter((file) => file.type.startsWith('audio/') || /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i.test(file.name || ''));
+  const clips = files.filter((file) => !audioFiles.includes(file));
+  if (audioFiles.length) globalLibrary?.ingest(audioFiles);
+  library.add(clips);
+  for (const file of clips) rememberMediaSource(file.name, 'user');
   if ($('prep-brand')?.checked) {
-    for (const file of files) addMediaTag(file.name, 'brand');
+    for (const file of clips) addMediaTag(file.name, 'brand');
   }
   e.target.value = '';
   globalLibrary?.refresh();
@@ -1400,17 +1403,35 @@ async function fileFromStock(clip, onPhase) {
     const { convertFileSrc } = await import('@tauri-apps/api/core');
     const path = await invoke('download_video', { url: clip.videoUrl, filename, saveDir });
     onPhase?.('Transcoding...');
+    const jobId = crypto.randomUUID();
+    let unlisten = () => {};
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen('media-prep', (event) => {
+        const payload = event.payload;
+        if (payload?.id !== jobId) return;
+        if (typeof payload.percent === 'number') {
+          onPhase?.(`Transcoding ${Math.round(payload.percent)}%`);
+          return;
+        }
+        const clock = String(payload?.line || '').match(/time=(\d+:\d+:\d+)/);
+        if (clock) onPhase?.(`Transcoding ${clock[1]}`);
+      });
+    } catch { /* the label stays on Transcoding */ }
     let output;
     try {
       output = await invoke('transcode_media', {
-        jobId: crypto.randomUUID(),
+        jobId,
         inputPath: path,
         saveDir,
+        keyint: clip.source === 'archive' ? 30 : 1,
       });
     } catch (err) {
       const error = new Error(stockErrorText(err, 'Transcode failed'));
       error.transcode = true;
       throw error;
+    } finally {
+      unlisten();
     }
     const assetUrl = convertFileSrc(output);
     const res = await fetch(assetUrl);
@@ -1949,19 +1970,25 @@ function showBpmNotice(text, ms) {
   bpmNoticeUntil = performance.now() + ms;
 }
 
-function setBpmMode(src) {
+function setBpmMode(src, { scanFile = false } = {}) {
   bpmMode = src === 'auto' ? 'auto' : 'manual';
   bpmEngine.setMode(bpmMode);
-  if (bpmMode === 'auto') bpmEngine.beginAnalysis(performance.now() / 1000);
-  const auto = bpmMode === 'auto';
+  if (bpmMode === 'auto') {
+    bpmEngine.beginAnalysis(performance.now() / 1000);
+    if (scanFile && audio.kind === 'file' && audio.buffer) {
+      const read = estimateBufferTempo(audio.buffer, bpmEngine.bpm);
+      if (read) bpmEngine.acceptTempo(read.bpm);
+    }
+  }
+  const auto = bpmEngine.analyzing;
   const btn = $('bpm-mode');
   bpmNoticeUntil = 0;
   btn.textContent = auto ? bpmEngine.analyzeLabel() : 'Auto: Read Live';
   btn.classList.toggle('on', auto);
   btn.setAttribute('aria-pressed', auto ? 'true' : 'false');
   btn.title = auto
-    ? 'Listening for kicks. The tempo locks in when the beat is clear.'
-    : 'Manual tempo. Click to read the live audio.';
+    ? 'Listening for a beat. The tempo locks in when the pulse is clear.'
+    : 'Manual tempo. Click to read the loaded track, or the live audio.';
   document.body.classList.toggle('bpm-auto', auto);
   $('bpm-slider').disabled = auto;
   const readout = $('bpm-value')?.parentElement;
@@ -1977,7 +2004,7 @@ function setBpmMode(src) {
     }
   }
 }
-$('bpm-mode').addEventListener('click', () => setBpmMode('auto'));
+$('bpm-mode').addEventListener('click', () => setBpmMode('auto', { scanFile: true }));
 
 let masterSpeed = 1;
 function setMasterSpeed(value, { history = false } = {}) {
@@ -2385,7 +2412,8 @@ function setScreenCredit(on) {
 }
 
 function setScreenText(value) {
-  screenText = String(value ?? '');
+  const stored = String(value ?? '').replace(/\r\n/g, '\n');
+  screenText = stored === SCREEN_TEXT_WAS ? SCREEN_TEXT : stored;
   const field = $('screen-text');
   if (field && field.value !== screenText) field.value = screenText;
   try { localStorage.setItem('vj.screenText', screenText); } catch { /* ignore */ }
@@ -2578,9 +2606,9 @@ function placeBrandMark(nowMs) {
   const dist = (nowMs / 1000) * speed;
   const dx = spanX < 1 ? 0 : dist % (spanX * 2);
   const dy = spanY < 1 ? 0 : (dist * 0.62) % (spanY * 2);
-  const swingX = (dx <= spanX ? dx : spanX * 2 - dx) - spanX / 2;
+  const swingX = dx <= spanX ? dx : spanX * 2 - dx;
   const swingY = (dy <= spanY ? dy : spanY * 2 - dy) - spanY / 2;
-  const x = originX + (wrapW - mw) / 2 + swingX;
+  const x = originX + 8 + swingX;
   const y = originY + (wrapH - mh) / 2 + swingY;
   const left = `${x.toFixed(1)}px`;
   const top = `${y.toFixed(1)}px`;
@@ -3110,6 +3138,11 @@ function resetProjectDesk() {
       bg: 0.65,
       color: 'white',
       size: 40,
+      boxW: 0,
+      boxH: 0,
+      pad: 12,
+      radius: 0,
+      border: 2,
     },
     audio: {
       mode: 'device',
@@ -3254,6 +3287,10 @@ function defaultProjectView() {
   view.fxFolds = {};
   view.folds = Object.fromEntries(LIBRARY_FOLDS.map(([id, open]) => [id, open]));
   view.workspace = 'live';
+  view.panes = { library: 240, inspector: 280, dock: 320 };
+  view.previewSplit = 38;
+  view.timelineH = 120;
+  view.timelinePx = 28;
   view.bus = { mute: { A: false, B: false, C: false }, solo: { A: false, B: false, C: false } };
   view.masterSpeed = 1;
   return view;
@@ -3651,10 +3688,19 @@ async function loadProject(file, sourcePath = '') {
 
 function newProject() {
   audioAssetPath = '';
+  audio.clearFile();
+  try {
+    localStorage.removeItem('vj.audioFile');
+    localStorage.removeItem(LAST_PROJECT_KEY);
+    localStorage.setItem(LIBRARY_FOLD_KEY, JSON.stringify(Object.fromEntries(LIBRARY_FOLDS)));
+  } catch { /* ignore */ }
+  setStatus($('audio-status'), '');
+  paintAudioRecent();
   project.setName('');
   paintProjectName();
   project.setMediaPool([]);
   refreshLibraryUi();
+  refreshMediaSelect();
   resetProjectDesk();
   project.setRecordOutput({
     logoRecord: true,
@@ -3676,22 +3722,28 @@ function newProject() {
   timeline.load({
     bpm: 120, bars: 16, loop: true, fadeBeats: 4, fadeSec: 1, fadeStyle: 0, cues: [],
   });
+  setTempo(120, { history: false });
   mods.replace({});
+  lfo.replace({});
+  macros.replace([]);
   panel.refreshAutomation();
   for (const def of params.defs.values()) {
-    if (def.layer) params.set(def.id, def.defaultValue, { exact: true });
+    params.set(def.id, def.defaultValue);
   }
-  params.set('strobe', params.defs.get('strobe').defaultValue);
+  setAspect('16:9');
+  setFit('fill');
   for (const L of LAYERS) {
     bus.mute[L] = false;
     bus.solo[L] = false;
     if (layerById[L].mediaKey !== 'none') setLayerMedia(L, 'none');
   }
+  panel.selectLayer('A');
   panel.refreshBus();
   clearShowBuffers();
   refreshLayerUi();
   sceneBar.setBank(0);
   applyProjectView(defaultProjectView(), { workspace: true });
+  savePanes();
   project.setView(captureView());
   params.history?.clear();
 }
@@ -4199,6 +4251,7 @@ async function useAudioFile(file) {
   setStatus($('audio-status'), file.name);
   syncTransport();
   await paintAudioRecent();
+  await paintAudioLibrary(file.name);
 }
 
 const AUDIO_RECENT_KEY = 'vj.audioRecent';
@@ -4213,7 +4266,7 @@ function readAudioRecent() {
 }
 
 function rememberAudioName(name) {
-  const next = [name, ...readAudioRecent().filter((item) => item !== name)];
+  const next = [name, ...readAudioRecent().filter((item) => item !== name)].slice(0, 3);
   try { localStorage.setItem(AUDIO_RECENT_KEY, JSON.stringify(next)); } catch { /* ignore */ }
 }
 
@@ -4223,6 +4276,7 @@ async function paintAudioRecent() {
   const current = audio.fileName || localStorage.getItem('vj.audioFile') || '';
   const names = [];
   for (const name of readAudioRecent()) {
+    if (names.length >= 3) break;
     const file = await library.getAudio(name);
     if (file) names.push(name);
   }
@@ -4518,28 +4572,99 @@ document.addEventListener('keydown', (e) => {
   e.stopPropagation();
 }, true);
 
-$('audio-file').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+let audioLibraryPaint = 0;
+
+async function paintAudioLibrary(prefer) {
+  const select = $('audio-library');
+  if (!select) return;
+  const ticket = ++audioLibraryPaint;
+  const rows = globalLibrary ? await globalLibrary.libraryAudio() : [];
+  if (ticket !== audioLibraryPaint) return;
+  const current = prefer || select.value || audio.fileName || localStorage.getItem('vj.audioFile') || '';
+  select.replaceChildren();
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = rows.length ? 'Choose a library file' : 'Add audio in Media Manager';
+  select.append(blank);
+  for (const row of rows) {
+    const opt = document.createElement('option');
+    opt.value = row.name;
+    opt.textContent = row.name;
+    opt.dataset.path = row.path || '';
+    select.append(opt);
+  }
+  select.value = rows.some((row) => row.name === current) ? current : '';
+}
+
+$('audio-library')?.addEventListener('change', async () => {
+  const select = $('audio-library');
+  const name = select?.value;
+  if (!name) return;
   audioAssetPath = '';
-  try { await useAudioFile(file); }
-  catch (err) { setStatus($('audio-status'), err.message, true); }
+  try {
+    let file = await library.getAudio(name);
+    const path = select.selectedOptions[0]?.dataset.path || '';
+    if (!file && path && IS_TAURI) {
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const res = await fetch(convertFileSrc(path));
+      if (!res.ok) throw new Error('That library file could not be played');
+      const blob = await res.blob();
+      file = new File([blob], name, { type: blob.type || 'audio/mp4' });
+    }
+    if (!file) throw new Error('That file is not in Media Manager anymore');
+    await useAudioFile(file);
+  } catch (err) {
+    setStatus($('audio-status'), err.message, true);
+  }
 });
+
+window.addEventListener('vj-audio-ready', async (event) => {
+  const detail = event.detail || {};
+  if (detail.error) {
+    if (detail.play) setStatus($('audio-status'), detail.error, true);
+    return;
+  }
+  try {
+    await paintAudioLibrary(detail.name);
+  } catch (err) {
+    console.warn('Library audio list did not refresh', err);
+  }
+  if (!detail.play) return;
+  audioAssetPath = detail.path || '';
+  try {
+    let file = detail.file || await library.getAudio(detail.name);
+    if (!file && detail.path && IS_TAURI) {
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const res = await fetch(convertFileSrc(detail.path));
+      if (!res.ok) throw new Error('The lighter file could not be played');
+      const blob = await res.blob();
+      const leaf = detail.name || String(detail.path).split(/[\\/]/).pop() || 'audio.m4a';
+      file = new File([blob], leaf, { type: blob.type || 'audio/mp4' });
+    }
+    if (!file) throw new Error('The lighter file could not be played');
+    await useAudioFile(file);
+  } catch (err) {
+    setStatus($('audio-status'), err.message, true);
+  }
+});
+
+window.addEventListener('vj-global-media', () => { paintAudioLibrary(); });
 
 const drop = $('audio-drop');
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-drop.addEventListener('drop', async (e) => {
+drop.addEventListener('drop', (e) => {
   e.preventDefault();
+  e.stopPropagation();
   drop.classList.remove('over');
-  const file = [...e.dataTransfer.files].find((f) => /\.(mp3|wav|aiff|aif)$/i.test(f.name) || f.type.startsWith('audio/'));
+  const file = [...e.dataTransfer.files].find((f) => /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i.test(f.name) || f.type.startsWith('audio/'));
   if (!file) {
-    setStatus($('audio-status'), 'Drop an .mp3, .wav, or .aiff.', true);
+    setStatus($('audio-status'), 'Drop an audio file.', true);
     return;
   }
   audioAssetPath = '';
-  try { await useAudioFile(file); }
-  catch (err) { setStatus($('audio-status'), err.message, true); }
+  setStatus($('audio-status'), 'Adding to Media Manager…');
+  globalLibrary?.ingest([file], e, { play: true });
 });
 
 try {
@@ -5352,7 +5477,7 @@ apcView = new ApcView({
   getPulse: () => beatClock.pulse,
   actions: {
     tap: tapTempo,
-    autoBpm: () => setBpmMode('auto'),
+    autoBpm: () => setBpmMode('auto', { scanFile: true }),
     masterStop,
     setSpeed: (value) => setMasterSpeed(value),
     getSpeed: () => masterSpeed,
@@ -5631,6 +5756,16 @@ $('output-win').addEventListener('click', async (e) => {
   const screens = await listScreens();
   if (menu.hidden) return;
   menu.replaceChildren();
+  const spots = screens.map((item) => `${item.monitor?.position?.x ?? ''},${item.monitor?.position?.y ?? ''}`);
+  const note = document.createElement('p');
+  note.className = 'hint';
+  if (screens.length < 2) {
+    note.textContent = 'Only this display was found. Set the projector to Extend (Windows) or Extended (Mac).';
+    menu.append(note);
+  } else if (new Set(spots).size < screens.length) {
+    note.textContent = 'These displays share one picture. Set the projector to Extend (Windows) or Extended (Mac), not Duplicate or Mirror.';
+    menu.append(note);
+  }
   for (const item of screens) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -6742,6 +6877,7 @@ globalLibrary = bindGlobalLibrary({
     return !!added;
   },
 });
+paintAudioLibrary();
 if (project.desk) applyDesk(project.desk);
 deskReady = true;
 if (!project.desk) project.setDesk(captureDesk());

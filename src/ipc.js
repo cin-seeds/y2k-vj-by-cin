@@ -25,6 +25,7 @@ function browserStub(command) {
     case 'download_video':
     case 'download_audio':
     case 'transcode_media':
+    case 'transcode_audio':
     case 'copy_project_asset':
     case 'write_project_asset':
     case 'read_text_file':

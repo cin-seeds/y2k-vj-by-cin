@@ -63,10 +63,9 @@ function drift(areaW, areaH, mw, mh, nowMs) {
   const spanY = Math.max(0, Math.min(areaH * 0.28, areaH - mh - 16));
   const speed = Math.max(20, areaW * 0.04);
   const dist = (nowMs / 1000) * speed;
-  const swingX = bounce(spanX, dist) - spanX / 2;
   const swingY = bounce(spanY, dist * 0.62) - spanY / 2;
   return {
-    x: (areaW - mw) / 2 + swingX,
+    x: 8 + bounce(spanX, dist),
     y: (areaH - mh) / 2 + swingY,
   };
 }
@@ -92,20 +91,29 @@ function wrapLine(text, measure, limit) {
   return out;
 }
 
-/** Wrap body lines to the width of `SCREEN_ONE_LINE`. The license line stays whole and counts as one of three. */
+/**
+ * Text-box newlines stay as typed. Only the middle sentence wraps, and only
+ * when it is wider than `SCREEN_ONE_LINE`. The license line stays whole.
+ */
 export function wrapScreenLines(lines, measure) {
   const limit = Math.max(1, measure(SCREEN_ONE_LINE));
   const body = [];
   const credit = [];
   for (const line of lines) {
     if (!line || typeof line.text !== 'string') continue;
-    if (line.credit) {
-      credit.push(line);
-      continue;
-    }
-    for (const text of wrapLine(line.text, measure, limit)) body.push({ text });
+    if (line.credit) credit.push(line);
+    else body.push(line);
   }
-  return body.concat(credit);
+  while (body.length > 1 && body[body.length - 1].text === '') body.pop();
+  const out = [];
+  body.forEach((line, i) => {
+    const middle = body.length >= 2 && i === 1;
+    const pieces = middle && measure(line.text) > limit
+      ? wrapLine(line.text, measure, limit)
+      : [line.text];
+    for (const text of pieces) out.push({ text });
+  });
+  return out.concat(credit);
 }
 
 function pieceWidth(ctx, text, credit) {
@@ -238,11 +246,9 @@ export function paintScreensaver(ctx, frameW, frameH, picture, spec) {
   const color = spec.color || '#f4ffff';
   const shade = spec.shade | 0;
   const blockH = lines.length * lineH + Math.max(0, lines.length - 1) * gap;
-  const innerW = Math.max(1, mw - pad * 2);
   const y0 = pad + Math.max(0, (mh - pad * 2 - blockH) / 2);
   lines.forEach((line, i) => {
-    const w = pieceWidth(ctx, line.text, line.credit);
-    const x = pad + Math.max(0, (innerW - w) / 2);
+    const x = pad;
     const y = y0 + i * (lineH + gap);
     drawLine(ctx, line, x, y, color, shade);
   });

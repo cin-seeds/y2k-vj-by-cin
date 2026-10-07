@@ -350,6 +350,16 @@ export class AudioEngine {
     if (this.bufferSource) this.bufferSource.loop = this.loop;
   }
 
+  /** Drop a loaded track. The file stays in the media library. */
+  clearFile() {
+    this.#stopBuffer(true);
+    this.buffer = null;
+    this.duration = 0;
+    this.playOffset = 0;
+    this.fileName = '';
+    if (this.kind === 'file') this.kind = 'none';
+  }
+
   /** Drop the live device and leave a loaded file paused in memory. */
   releaseDevice() {
     this.#stopMic();

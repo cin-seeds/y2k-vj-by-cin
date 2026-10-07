@@ -69,40 +69,46 @@
               <button type="button" data-gallery-scale="large" aria-pressed="false">Large</button>
             </div>
           </div>
-          <p>Drop a video or image to store it in the library. Tag a logo <b>brand</b>, then add it to the open project. The project keeps a reference, not a second copy.</p>
         </header>
-        <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
-          <b>Drop a video or image</b>
-          <span>mov, mp4, jpg, png, or click to choose</span>
-        </div>
-        <label class="check prep-brand" for="prep-brand">
-          <input id="prep-brand" type="checkbox" />
-          Brand asset
-        </label>
-        <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
-        <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
-        <div class="prep-gallery-bar">
-          <h3>Gallery</h3>
-          <div class="prep-tag-tools">
-            <input id="prep-tag-input" type="text" maxlength="24" placeholder="trees" spellcheck="false" autocomplete="off" aria-label="Tag for the selected clips" />
-            <button id="prep-tag-add" type="button" disabled title="Tag the selected clips">Tag</button>
-            <button id="prep-send" type="button" disabled>Add to Project</button>
+        <div class="prep-ingest">
+          <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
+            <b>Drop a video or image</b>
+            <span>mov, mp4, mp3, wav, jpg, png, or click. Audio is saved as a lighter file. Tag a brand, then add it to the project.</span>
           </div>
+          <label class="check prep-brand" for="prep-brand">
+            <input id="prep-brand" type="checkbox" />
+            Brand asset
+          </label>
+          <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
+          <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
         </div>
-        <div id="prep-tag-filters" class="prep-tag-filters" hidden></div>
-        <div class="gallery-find">
-          <input id="prep-search" type="search" placeholder="Search name or tag" spellcheck="false" autocomplete="off" aria-label="Search the library" />
-        </div>
-        <div class="gallery-sources" role="tablist" aria-label="Media type">
-          <button type="button" role="tab" data-gallery-source="all" aria-selected="true">All</button>
-          <button type="button" role="tab" data-gallery-source="video" aria-selected="false">Video</button>
-          <button type="button" role="tab" data-gallery-source="audio" aria-selected="false">Audio</button>
-          <button type="button" role="tab" data-gallery-source="image" aria-selected="false">Images</button>
-          <button type="button" role="tab" data-gallery-source="fetch" aria-selected="false">Fetched</button>
-        </div>
-        <div class="prep-gallery-scroll">
-          <div id="prep-grid" class="global-grid prep-grid"></div>
-          <p id="prep-gallery-empty" class="hint">No media stored yet. Drop a video above.</p>
+        <div id="prep-split" class="split-preview prep-split" role="separator" aria-orientation="horizontal" aria-label="Resize the gallery" aria-valuemin="64" tabindex="0" title="Drag up to enlarge the gallery. Double-click to reset."></div>
+        <div class="prep-library">
+          <div class="prep-gallery-bar">
+            <h3>Gallery</h3>
+            <div class="prep-tag-tools">
+              <input id="prep-tag-input" type="text" maxlength="24" placeholder="trees" spellcheck="false" autocomplete="off" aria-label="Tag for the selected clips" />
+              <button id="prep-tag-add" type="button" disabled title="Tag the selected clips">Tag</button>
+              <button id="prep-send" type="button" disabled>Add to Project</button>
+            </div>
+          </div>
+          <div id="prep-tag-filters" class="prep-tag-filters" hidden></div>
+          <div class="prep-browse">
+            <div class="gallery-find">
+              <input id="prep-search" type="search" placeholder="Search name or tag" spellcheck="false" autocomplete="off" aria-label="Search the library" />
+            </div>
+            <div class="gallery-sources" role="tablist" aria-label="Media type">
+              <button type="button" role="tab" data-gallery-source="all" aria-selected="true">All</button>
+              <button type="button" role="tab" data-gallery-source="video" aria-selected="false">Video</button>
+              <button type="button" role="tab" data-gallery-source="audio" aria-selected="false">Audio</button>
+              <button type="button" role="tab" data-gallery-source="image" aria-selected="false">Images</button>
+              <button type="button" role="tab" data-gallery-source="fetch" aria-selected="false">Fetched</button>
+            </div>
+          </div>
+          <div class="prep-gallery-scroll">
+            <div id="prep-grid" class="global-grid prep-grid"></div>
+            <p id="prep-gallery-empty" class="hint">No media stored yet. Drop a video above.</p>
+          </div>
         </div>
       </section>
 
@@ -196,7 +202,7 @@
             <button id="media-add" type="button" class="bin-add" title="Open Media Manager">+</button>
             <span class="hint">Add clips from the library</span>
             <input id="media-files" type="file" multiple hidden
-              accept="image/*,video/*,.mp4,.mov,.m4v,.webm" />
+              accept="image/*,video/*,audio/*,.mp4,.mov,.m4v,.webm,.mp3,.wav,.aiff,.aif,.m4a,.ogg,.flac" />
           </div>
           <div id="media-list" class="media-grid"></div>
           <p id="media-missing" class="status error" hidden></p>
@@ -230,10 +236,12 @@
             <button id="audio-refresh" type="button" title="Refresh devices">&#x21bb;</button>
           </div>
           <div id="audio-file-row" hidden>
-            <label class="audio-file-pick">Add local audio file
-              <input id="audio-file" type="file" accept=".mp3,.wav,.aiff,.aif,audio/mpeg,audio/wav,audio/wave,audio/aiff,audio/x-aiff,audio/*" />
+            <label class="audio-file-pick">Library audio
+              <select id="audio-library">
+                <option value="">Add audio in Media Manager</option>
+              </select>
             </label>
-            <div id="audio-drop" class="audio-drop">Drop an .mp3, .wav, or .aiff</div>
+            <div id="audio-drop" class="audio-drop">Drop audio to add it to Media Manager</div>
             <ul id="audio-recent" hidden></ul>
             <div class="transport">
               <button id="audio-play" type="button" disabled>Play</button>
@@ -775,12 +783,12 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             </li>
             <li>
               <h3>Media Manager</h3>
-              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264 into the library. Tag a logo <b>Brand asset</b> before it is stored. The gallery is kept across restarts. Select clips, tag them, then <b>Add to Project</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app.</p>
+              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264 into the library. Tag a logo <b>Brand asset</b> before it is stored. The gallery is kept across restarts. Select clips, tag them, then <b>Add to Project</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app. Drag the bar under the drop area to give the gallery more room.</p>
               <p><b>Project Media</b> lists only the clips added to this project. Each one is a reference to the library file. Click <b>+</b> to open <b>Media Manager</b>. On a card, <b>A</b>, <b>B</b>, or <b>C</b> assigns that clip. Removing a clip from the project drops it from this show. If a layer is playing it, that layer returns to the test pattern.</p>
             </li>
             <li>
               <h3>Audio</h3>
-              <p>In the <b>Audio</b> fold, <b>Live Hardware</b> picks an input. <b>Local File</b> takes an .mp3, .wav, or .aiff. <b>Search Stock Audio</b> finds Wikimedia clips and saves a 44.1 kHz wav. <b>Play</b> starts the file. <b>Loop Audio</b> repeats it. <b>Sync to Master</b> lets the top-bar <b>Play</b>, <b>Pause</b>, and <b>Stop</b> drive it.</p>
+              <p>In the <b>Audio</b> fold, <b>Live Hardware</b> picks an input. <b>Local File</b> lists audio already in Media Manager. Drop a track to add it there first; the desktop app stores a lighter copy, then it shows up in the list. The last three played stay underneath. <b>Search Stock Audio</b> finds Wikimedia clips and saves a 44.1 kHz wav. <b>Play</b> starts the file. <b>Loop Audio</b> repeats it. <b>Sync to Master</b> lets the top-bar <b>Play</b>, <b>Pause</b>, and <b>Stop</b> drive it.</p>
               <p><b>Auto-Gain</b> holds the level. <b>Master Gain</b> and <b>Mute</b> set how hard the sound hits the picture. The meters read <b>KICK</b>, <b>SNARE</b>, <b>NRG</b>, <b>BRK</b>, and <b>DROP</b>.</p>
             </li>
             <li>

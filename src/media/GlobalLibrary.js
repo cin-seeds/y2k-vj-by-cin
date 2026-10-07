@@ -3,7 +3,7 @@
 
 import { IS_TAURI, invoke } from '../ipc.js';
 import { isTauri } from '../output/OutputWindow.js';
-import { queueMediaPrep } from './mediaPrep.js';
+import { queueAudioPrep, queueMediaPrep } from './mediaPrep.js';
 import { frameIsBlank } from './thumbnail.js';
 import { applyMediaSink } from '../audio/outputSink.js';
 
@@ -19,7 +19,7 @@ const SOURCE_EMPTY = {
   video: 'No videos in the library yet.',
   image: 'No images in the library yet.',
   fetch: 'No fetched clips yet. Use Live Text-to-Visual to download a loop.',
-  audio: 'No audio stored yet. Load a track or download stock audio.',
+  audio: 'No audio stored yet. Drop a track above, or download stock audio.',
 };
 
 function readSources() {
@@ -451,7 +451,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     render();
   }
 
-  function ingest(files, event) {
+  function ingest(files, event, { play = false } = {}) {
     let queued = 0;
     for (const file of files) {
       const name = file.name || 'media';
@@ -459,8 +459,16 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       const image = file.type.startsWith('image/') || IMAGE_EXT.test(name);
       const audioFile = file.type.startsWith('audio/') || AUDIO_EXT.test(name);
       if (audioFile) {
-        library.cacheAudio(file);
-        rememberMediaSource(name, 'audio');
+        const path = pathFrom(file, event);
+        if (isTauri()) {
+          queueAudioPrep(name, path, path ? null : file, { play });
+        } else {
+          library.cacheAudio(file);
+          rememberMediaSource(name, 'audio');
+          window.dispatchEvent(new CustomEvent('vj-audio-ready', {
+            detail: { name, file, play },
+          }));
+        }
         queued += 1;
         continue;
       }
@@ -499,7 +507,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         title: 'Media for Media Manager',
         filters: [{
           name: 'Media',
-          extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpg', 'mpeg', 'png', 'jpg', 'jpeg', 'gif', 'webp'],
+          extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpg', 'mpeg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'mp3', 'wav', 'aiff', 'aif', 'm4a', 'ogg', 'flac'],
         }],
       });
       if (!picked) return;
@@ -507,7 +515,8 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       for (const path of paths) {
         const name = String(path).split(/[\\/]/).pop() || 'media';
         if (VIDEO_EXT.test(name) || IMAGE_EXT.test(name)) rememberMediaSource(name, 'user');
-        if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null);
+        if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
+        else if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null);
         else if (IMAGE_EXT.test(name)) {
           await invoke('copy_into_global_media', { inputPath: path });
           if (brandUpload()) addMediaTag(name, 'brand');
@@ -662,8 +671,115 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     query = search.value.trim().toLowerCase();
     if (latest.length || query) paint(latest);
   });
+  bindPrepSplit(prep);
 
-  return { open: show, refresh: render, ingest, close };
+  async function libraryAudio() {
+    const rows = await catalog();
+    return rows.filter((row) => isAudioRow(row) || row.kind === 'audio');
+  }
+
+  return { open: show, refresh: render, ingest, close, libraryAudio };
+}
+
+const PREP_SPLIT_KEY = 'vj.prepSplit';
+const PREP_INGEST_MIN = 64;
+const PREP_LIBRARY_MIN = 168;
+
+function prepZoom() {
+  const z = parseFloat(getComputedStyle(document.getElementById('app')).zoom);
+  return Number.isFinite(z) && z > 0 ? z : 1;
+}
+
+function clampPrepIngest(prep, px) {
+  const next = Number.isFinite(px) ? px : PREP_INGEST_MIN;
+  const box = prep.getBoundingClientRect();
+  if (box.height < 80) return Math.round(Math.max(PREP_INGEST_MIN, next));
+  const zoom = prepZoom();
+  const head = prep.querySelector('.prep-head')?.getBoundingClientRect().height || 0;
+  const bar = prep.querySelector('.prep-split')?.getBoundingClientRect().height || 12;
+  const room = (box.height - head - bar - PREP_LIBRARY_MIN) / zoom;
+  const max = Math.max(PREP_INGEST_MIN, room);
+  const min = Math.min(PREP_INGEST_MIN, max);
+  return Math.round(Math.min(max, Math.max(min, next)));
+}
+
+function bindPrepSplit(prep) {
+  const bar = document.getElementById('prep-split');
+  const ingest = prep?.querySelector('.prep-ingest');
+  if (!prep || !bar || !ingest) return;
+  const apply = (px, save = false) => {
+    const next = clampPrepIngest(prep, px);
+    prep.style.setProperty('--prep-ingest', `${next}px`);
+    bar.setAttribute('aria-valuenow', String(next));
+    bar.setAttribute('aria-valuemax', String(clampPrepIngest(prep, 1e6)));
+    if (!save) return;
+    try { localStorage.setItem(PREP_SPLIT_KEY, String(next)); } catch { /* private mode */ }
+  };
+  const reset = () => {
+    prep.style.removeProperty('--prep-ingest');
+    bar.removeAttribute('aria-valuenow');
+    try { localStorage.removeItem(PREP_SPLIT_KEY); } catch { /* private mode */ }
+  };
+  let saved = null;
+  try { saved = Number(localStorage.getItem(PREP_SPLIT_KEY)); } catch { /* ignore */ }
+  if (Number.isFinite(saved) && saved > 0) apply(saved);
+  if (typeof ResizeObserver === 'function') {
+    const observer = new ResizeObserver(() => {
+      const raw = prep.style.getPropertyValue('--prep-ingest');
+      if (!raw || pointer) return;
+      apply(parseFloat(raw));
+    });
+    observer.observe(prep);
+  }
+  let pointer = 0;
+  let start = 0;
+  let origin = 0;
+  let lastDown = 0;
+  const onMove = (event) => {
+    if (event.pointerId !== pointer) return;
+    apply(origin + (event.clientY - start) / prepZoom());
+  };
+  const onUp = (event) => {
+    if (event.pointerId !== pointer) return;
+    pointer = 0;
+    bar.classList.remove('dragging');
+    document.body.classList.remove('prep-resizing');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    apply(parseFloat(prep.style.getPropertyValue('--prep-ingest')), true);
+  };
+  bar.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const now = performance.now();
+    if (now - lastDown < 400) {
+      lastDown = 0;
+      pointer = 0;
+      reset();
+      return;
+    }
+    lastDown = now;
+    event.preventDefault();
+    pointer = event.pointerId;
+    start = event.clientY;
+    origin = ingest.getBoundingClientRect().height / prepZoom();
+    bar.classList.add('dragging');
+    document.body.classList.add('prep-resizing');
+    try { bar.setPointerCapture(event.pointerId); } catch { /* synthetic press */ }
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+  bar.addEventListener('dblclick', reset);
+  bar.addEventListener('keydown', (event) => {
+    const current = ingest.getBoundingClientRect().height / prepZoom();
+    if (event.key === 'ArrowUp') apply(current - 16, true);
+    else if (event.key === 'ArrowDown') apply(current + 16, true);
+    else if (event.key === 'Home') apply(PREP_INGEST_MIN, true);
+    else if (event.key === 'Enter' || event.key === ' ') reset();
+    else return;
+    event.preventDefault();
+  });
 }
 
 function stockSaveDir() {

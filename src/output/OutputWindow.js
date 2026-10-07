@@ -40,13 +40,25 @@ function outputErrorText(err) {
   return text && text !== '[object Object]' ? text : 'Unknown error';
 }
 
-function screenTitle(screen, index) {
+function isMac() {
+  return /Mac/i.test(navigator.userAgent || '') || /Mac/i.test(navigator.platform || '');
+}
+
+function screenTitle(screen, index, monitor) {
   const n = index + 1;
   const size = `${Math.round(screen.width)}x${Math.round(screen.height)}`;
-  if (screen.isInternal) return `Screen ${n} (Internal)`;
-  const label = (screen.label || '').trim();
-  if (/hdmi/i.test(label) || !label) return `Screen ${n} (HDMI - ${size})`;
-  return `Screen ${n} (${label} - ${size})`;
+  let title;
+  if (screen.isInternal) title = `Screen ${n} (Internal)`;
+  else {
+    const label = (screen.label || '').trim();
+    title = /hdmi/i.test(label) || !label
+      ? `Screen ${n} (HDMI - ${size})`
+      : `Screen ${n} (${label} - ${size})`;
+  }
+  if (!monitor?.position) return title;
+  const x = Math.round(Number(monitor.position.x) || 0);
+  const y = Math.round(Number(monitor.position.y) || 0);
+  return `${title} @ ${x},${y}`;
 }
 
 function monitorLabel(name) {
@@ -74,7 +86,7 @@ export async function listScreens() {
             screen,
             monitor,
             detailed: true,
-            title: screenTitle(screen, i),
+            title: screenTitle(screen, i, monitor),
           };
         });
       }
@@ -317,17 +329,21 @@ export class OutputWindow {
       }
     }
 
-    const win = new WebviewWindow(MASTER_OUTPUT, this.#projectionOptions(outputPageUrl()));
+    const win = new WebviewWindow(MASTER_OUTPUT, this.#projectionOptions(outputPageUrl(), monitor));
     await this.#waitForWindow(win);
     return this.#placeProjection(win, monitor);
   }
 
-  #projectionOptions(url) {
+  #projectionOptions(url, monitor) {
+    const scale = monitor?.scaleFactor || 1;
+    const pos = monitor?.position?.toLogical?.(scale);
+    const size = monitor?.size?.toLogical?.(scale);
     const options = {
       url,
       title: 'Y2K VJ by Cín - MASTER OUTPUT',
       decorations: false,
-      alwaysOnTop: true,
+      // Always-on-top before the move pins the window to the desk display.
+      alwaysOnTop: false,
       shadow: false,
       resizable: false,
       fullscreen: false,
@@ -336,6 +352,12 @@ export class OutputWindow {
       backgroundThrottling: 'disabled',
       center: false,
     };
+    if (pos && size) {
+      options.x = Math.round(pos.x);
+      options.y = Math.round(pos.y);
+      options.width = Math.max(320, Math.round(size.width));
+      options.height = Math.max(240, Math.round(size.height));
+    }
     // Windows WebViews with different additionalBrowserArgs need different data
     // directories. Match the desk args and keep the projector on its own profile.
     if (/Windows/i.test(navigator.userAgent || '')) {
@@ -370,12 +392,18 @@ export class OutputWindow {
     await win.setPosition(origin);
     await win.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
     try { await win.setDecorations(false); } catch { /* already undecorated */ }
-    try { await win.setAlwaysOnTop(true); } catch { /* the window config already asks for this */ }
+    // A point in the middle of the target. The corner can sit on the desk
+    // display, and setFullscreen() then ignores the monitor that was chosen.
+    const inside = new PhysicalPosition(
+      Math.round(Number(origin.x) + Number(monitor.size.width) / 2),
+      Math.round(Number(origin.y) + Number(monitor.size.height) / 2),
+    );
+    await win.setFullscreenOnMonitor(inside);
     await win.show();
-    await win.setFullscreen(true);
-    try {
-      await win.setFocus();
-    } catch { /* shown window still counts as open */ }
+    if (!isMac()) {
+      try { await win.setAlwaysOnTop(true); } catch { /* borderless fullscreen still covers that display */ }
+      try { await win.setFocus(); } catch { /* shown window still counts as open */ }
+    }
     try {
       await this.#rememberNative(win);
     } catch {
