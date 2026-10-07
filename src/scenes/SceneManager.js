@@ -20,14 +20,18 @@ export class SceneManager {
    * params: ParamStore
    * getMedia(): { A: {key, mirror}, ... }    current per-layer media
    * applyMedia(layerId, {key, mirror})       switch a layer's media
+   * getMix(): composition on the desk        hue, strobe, speed, and the rest of the mix
+   * applyMix(mix)                            put that composition back, without its own undo step
    */
-  constructor({ params, getMedia, applyMedia, getRouting, applyRouting, project, onSaveError }) {
+  constructor({ params, getMedia, applyMedia, getRouting, applyRouting, getMix, applyMix, project, onSaveError }) {
     this.params = params;
     this.onSaveError = onSaveError || null;
     this.getMedia = getMedia;
     this.applyMedia = applyMedia;
     this.getRouting = getRouting || (() => ({}));
     this.applyRouting = applyRouting || (() => {});
+    this.getMix = getMix || (() => null);
+    this.applyMix = applyMix || (() => {});
     this.project = project || null;
     this.scenes = [];
     this.activeId = null;
@@ -41,16 +45,18 @@ export class SceneManager {
     return this.transition ? Math.min(1, this.transition.t / this.transition.dur) : 1;
   }
 
-  /** Layer-level state only: the master fader and input gain stay with the performer. */
+  /** Layer state, plus the composition on the desk. The master fader and input gain stay with the performer. */
   capture() {
     const params = {};
     for (const [id, v] of Object.entries(this.params.snapshot())) {
       if (this.params.defs.get(id).layer) params[id] = v;
     }
+    const mix = this.getMix();
     return {
       params,
       media: structuredClone(this.getMedia()),
       routing: structuredClone(this.getRouting()),
+      ...(mix && typeof mix === 'object' ? { mix: structuredClone(mix) } : {}),
     };
   }
 
@@ -128,6 +134,7 @@ export class SceneManager {
       params: s.params || {},
       media: s.media || {},
       routing: s.routing && typeof s.routing === 'object' ? s.routing : undefined,
+      mix: s.mix && typeof s.mix === 'object' ? s.mix : undefined,
       thumb: typeof s.thumb === 'string' ? s.thumb : undefined,
     }));
     this.activeId = null;
@@ -141,6 +148,7 @@ export class SceneManager {
     if (!scene) return;
     if (scene.id) this.activeId = scene.id;
 
+    if (scene.mix) this.applyMix(scene.mix);
     if (scene.routing) this.applyRouting(scene.routing);
 
     const from = this.params.snapshot();

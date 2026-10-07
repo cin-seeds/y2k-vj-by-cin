@@ -1942,6 +1942,8 @@ const scenes = new SceneManager({
   applyMedia: (L, m) => setLayerMedia(L, m.key, { mirror: m.mirror }),
   getRouting: layerRouting,
   applyRouting: applySceneRouting,
+  getMix: () => captureComposition(),
+  applyMix: (mix) => recallComposition(mix, { history: false }),
   onSaveError: (text) => showToast(text, true),
 });
 const timeline = new Timeline(project);
@@ -2357,31 +2359,31 @@ function captureComposition() {
   return mix;
 }
 
-function recallComposition(mix) {
+function recallComposition(mix, { history = true } = {}) {
   if (!mix) return;
   const run = () => {
     for (const id of COMP_IDS) {
       if (mix[id] == null || !params.defs.has(id)) continue;
-      params.set(id, mix[id], { history: 'commit' });
+      params.set(id, mix[id], history ? { history: 'commit' } : {});
     }
     const speed = masterSpeed;
     setMasterSpeed(mix.speed);
-    params.history?.edit('speed', speed, masterSpeed, (v) => setMasterSpeed(v), 'commit');
+    if (history) params.history?.edit('speed', speed, masterSpeed, (v) => setMasterSpeed(v), 'commit');
     const bpm = timeline.bpm;
     setTempo(mix.bpm, { history: false });
-    params.history?.edit('bpm', bpm, timeline.bpm, (v) => setTempo(v, { history: false }), 'commit');
+    if (history) params.history?.edit('bpm', bpm, timeline.bpm, (v) => setTempo(v, { history: false }), 'commit');
     if (!!mix.code !== !!hudWant) {
       const prev = hudWant;
       setHudEnabled(!!mix.code);
-      params.history?.edit('hud', prev, hudWant, (v) => setHudEnabled(v), 'commit');
+      if (history) params.history?.edit('hud', prev, hudWant, (v) => setHudEnabled(v), 'commit');
     }
     if (!!mix.screen !== !!brandMarkOn) {
       const prev = brandMarkOn;
       setBrandMark(!!mix.screen);
-      params.history?.edit('screenOn', prev, brandMarkOn, (v) => setBrandMark(v), 'commit');
+      if (history) params.history?.edit('screenOn', prev, brandMarkOn, (v) => setBrandMark(v), 'commit');
     }
   };
-  if (params.history) params.history.group(run);
+  if (history && params.history) params.history.group(run);
   else run();
 }
 
@@ -2889,6 +2891,7 @@ function lookSnap(paramIds) {
     params: values,
     media: Object.fromEntries(LAYERS.map((L) => [L, mediaSnap(L)])),
     routing: layerRouting(),
+    mix: captureComposition(),
   };
 }
 
@@ -2903,6 +2906,7 @@ function restoreLook(look) {
       if (cur.key !== m.key || cur.mirror !== !!m.mirror) setLayerMedia(L, m.key, { mirror: m.mirror });
     }
     applySceneRouting(look?.routing || {});
+    if (look?.mix) recallComposition(look.mix, { history: false });
   });
   refreshLayerUi();
 }
@@ -2920,6 +2924,7 @@ function triggerScene(id, fade = timeline.fadeSeconds, { history = false } = {})
       params: {},
       media: { ...before.media },
       routing: source.routing ? structuredClone(source.routing) : before.routing,
+      mix: source.mix ? structuredClone(source.mix) : before.mix,
     };
     for (const [pid, v] of Object.entries(source.params || {})) {
       if (params.defs.has(pid)) after.params[pid] = v;
