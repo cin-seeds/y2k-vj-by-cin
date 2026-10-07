@@ -481,64 +481,82 @@ export class StingRack {
     const card = document.createElement('article');
     card.className = 'sting-slot';
     card.innerHTML = `
-      <header>
-        <b>Logo ${index + 1}</b>
-        <button type="button" class="sting-load" title="Choose a brand clip from Project Media">Choose</button>
-        <button type="button" class="sting-clear" hidden>Remove</button>
-      </header>
-      <span class="sting-name">Empty</span>
-      <label class="sting-blend">Name
-        <input type="text" class="sting-label-input" maxlength="16" placeholder="Logo ${index + 1}" title="Name on the live button and the Perform track button." />
-      </label>
-      <label>Opacity <input type="range" min="0" max="1" step="0.01" value="1" data-key="opacity" /><output>1.00</output></label>
-      <label class="sting-blend">Motion
-        <select data-key="motion" title="How the logo enters and leaves. Duration is both the entrance and the exit.">
-          <option value="cut">Cut</option>
-          <option value="fade" selected>Fade</option>
-          <option value="zoom">Zoom</option>
-          <option value="slide">Slide</option>
-        </select>
-      </label>
-      <label>Duration <input type="range" min="0.1" max="2" step="0.05" value="0.5" data-key="motionSec" title="Seconds to show the logo, and seconds to dismiss it." /><output>0.50</output></label>
-      <label class="sting-check" title="Drop near-black pixels so a logo filmed on black composites cleanly.">
-        <input type="checkbox" data-key="autoMask" /> Auto mask
-      </label>
-      <label>Scale <input type="range" min="0.25" max="2.5" step="0.01" value="1" data-key="scale" /><output>1.00</output></label>
-      <label>Position X <input type="range" min="-0.5" max="0.5" step="0.01" value="0" data-key="x" /><output>0.00</output></label>
-      <label>Position Y <input type="range" min="-0.5" max="0.5" step="0.01" value="0" data-key="y" /><output>0.00</output></label>
-      <label class="sting-blend">Blend
-        <select data-key="mode">
-          <option value="0">Additive</option>
-          <option value="1" selected>Alpha</option>
-          <option value="2">Invert/Key</option>
-        </select>
-      </label>
-      <label class="sting-blend">Effect
-        <select data-key="fx">
-          <option value="0" selected>None</option>
-          <option value="1">Glitch</option>
-          <option value="2">Hue</option>
-          <option value="3">Pixelate</option>
-          <option value="4">Flash</option>
-        </select>
-      </label>
-      <label>Amount <input type="range" min="0" max="1" step="0.01" value="0.5" data-key="fxAmt" /><output>0.50</output></label>
-      <label class="sting-check" title="Drive this effect from the kick. Amount is the maximum.">
-        <input type="checkbox" data-key="fxReact" /> React
-      </label>
+      <details class="sting-fold">
+        <summary>
+          <b>Logo ${index + 1}</b>
+          <span class="sting-name">Empty</span>
+          <button type="button" class="sting-load" title="Choose a brand clip">Choose</button>
+          <button type="button" class="sting-clear" hidden>Remove</button>
+        </summary>
+        <label class="sting-blend">Name
+          <input type="text" class="sting-label-input" maxlength="16" placeholder="Logo ${index + 1}" title="Name on the live button and the Perform track button." />
+        </label>
+        <label>Opacity <input type="range" min="0" max="1" step="0.01" value="1" data-key="opacity" /><output>1.00</output></label>
+        <label class="sting-blend">Motion
+          <select data-key="motion" title="How the logo enters and leaves. Duration is both the entrance and the exit.">
+            <option value="cut">Cut</option>
+            <option value="fade" selected>Fade</option>
+            <option value="zoom">Zoom</option>
+            <option value="slide">Slide</option>
+          </select>
+        </label>
+        <label>Duration <input type="range" min="0.1" max="2" step="0.05" value="0.5" data-key="motionSec" title="Seconds to show the logo, and seconds to dismiss it." /><output>0.50</output></label>
+        <label class="sting-check" title="Drop near-black pixels so a logo filmed on black composites cleanly.">
+          <input type="checkbox" data-key="autoMask" /> Auto mask
+        </label>
+        <label>Scale <input type="range" min="0.25" max="2.5" step="0.01" value="1" data-key="scale" /><output>1.00</output></label>
+        <label>Position X <input type="range" min="-0.5" max="0.5" step="0.01" value="0" data-key="x" /><output>0.00</output></label>
+        <label>Position Y <input type="range" min="-0.5" max="0.5" step="0.01" value="0" data-key="y" /><output>0.00</output></label>
+        <label class="sting-blend">Blend
+          <select data-key="mode">
+            <option value="0">Additive</option>
+            <option value="1" selected>Alpha</option>
+            <option value="2">Invert/Key</option>
+          </select>
+        </label>
+        <label class="sting-blend">Effect
+          <select data-key="fx">
+            <option value="0" selected>None</option>
+            <option value="1">Glitch</option>
+            <option value="2">Hue</option>
+            <option value="3">Pixelate</option>
+            <option value="4">Flash</option>
+          </select>
+        </label>
+        <label>Amount <input type="range" min="0" max="1" step="0.01" value="0.5" data-key="fxAmt" /><output>0.50</output></label>
+        <label class="sting-check" title="Drive this effect from the kick. Amount is the maximum.">
+          <input type="checkbox" data-key="fxReact" /> React
+        </label>
+      </details>
     `;
     const pick = document.createElement('div');
     pick.className = 'brand-pick';
     pick.hidden = true;
-    card.append(pick);
+    const fold = card.querySelector('details');
+    fold.append(pick);
+    let folds = {};
+    try { folds = JSON.parse(localStorage.getItem('vj.logoFold') || '{}'); } catch { folds = {}; }
+    fold.open = !!folds[index];
+    fold.addEventListener('toggle', () => {
+      let next = {};
+      try { next = JSON.parse(localStorage.getItem('vj.logoFold') || '{}'); } catch { next = {}; }
+      next[index] = fold.open;
+      try { localStorage.setItem('vj.logoFold', JSON.stringify(next)); } catch { /* ignore */ }
+    });
     slot.card = card;
     slot.nameEl = card.querySelector('.sting-name');
     slot.clearBtn = card.querySelector('.sting-clear');
     card.querySelector('.sting-load').addEventListener('click', (event) => {
+      event.preventDefault();
       event.stopPropagation();
+      fold.open = true;
       this.#toggleBrandPick(slot, pick);
     });
-    slot.clearBtn.addEventListener('click', () => this.#clear(slot));
+    slot.clearBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.#clear(slot);
+    });
     card.querySelector('.sting-label-input').addEventListener('input', (e) => {
       slot.label = e.target.value;
       this.#applyButton(slot);
@@ -605,7 +623,7 @@ export class StingRack {
     if (!clips.length) {
       const empty = document.createElement('p');
       empty.className = 'brand-pick-empty';
-      empty.textContent = 'No brand clips in this project. Tag a file brand in Media Manager, then send it to Project Media.';
+      empty.textContent = 'No brand assets yet. Tick Brand asset in Media Manager, then add the file.';
       pick.append(empty);
     } else {
       const grid = document.createElement('div');

@@ -61,7 +61,8 @@ export function paintHudText(ctx, frameW, frameH, overlay, type) {
   const color = (HUD_COLORS[chrome.color] || HUD_COLORS.green)[0];
   const pad = Math.max(4, fontSize * 0.45);
   const maxLines = Math.max(1, Math.floor((bh - pad) / lineH));
-  const lines = (overlay.lines || []).slice(0, maxLines);
+  const all = overlay.lines || [];
+  const lines = overlay.pinEnd ? all.slice(-maxLines) : all.slice(0, maxLines);
   const bg = chrome.automask ? 0 : Math.min(0.9, Math.max(0, Number(chrome.bg) || 0));
   const mix = Math.min(1, Math.max(0, Number(chrome.mix) ?? 0.92));
   ctx.save();
@@ -77,9 +78,20 @@ export function paintHudText(ctx, frameW, frameH, overlay, type) {
   lines.forEach((line, i) => {
     const ly = y + pad * 0.35 + i * lineH;
     if (ly > y + bh - 2) return;
-    ctx.fillText(line, x + pad * 0.55, ly, Math.max(8, bw - pad));
+    ctx.fillText(line, x + pad * 0.55, ly);
   });
   ctx.restore();
+}
+
+/** Terminal logs are block rows. textContent would glue them into one line. */
+export function hudPlainText(root, view) {
+  if (view === 'scan' && root) {
+    const rows = [...root.querySelectorAll(':scope > .scan-line, :scope > .scan-foot')];
+    if (rows.length) {
+      return rows.map((el) => (el.textContent || '').replace(/\u00a0/g, ' ')).join('\n');
+    }
+  }
+  return (root?.textContent || '').replace(/\u00a0/g, ' ');
 }
 
 const RAMP = ' .:-=+*#%@';
@@ -223,7 +235,7 @@ export class Hud {
   }
 
   #rememberText() {
-    this.plain = (this.el.textContent || '').replace(/\u00a0/g, ' ');
+    this.plain = hudPlainText(this.el, this.view);
   }
 
   /** Pin the newest line. scrollIntoView avoids fractional scrollTop drift. */
@@ -372,8 +384,8 @@ export class Hud {
   /** Plain lines of the visible overlay, for the recording composite. */
   recordOverlay() {
     if (!this.visible) return null;
-    const lines = (this.plain || this.el.textContent || '').replace(/\u00a0/g, ' ').split('\n');
-    return { lines, chrome: this.chrome };
+    const lines = (this.plain || hudPlainText(this.el, this.view)).split('\n');
+    return { lines, chrome: this.chrome, pinEnd: this.view === 'scan' };
   }
   capture() {
     const values = this.visible

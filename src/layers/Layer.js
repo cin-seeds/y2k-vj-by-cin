@@ -6,6 +6,7 @@ import glitchFrag from '../shaders/glitch.frag?raw';
 import ditherFrag from '../shaders/dither.frag?raw';
 import y2kFrag from '../shaders/y2k.frag?raw';
 import metalFrag from '../shaders/metal.frag?raw';
+import thermalFrag from '../shaders/thermal.frag?raw';
 import vhsFrag from '../shaders/vhs.frag?raw';
 import retroFrag from '../shaders/retro.frag?raw';
 import cleanFrag from '../shaders/clean.frag?raw';
@@ -16,6 +17,18 @@ import eaterFrag from '../shaders/eater.frag?raw';
 import minidvFrag from '../shaders/minidv.frag?raw';
 import flashFrag from '../shaders/flash.frag?raw';
 import starfieldFrag from '../shaders/starfield.frag?raw';
+import sortFrag from '../shaders/sort.frag?raw';
+import jpegFrag from '../shaders/jpeg.frag?raw';
+import cdFrag from '../shaders/cd.frag?raw';
+import bendFrag from '../shaders/bend.frag?raw';
+import homeFrag from '../shaders/home.frag?raw';
+import marqueeFrag from '../shaders/marquee.frag?raw';
+import gifFrag from '../shaders/gif.frag?raw';
+import cloudFrag from '../shaders/cloud.frag?raw';
+import brickFrag from '../shaders/brick.frag?raw';
+import inkFrag from '../shaders/ink.frag?raw';
+import foldFrag from '../shaders/fold.frag?raw';
+import chompFrag from '../shaders/chomp.frag?raw';
 import hydraFrag from '../shaders/hydra.frag?raw';
 import copyFrag from '../shaders/copy.frag?raw';
 import transformFrag from '../shaders/transform.frag?raw';
@@ -30,14 +43,15 @@ import { ENGINE_FX, ENGINE_HYDRA, ENGINE_PARTICLES, ENGINES } from '../engines/c
 import { GRID_SIZES, LAYER_DEFS, MODE_3D, MODES, layerParam, uniformName } from '../params.js';
 
 /** Color runs before post. A mode occupies one stage; the other stage copies the picture through. */
-const COLOR_MODES = new Set(['dither', 'y2k', 'win98', 'ascii', 'metal']);
-const POST_MODES = new Set(['glitch', 'vhs', 'ps1', 'retro', 'eater', 'minidv', 'flash', 'starfield']);
+const COLOR_MODES = new Set(['dither', 'y2k', 'win98', 'ascii', 'metal', 'thermal']);
+const POST_MODES = new Set(['glitch', 'vhs', 'ps1', 'retro', 'eater', 'minidv', 'flash', 'starfield', 'sort', 'jpeg', 'cd', 'bend', 'home', 'marquee', 'gif', 'cloud', 'brick', 'ink', 'fold', 'chomp']);
 
 const FX_SOURCES = {
   glitch: glitchFrag,
   dither: ditherFrag,
   y2k: y2kFrag,
   metal: metalFrag,
+  thermal: thermalFrag,
   vhs: vhsFrag,
   retro: retroFrag,
   clean: cleanFrag,
@@ -48,6 +62,18 @@ const FX_SOURCES = {
   minidv: minidvFrag,
   flash: flashFrag,
   starfield: starfieldFrag,
+  sort: sortFrag,
+  jpeg: jpegFrag,
+  cd: cdFrag,
+  bend: bendFrag,
+  home: homeFrag,
+  marquee: marqueeFrag,
+  gif: gifFrag,
+  cloud: cloudFrag,
+  brick: brickFrag,
+  ink: inkFrag,
+  fold: foldFrag,
+  chomp: chompFrag,
 };
 
 export const SHADER_SOURCES = {

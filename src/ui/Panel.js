@@ -1038,7 +1038,6 @@ export class Panel {
         ? `${Math.round(this.params.get(layerParam(L, 'pCount')))} pts`
         : 'feedback';
     s.strip.classList.toggle('off', this.params.get(layerParam(L, 'opacity')) <= 0.001 || !this.bus.audible(L));
-    const engineName = this.params.defs.get(layerParam(L, 'engine')).options[this.params.get(layerParam(L, 'engine'))];
     const short = engine === ENGINE_PARTICLES ? 'Swarm' : engine === ENGINE_HYDRA ? 'Hydra' : 'FX';
     const media = s.mediaText ? ` · ${s.mediaText}` : '';
     const showFx = engine === ENGINE_FX;
@@ -1046,7 +1045,7 @@ export class Panel {
     if (showFx && document.activeElement !== s.fx) s.fx.value = String(modeIndex);
     s.info.hidden = showFx && !s.mediaText;
     s.info.dataset.mode = mode;
-    s.info.title = `${engineName}${media}`;
+    s.info.title = s.mediaText || '';
     s.info.textContent = showFx ? (s.mediaText || '') : `${short} · ${mode}${media}`;
   }
 

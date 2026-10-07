@@ -19,8 +19,8 @@
             <p class="menu-label">Project</p>
             <button id="scenes-new" type="button" role="menuitem">New Project</button>
             <button id="scenes-import" type="button" role="menuitem">Load Project</button>
-            <button id="scenes-export" type="button" role="menuitem" title="Save this project's media, audio, levels, output, recording settings, and which Hello views are open.">Save</button>
-            <button id="scenes-save-new" type="button" role="menuitem">Save New</button>
+            <button id="scenes-export" type="button" role="menuitem" title="Save into the current project file.">Save</button>
+            <button id="scenes-save-new" type="button" role="menuitem" title="Save a copy and choose where it goes.">Save New</button>
             <button id="prefs-btn" type="button" role="menuitem" title="UI scale">Preferences</button>
             <button id="guide-btn" type="button" role="menuitem">Guide</button>
             <input id="scenes-import-file" type="file" accept=".vjproj,.json,application/json" hidden />
@@ -73,12 +73,13 @@
         <div class="prep-ingest">
           <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
             <b>Drop a video or image</b>
-            <span>mov, mp4, mp3, wav, jpg, png, or click. Audio is saved as a lighter file. Tag a brand, then add it to the project.</span>
+            <span>mov, mp4, mp3, wav, jpg, png, or click. Audio is saved as a lighter file. Tick Brand asset to file a logo under Brand.</span>
           </div>
           <label class="check prep-brand" for="prep-brand">
             <input id="prep-brand" type="checkbox" />
             Brand asset
           </label>
+          <p class="hint">Ticked files are filed under Brand and show up in Brand Overlay.</p>
           <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
           <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
         </div>
@@ -102,6 +103,7 @@
               <button type="button" role="tab" data-gallery-source="video" aria-selected="false">Video</button>
               <button type="button" role="tab" data-gallery-source="audio" aria-selected="false">Audio</button>
               <button type="button" role="tab" data-gallery-source="image" aria-selected="false">Images</button>
+              <button type="button" role="tab" data-gallery-source="brand" aria-selected="false">Brand</button>
               <button type="button" role="tab" data-gallery-source="fetch" aria-selected="false">Fetched</button>
             </div>
           </div>
@@ -484,10 +486,6 @@
 CUSTOM CODED FOR LATE FUTURE</textarea>
             <button id="screen-query" type="button" class="screen-query" title="Replace the screensaver text with a question.">? Query System</button>
           </label>
-          <label class="check" title="Show the license line under the screensaver text.">
-            <input id="screen-credit" type="checkbox" checked />
-            License line
-          </label>
           <label class="hud-field">Font
             <select id="screen-font" title="Typeface of the drifting mark.">
               <option value="desk">Desk</option>
@@ -579,7 +577,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
                   <label class="tl-bars-field">Bars <input id="tl-bars" type="number" min="1" max="2048" step="1" value="16" title="Length of the timeline in bars. It can run to 2048. Scroll the timeline right to move along it." /></label>
                   <span id="tl-pos" class="tl-pos">1.1</span>
                 </div>
-                <label class="play-group master-speed" title="Scales shader motion and automation. 0 freezes them. 1 is normal speed. 4 is four times faster.">
+                <label class="play-group master-speed" title="Scales every visual layer, shader, and video together. 0 freezes the picture. 1 is normal. 4 is four times faster. Audio keeps its own speed.">
                   Master Speed
                   <input id="master-speed" type="range" min="0" max="4" step="0.01" value="1" />
                   <output id="master-speed-out">1.00x</output>
@@ -604,6 +602,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           <div class="dock-timeline">
             <div id="tl-scroll" class="tl-scroll">
             <div id="tl-track" class="tl-track" title="Drop a scene or a library clip here. Click to move the playhead.">
+              <div id="tl-progress" class="tl-progress"></div>
               <div id="tl-labels" class="tl-labels"></div>
               <div id="tl-cues" class="tl-cues"></div>
               <div id="tl-drop" class="tl-drop" hidden></div>
@@ -778,8 +777,8 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             </li>
             <li>
               <h3>Hello</h3>
-              <p><b>Hello</b> holds <b>New Project</b>, <b>Load Project</b>, <b>Save</b>, and <b>Save New</b>. <b>Save</b> writes the scenes, timeline, project media, audio, levels, output, recording settings, and which views are open. In the desktop app, media, audio, and logo files are copied into a folder next to the project.</p>
-              <p><b>Undo</b> and <b>Redo</b> sit in the top bar (<b>Ctrl+Z</b>, <b>Ctrl+Shift+Z</b> or <b>Ctrl+Y</b>). <b>Preferences</b> sets the UI scale, whether the app opens in <b>Live</b>, <b>Perform</b>, or <b>Media Manager</b>, whether it reopens the last project, and the stock download folder. The <b>View</b> checks show or hide the timeline, <b>Project Media</b>, the <b>Inspector</b>, each layer, and <b>Composition</b>.</p>
+              <p><b>Hello</b> holds <b>New Project</b>, <b>Load Project</b>, <b>Save</b>, and <b>Save New</b>. <b>Save</b> writes into the current project file. <b>Save New</b> asks where to put a copy. Both store the scenes, timeline, project media, audio, levels, output, recording settings, and which views are open. In the desktop app, media, audio, and logo files are copied into a folder next to the project.</p>
+              <p><b>Undo</b> and <b>Redo</b> sit in the top bar (<b>Ctrl+Z</b>, <b>Ctrl+Shift+Z</b> or <b>Ctrl+Y</b>). <b>Preferences</b> sets the UI scale, whether the app opens in <b>Live</b>, <b>Perform</b>, or <b>Media Manager</b>, whether it reopens the last project, the fetched-media folder, and the recordings folder. <b>Open</b> shows that folder on the computer. The <b>View</b> checks show or hide the timeline, <b>Project Media</b>, the <b>Inspector</b>, each layer, and <b>Composition</b>.</p>
             </li>
             <li>
               <h3>Media Manager</h3>
@@ -897,11 +896,22 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
         <section class="prefs-block" aria-labelledby="prefs-media">
           <h3 id="prefs-media">Media</h3>
           <div class="stock-dir-field">
-            <label for="stock-dir">Stock Media Download Folder</label>
+            <label for="stock-dir">Fetched Media Folder</label>
             <div class="row stock-dir-row">
               <input id="stock-dir" type="text" readonly placeholder="Videos folder" />
               <button id="stock-dir-pick" type="button">Choose</button>
+              <button id="stock-dir-open" type="button" title="Show this folder in the file browser">Open</button>
             </div>
+            <p class="hint">Fetched clips and stock downloads are stored here. Open finds that folder later.</p>
+          </div>
+          <div class="stock-dir-field">
+            <label for="record-dir">Recordings Folder</label>
+            <div class="row stock-dir-row">
+              <input id="record-dir" type="text" readonly placeholder="Recordings folder" />
+              <button id="record-dir-pick" type="button">Choose</button>
+              <button id="record-dir-open" type="button" title="Show this folder in the file browser">Open</button>
+            </div>
+            <p class="hint">New recordings are written into this folder.</p>
           </div>
         </section>
       </div>
@@ -962,6 +972,17 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
       <button type="button" data-action="rename">Rename</button>
       <button type="button" data-action="midi">MIDI learn</button>
       <button type="button" data-action="delete" class="danger">Delete</button>
+    </div>
+
+    <div id="close-project" class="close-project" hidden>
+      <div class="card" role="dialog" aria-modal="true" aria-labelledby="close-project-q">
+        <p id="close-project-q"></p>
+        <div class="row">
+          <button id="close-project-save" type="button" class="primary">Save</button>
+          <button id="close-project-discard" type="button">Don't Save</button>
+          <button id="close-project-cancel" type="button">Cancel</button>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

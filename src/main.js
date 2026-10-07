@@ -1118,8 +1118,15 @@ function refreshLibraryUi() {
     card.querySelector('.media-name').title = job.label;
     list.append(card);
   }
-  for (const entry of project.mediaPool) {
-    if (isBrandVisual(entry)) continue;
+  const pool = [...project.mediaPool].sort((a, b) => Number(isBrandVisual(a)) - Number(isBrandVisual(b)));
+  for (const entry of pool) {
+    const brand = isBrandVisual(entry);
+    if (brand && !list.querySelector('.media-brand-label')) {
+      const label = document.createElement('p');
+      label.className = 'hint media-brand-label';
+      label.textContent = 'Brand';
+      list.append(label);
+    }
     const name = entry.name;
     const item = library.mediaItem(name);
     const used = layers.filter((l) => l.mediaKey === `file:${name}` || l.mediaKey === `url:${name}`).map((l) => l.id);
@@ -1169,7 +1176,7 @@ function refreshLibraryUi() {
         useProjectAudio(entry).catch((err) => showToast(err?.message || 'Could not play that audio file', true));
       });
       actions.append(use);
-    } else {
+    } else if (!brand) {
       for (const id of ['A', 'B', 'C']) {
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -1194,7 +1201,7 @@ function refreshLibraryUi() {
     });
     actions.append(del);
     card.addEventListener('dragstart', (e) => {
-      if (e.target.closest('button')) {
+      if (brand || e.target.closest('button')) {
         e.preventDefault();
         return;
       }
@@ -1321,7 +1328,10 @@ $('media-files').addEventListener('change', (e) => {
   library.add(clips);
   for (const file of clips) rememberMediaSource(file.name, 'user');
   if ($('prep-brand')?.checked) {
-    for (const file of clips) addMediaTag(file.name, 'brand');
+    for (const file of clips) {
+      addMediaTag(file.name, 'brand');
+      window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name: file.name, path: '' } }));
+    }
   }
   e.target.value = '';
   globalLibrary?.refresh();
@@ -1354,6 +1364,7 @@ function libraryName(clip) {
 }
 
 const STOCK_DIR_KEY = 'vj.stockDir';
+const RECORD_DIR_KEY = 'vj.recordDir';
 let toastTimer = 0;
 
 function showToast(text, isError = false) {
@@ -1369,7 +1380,14 @@ function paintStockDir(path) {
   const input = $('stock-dir');
   if (!input) return;
   input.value = path || '';
-  input.title = path || 'Videos folder';
+  input.title = path || 'Fetched media folder';
+}
+
+function paintRecordDir(path) {
+  const input = $('record-dir');
+  if (!input) return;
+  input.value = path || '';
+  input.title = path || 'Recordings folder';
 }
 
 async function ensureStockDir() {
@@ -1387,6 +1405,63 @@ async function ensureStockDir() {
   try { localStorage.setItem(STOCK_DIR_KEY, dir); } catch { /* private mode */ }
   paintStockDir(dir);
   return dir;
+}
+
+async function ensureRecordDir() {
+  let saved = '';
+  try { saved = localStorage.getItem(RECORD_DIR_KEY)?.trim() || ''; } catch { saved = ''; }
+  if (saved) {
+    paintRecordDir(saved);
+    return saved;
+  }
+  if (!isTauri()) {
+    paintRecordDir('');
+    return '';
+  }
+  const dir = await invoke('default_recordings_dir');
+  try { localStorage.setItem(RECORD_DIR_KEY, dir); } catch { /* private mode */ }
+  paintRecordDir(dir);
+  return dir;
+}
+
+async function openSavedFolder(path, emptyNote) {
+  if (!isTauri()) {
+    showToast('Open the folder in the desktop app.', true);
+    return;
+  }
+  const dir = String(path || '').trim();
+  if (!dir) {
+    showToast(emptyNote, true);
+    return;
+  }
+  await invoke('open_folder', { path: dir });
+}
+
+async function writeBinaryFile(dir, filename, blob) {
+  const total = blob.size;
+  let written = '';
+  for (let offset = 0; offset < total || offset === 0; offset += PROJECT_CHUNK) {
+    const end = Math.min(total, offset + PROJECT_CHUNK);
+    const chunk = new Uint8Array(await blob.slice(offset, end).arrayBuffer());
+    written = await invoke('write_binary_file', chunk, {
+      headers: {
+        'x-dir': encodeURIComponent(dir),
+        'x-name': encodeURIComponent(filename),
+        'x-append': offset > 0 ? '1' : '0',
+      },
+    });
+    if (total === 0) break;
+  }
+  return written || '';
+}
+
+async function saveRecordingFile(blob, filename) {
+  if (!isTauri()) return false;
+  const dir = await ensureRecordDir();
+  if (!dir) return false;
+  const path = await writeBinaryFile(dir, filename, blob);
+  showToast(`Recording saved to ${path || dir}`);
+  return true;
 }
 
 function stockErrorText(err, fallback) {
@@ -1748,6 +1823,18 @@ function isBrandVisual(entry) {
 window.addEventListener('vj-media-tags', () => {
   refreshLibraryUi();
   refreshMediaSelect();
+});
+
+window.addEventListener('vj-brand-ready', async (event) => {
+  const name = event.detail?.name;
+  const path = typeof event.detail?.path === 'string' ? event.detail.path : '';
+  if (!name) return;
+  if (path && isTauri() && absoluteMediaPath(path) && !library.has(name)) {
+    const { convertFileSrc } = await import('@tauri-apps/api/core');
+    library.addRemote({ name, url: convertFileSrc(path) });
+  }
+  addToBin({ name, path, kind: mediaKind(name) });
+  globalLibrary?.showSource?.('brand');
 });
 
 function brandProjectClips() {
@@ -2163,7 +2250,7 @@ const SCREEN_COLORS = {
   amber: '#ffbf47',
   green: '#7dffb0',
 };
-const SCREEN_CREDIT = 'OS CC BY-NC-SA // REPO ON GITHUB';
+const SCREEN_HEART = '<3';
 const SCREEN_QUERIES = [
   'WHAT WILL YOU BUILD FROM THE RUINS\nOF THE OLD INTERFACE?',
   'WHEN THE STATIC FINALLY\nCLEARED, WHAT DID YOU HEAR?',
@@ -2183,7 +2270,6 @@ let brandMarkOn = true;
 let brandLayout = null;
 let brandScale = 40;
 let screenText = SCREEN_TEXT;
-let screenCredit = true;
 let screenFont = 'fixedsys';
 let screenShade = 0;
 let screenBg = 0.65;
@@ -2218,21 +2304,20 @@ function screenMeasure(mark) {
   };
 }
 
+function screenLines() {
+  const lines = String(screenText).replace(/\r\n/g, '\n').split('\n').map((text) => ({ text }));
+  lines.push({ text: SCREEN_HEART, credit: true });
+  return lines;
+}
+
 function paintScreenText(mark) {
   const measure = screenMeasure(mark);
-  const lines = wrapScreenLines(
-    String(screenText).replace(/\r\n/g, '\n').split('\n').map((text) => ({ text })),
-    measure.width,
-  ).map((line) => line.text);
+  const lines = wrapScreenLines(screenLines(), measure.width).map((line) => line.text);
   measure.remove();
-  const body = lines.map((line) => {
+  const html = lines.map((line) => {
     const shown = line.length ? escapeScreenLine(line) : '&nbsp;';
     return `<span class="brand-line">${shown}</span>`;
   }).join('');
-  const notice = screenCredit
-    ? '<span class="brand-notice">OS CC BY-NC-SA // <a href="https://github.com/cin-seeds/y2k-vj-by-cin" target="_blank" rel="noopener noreferrer">REPO ON GITHUB</a></span>'
-    : '';
-  const html = `${body}${notice}`;
   if (mark.dataset.screen === html) return;
   mark.innerHTML = html;
   mark.dataset.screen = html;
@@ -2402,15 +2487,6 @@ function setBrandScale(value) {
   persistDesk();
 }
 
-function setScreenCredit(on) {
-  screenCredit = !!on;
-  const box = $('screen-credit');
-  if (box) box.checked = screenCredit;
-  try { localStorage.setItem('vj.screenCredit', screenCredit ? '1' : '0'); } catch { /* ignore */ }
-  refreshScreen();
-  persistDesk();
-}
-
 function setScreenText(value) {
   const stored = String(value ?? '').replace(/\r\n/g, '\n');
   screenText = stored === SCREEN_TEXT_WAS ? SCREEN_TEXT : stored;
@@ -2529,7 +2605,7 @@ function setScreenColor(value) {
 function layoutBrandMark(mark, wrapW, wrapH) {
   const key = [
     wrapW, wrapH, brandScale, screenShade, screenFont, screenColor,
-    screenBg.toFixed(2), screenText, screenCredit ? 1 : 0,
+    screenBg.toFixed(2), screenText,
     screenBoxW, screenBoxH, screenPad, screenRadius, screenBorder,
   ].join('|');
   if (brandLayout?.key === key) return brandLayout;
@@ -2640,11 +2716,6 @@ $('screen-query')?.addEventListener('click', () => {
   setScreenText(next);
   params.history?.edit('screenText', prev, screenText, (v) => setScreenText(v), 'commit');
 });
-$('screen-credit')?.addEventListener('change', () => {
-  const prev = screenCredit;
-  setScreenCredit($('screen-credit').checked);
-  params.history?.edit('screenCredit', prev, screenCredit, (v) => setScreenCredit(v), 'commit');
-});
 $('screen-font')?.addEventListener('change', () => {
   const prev = screenFont;
   setScreenFont($('screen-font').value);
@@ -2708,10 +2779,6 @@ try {
     const stored = savedText.replace(/\r\n/g, '\n');
     setScreenText(stored === SCREEN_TEXT_WAS ? SCREEN_TEXT : savedText);
   }
-} catch { /* ignore */ }
-try {
-  const savedCredit = localStorage.getItem('vj.screenCredit');
-  if (savedCredit != null) setScreenCredit(savedCredit !== '0');
 } catch { /* ignore */ }
 try {
   const savedFont = localStorage.getItem('vj.screenFont');
@@ -2950,7 +3017,6 @@ function captureDesk() {
     screen: {
       on: brandMarkOn,
       text: screenText,
-      credit: screenCredit,
       font: screenFont,
       shade: screenShade,
       bg: screenBg,
@@ -3050,7 +3116,6 @@ function applyDesk(desk) {
     stings.apply(next.logos);
     applyCode(next.code);
     setScreenText(next.screen.text);
-    setScreenCredit(next.screen.credit);
     setScreenFont(next.screen.font);
     setScreenShade(next.screen.shade);
     setScreenBg(next.screen.bg);
@@ -3132,7 +3197,6 @@ function resetProjectDesk() {
     screen: {
       on: true,
       text: SCREEN_TEXT,
-      credit: true,
       font: 'fixedsys',
       shade: 0,
       bg: 0.65,
@@ -3515,21 +3579,11 @@ function rememberProjectPath(path) {
   try { localStorage.setItem(LAST_PROJECT_KEY, path); } catch { /* ignore */ }
 }
 
-async function storeProjectFile(data, filename) {
-  if (!isTauri()) {
-    downloadProjectFile(data, filename);
-    return;
-  }
-  const { save } = await import('@tauri-apps/plugin-dialog');
-  const picked = await save({
-    defaultPath: filename,
-    title: 'Save Project',
-    filters: [{ name: 'Y2K VJ project', extensions: ['vjproj'] }],
-  });
-  if (typeof picked !== 'string' || !picked) return;
-  const path = /\.(vjproj|json)$/i.test(picked) ? picked : `${picked}.vjproj`;
-  const bundled = await bundleProjectAssets(data, path);
-  await invoke('write_text_file', { path, contents: JSON.stringify(bundled, null, 2) });
+function currentProjectPath() {
+  try { return localStorage.getItem(LAST_PROJECT_KEY) || ''; } catch { return ''; }
+}
+
+function rememberSavedProject(path, bundled) {
   rememberProjectPath(path);
   audioAssetPath = bundled.desk?.audio?.path || '';
   for (let i = 0; i < 3; i += 1) {
@@ -3546,30 +3600,111 @@ async function storeProjectFile(data, filename) {
   }
 }
 
+async function storeProjectFile(data, filename, { ask = true, title = 'Save Project' } = {}) {
+  if (!isTauri()) {
+    downloadProjectFile(data, filename);
+    return true;
+  }
+  let path = ask ? '' : currentProjectPath();
+  if (!path) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const picked = await save({
+      defaultPath: filename,
+      title,
+      filters: [{ name: 'Y2K VJ project', extensions: ['vjproj'] }],
+    });
+    if (typeof picked !== 'string' || !picked) return false;
+    path = /\.(vjproj|json)$/i.test(picked) ? picked : `${picked}.vjproj`;
+  }
+  const bundled = await bundleProjectAssets(data, path);
+  await invoke('write_text_file', { path, contents: JSON.stringify(bundled, null, 2) });
+  rememberSavedProject(path, bundled);
+  return true;
+}
+
+function projectTitle() {
+  const name = ($('project-name')?.value || project.name || '').replace(/\s+/g, ' ').trim();
+  return name || 'Untitled project';
+}
+
+function projectFileName() {
+  const raw = projectTitle().slice(0, 48);
+  const safe = raw.replace(/[\\/:*?"<>|]+/g, ' ').replace(/[. ]+$/g, '').trim() || 'Untitled project';
+  return /\.vjproj$/i.test(safe) ? safe : `${safe}.vjproj`;
+}
+
+function confirmCloseProject() {
+  const modal = $('close-project');
+  const question = $('close-project-q');
+  const saveBtn = $('close-project-save');
+  const dropBtn = $('close-project-discard');
+  const cancelBtn = $('close-project-cancel');
+  if (!modal || !question || !saveBtn || !dropBtn || !cancelBtn) return Promise.resolve('discard');
+  question.textContent = `Do you want to save changes to ${projectTitle()} before closing?`;
+  modal.hidden = false;
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      modal.hidden = true;
+      saveBtn.removeEventListener('click', onSave);
+      dropBtn.removeEventListener('click', onDrop);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey, true);
+      resolve(value);
+    };
+    const onSave = () => finish('save');
+    const onDrop = () => finish('discard');
+    const onCancel = () => finish('cancel');
+    const onBackdrop = (event) => {
+      if (event.target === modal) finish('cancel');
+    };
+    const onKey = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      finish('cancel');
+    };
+    saveBtn.addEventListener('click', onSave);
+    dropBtn.addEventListener('click', onDrop);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey, true);
+    saveBtn.focus();
+  });
+}
+
+async function confirmLeaveProject() {
+  const choice = await confirmCloseProject();
+  if (choice === 'cancel') return false;
+  if (choice === 'save') return saveProject();
+  return true;
+}
+
 async function saveProject() {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  commitProjectName();
+  const existing = currentProjectPath();
   try {
-    await storeProjectFile(projectFile(), `vj-project-${stamp}.vjproj`);
+    const saved = await storeProjectFile(projectFile(), projectFileName(), { ask: !existing });
+    if (saved && isTauri()) showToast(`Saved ${projectTitle()}`);
+    return saved;
   } catch (err) {
     showToast(err?.message || String(err) || 'Could not save the project.', true);
+    return false;
   }
 }
 
 async function saveNewProject() {
-  const name = prompt('Name the new project', project.name || 'Untitled project');
-  if (name == null) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  project.setName(trimmed);
-  paintProjectName();
+  commitProjectName();
   const data = projectFile();
   data.id = crypto.randomUUID?.() || `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  data.name = project.name;
-  const safe = trimmed.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim() || 'project';
+  data.name = project.name || projectTitle();
   try {
-    await storeProjectFile(data, `${safe}.vjproj`);
+    const saved = await storeProjectFile(data, projectFileName(), { ask: true, title: 'Save New Project' });
+    if (saved && isTauri()) showToast(`Saved ${projectTitle()}`);
+    return saved;
   } catch (err) {
     showToast(err?.message || String(err) || 'Could not save the project.', true);
+    return false;
   }
 }
 
@@ -3580,19 +3715,16 @@ async function reopenLastProject() {
   try {
     on = localStorage.getItem('vj.reopenProject') === '1';
     path = localStorage.getItem(LAST_PROJECT_KEY) || '';
-  } catch { return; }
-  if (!on) return;
-  if (!path) {
-    newProject();
-    return;
+  } catch { /* start from the template */ }
+  if (on && path) {
+    try {
+      const text = await invoke('read_text_file', { path });
+      const leaf = path.split(/[/\\]/).pop() || 'project.vjproj';
+      await loadProject(new File([text], leaf, { type: 'application/json' }), path);
+      return;
+    } catch { /* the saved file is gone */ }
   }
-  try {
-    const text = await invoke('read_text_file', { path });
-    const leaf = path.split(/[/\\]/).pop() || 'project.vjproj';
-    await loadProject(new File([text], leaf, { type: 'application/json' }), path);
-  } catch {
-    newProject();
-  }
+  if (isMacDesktop()) newProject({ keepLastPath: true });
 }
 
 function clearShowBuffers() {
@@ -3686,12 +3818,16 @@ async function loadProject(file, sourcePath = '') {
   params.history?.clear();
 }
 
-function newProject() {
+function isMacDesktop() {
+  return isTauri() && (/Mac/i.test(navigator.userAgent || '') || /Mac/i.test(navigator.platform || ''));
+}
+
+function newProject({ keepLastPath = false } = {}) {
   audioAssetPath = '';
   audio.clearFile();
   try {
     localStorage.removeItem('vj.audioFile');
-    localStorage.removeItem(LAST_PROJECT_KEY);
+    if (!keepLastPath) localStorage.removeItem(LAST_PROJECT_KEY);
     localStorage.setItem(LIBRARY_FOLD_KEY, JSON.stringify(Object.fromEntries(LIBRARY_FOLDS)));
   } catch { /* ignore */ }
   setStatus($('audio-status'), '');
@@ -3759,6 +3895,7 @@ const sceneBar = new SceneBar({
   onSaveNew: saveNewProject,
   onImport: loadProject,
   onPickProject: async () => {
+    if (!(await confirmLeaveProject())) return true;
     if (!isTauri()) return false;
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
@@ -3776,7 +3913,10 @@ const sceneBar = new SceneBar({
     }
     return true;
   },
-  onNew: newProject,
+  onNew: async () => {
+    if (!(await confirmLeaveProject())) return;
+    newProject();
+  },
   onTap: tapTempo,
   clipLayer: () => (panel.selected === 'B' || panel.selected === 'C' ? panel.selected : 'A'),
   hasMedia: (name) => library.has(name),
@@ -4966,6 +5106,7 @@ function toggleRecording() {
       audioStream: withAudio ? audio.recordStream : null,
       width,
       height,
+      onFile: (blob, filename) => saveRecordingFile(blob, filename),
     });
   }
   $('rec-btn').classList.toggle('on', recorder.recording);
@@ -5704,10 +5845,8 @@ function screenFontFamily() {
 }
 
 function screenRecordSpec(nowMs) {
-  const lines = String(screenText).replace(/\r\n/g, '\n').split('\n').map((text) => ({ text }));
-  if (screenCredit) lines.push({ text: SCREEN_CREDIT, credit: true });
   return {
-    lines,
+    lines: screenLines(),
     fontFamily: screenFontFamily(),
     color: SCREEN_COLORS[screenColor] || SCREEN_COLORS.white,
     shade: screenShade,
@@ -5818,6 +5957,7 @@ function openPrefs(open) {
   if (open) {
     openGuide(false);
     ensureStockDir().catch(() => {});
+    ensureRecordDir().catch(() => {});
     refreshAudioOutputs({ ask: true }).catch((err) => console.warn('Audio output list failed', err));
   }
 }
@@ -5827,11 +5967,38 @@ $('stock-dir-pick').addEventListener('click', async () => {
     return;
   }
   const { open } = await import('@tauri-apps/plugin-dialog');
-  const picked = await open({ directory: true, multiple: false, title: 'Stock Media Download Folder' });
+  const picked = await open({ directory: true, multiple: false, title: 'Fetched Media Folder' });
   if (typeof picked !== 'string' || !picked) return;
   try { localStorage.setItem(STOCK_DIR_KEY, picked); } catch { /* private mode */ }
   paintStockDir(picked);
   window.dispatchEvent(new CustomEvent('vj-global-media'));
+});
+$('stock-dir-open').addEventListener('click', async () => {
+  try {
+    const path = $('stock-dir')?.value || await ensureStockDir();
+    await openSavedFolder(path, 'Choose the fetched media folder first.');
+  } catch (err) {
+    showToast(err?.message || 'Could not open that folder.', true);
+  }
+});
+$('record-dir-pick').addEventListener('click', async () => {
+  if (!isTauri()) {
+    showToast('Choose the folder in the desktop app.', true);
+    return;
+  }
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({ directory: true, multiple: false, title: 'Recordings Folder' });
+  if (typeof picked !== 'string' || !picked) return;
+  try { localStorage.setItem(RECORD_DIR_KEY, picked); } catch { /* private mode */ }
+  paintRecordDir(picked);
+});
+$('record-dir-open').addEventListener('click', async () => {
+  try {
+    const path = $('record-dir')?.value || await ensureRecordDir();
+    await openSavedFolder(path, 'Choose the recordings folder first.');
+  } catch (err) {
+    showToast(err?.message || 'Could not open that folder.', true);
+  }
 });
 $('prefs-btn').addEventListener('click', () => {
   $('file-menu').hidden = true;
@@ -6296,7 +6463,10 @@ function frame(stamp) {
   shaderTime += motionDt;
   shared.uTime.value = shaderTime;
   if (controls.enabled) controls.update();
-  for (const l of layers) l.tickMedia(visualOn ? dt : 0, renderer, fitMode);
+  for (const l of layers) {
+    l.input?.setVisualRate?.(visualOn ? masterSpeed : 0);
+    l.tickMedia(motionDt, renderer, fitMode);
+  }
 
   const live = lfo.update({
     now: shaderTime,

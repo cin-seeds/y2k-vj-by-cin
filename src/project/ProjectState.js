@@ -190,6 +190,7 @@ export class ProjectState {
   }
 
   #load() {
+    if (skipPersistedSession()) return;
     try {
       const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (raw && (Array.isArray(raw.scenes) || Array.isArray(raw.timeline) || Array.isArray(raw.mediaPool))) {
@@ -232,6 +233,12 @@ export class ProjectState {
     this.name = doc.name;
     this.#write();
   }
+}
+
+function skipPersistedSession() {
+  const mac = /Mac/i.test(navigator.userAgent || '') || /Mac/i.test(navigator.platform || '');
+  const desktop = Boolean(window.__TAURI_INTERNALS__ || window.__TAURI__);
+  return mac && desktop;
 }
 
 function normalizeProjectName(value) {
@@ -507,7 +514,6 @@ export function normalizeDesk(raw) {
     screen: {
       on: typeof screen.on === 'boolean' ? screen.on : true,
       text: typeof screen.text === 'string' ? screen.text.slice(0, 400) : 'Y2K VJ//BY CÍN\nCUSTOM CODED FOR LATE FUTURE',
-      credit: screen.credit !== false,
       font: typeof screen.font === 'string' ? screen.font : 'fixedsys',
       shade: clampNum(screen.shade, 0, 0, 8),
       bg: clampNum(screen.bg, 0.65, 0, 1),

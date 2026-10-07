@@ -37,7 +37,7 @@ export class Recorder {
     return this.recording ? (performance.now() - this.startedAt) / 1000 : 0;
   }
 
-  start({ format, audioStream = null, width = 1920, height = 1080, videoBitsPerSecond = 20_000_000 }) {
+  start({ format, audioStream = null, width = 1920, height = 1080, videoBitsPerSecond = 20_000_000, onFile = null }) {
     if (this.recording) return;
     this.canvas.width = Math.max(2, width);
     this.canvas.height = Math.max(2, height);
@@ -51,6 +51,7 @@ export class Recorder {
 
     this.chunks = [];
     this.format = format;
+    this.onFile = typeof onFile === 'function' ? onFile : null;
     this.rec = new MediaRecorder(stream, {
       mimeType: format.mime,
       videoBitsPerSecond,
@@ -61,7 +62,7 @@ export class Recorder {
       stream.getTracks().forEach((t) => t.stop());
       this.stream = null;
       this.track = null;
-      this.#download();
+      this.#deliver();
     };
     this.rec.start(1000);
     this.startedAt = performance.now();
@@ -112,15 +113,28 @@ export class Recorder {
     });
   }
 
-  #download() {
+  #deliver() {
     const blob = new Blob(this.chunks, { type: this.format.mime.split(';')[0] });
-    const url = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `vj-${stamp}.${this.format.ext}`;
+    this.chunks = [];
+    const deliver = this.onFile;
+    this.onFile = null;
+    if (deliver) {
+      Promise.resolve(deliver(blob, filename)).then((saved) => {
+        if (saved === false) this.#download(blob, filename);
+      }).catch(() => this.#download(blob, filename));
+      return;
+    }
+    this.#download(blob, filename);
+  }
+
+  #download(blob, filename) {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `vj-${stamp}.${this.format.ext}`;
+    a.download = filename;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
-    this.chunks = [];
   }
 }

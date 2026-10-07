@@ -21,6 +21,9 @@ function browserStub(command) {
     case 'delete_global_media':
       return { deleted: false, uses: [] };
     case 'default_stock_dir':
+    case 'default_recordings_dir':
+    case 'open_folder':
+    case 'write_binary_file':
     case 'global_media_dir':
     case 'download_video':
     case 'download_audio':

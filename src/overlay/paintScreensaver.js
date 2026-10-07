@@ -93,7 +93,7 @@ function wrapLine(text, measure, limit) {
 
 /**
  * Text-box newlines stay as typed. Only the middle sentence wraps, and only
- * when it is wider than `SCREEN_ONE_LINE`. The license line stays whole.
+ * when it is wider than `SCREEN_ONE_LINE`. A trailing credit line stays whole.
  */
 export function wrapScreenLines(lines, measure) {
   const limit = Math.max(1, measure(SCREEN_ONE_LINE));

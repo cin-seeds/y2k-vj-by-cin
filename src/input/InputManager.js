@@ -101,6 +101,7 @@ export class InputManager {
     this.rejected = [];
     this.direction = 1;
     this.userPaused = false;
+    this.visualRate = 1;
     this.pictureKey = '';
     this.pictureSeen = 0;
     this.pictureBusy = false;
@@ -455,8 +456,8 @@ export class InputManager {
       this.#tickLoopXfade();
     }
 
-    if (this.direction < 0 && !this.userPaused) {
-      const next = this.ring.stepReverse(dt, this.video.playbackRate || 1);
+    if (this.direction < 0 && !this.userPaused && (this.visualRate ?? 1) > 0.001) {
+      const next = this.ring.stepReverse(dt, 1);
       const { inn } = this.#bounds();
       if (!next || this.ring.revTime <= inn) {
         this.#goForward(inn);
@@ -531,6 +532,10 @@ export class InputManager {
     v.setAttribute('webkit-playsinline', '');
     v.setAttribute('crossorigin', 'anonymous');
     v.disablePictureInPicture = true;
+    try {
+      v.preservesPitch = false;
+      v.webkitPreservesPitch = false;
+    } catch { /* older engines omit pitch preservation */ }
     applyMediaSink(v);
     videoHost().append(v);
     return v;
@@ -659,9 +664,35 @@ export class InputManager {
    * The audio file clock never starts or stops these elements.
    * If the browser pauses a clip on its own, start it again unless the user paused it.
    */
+  setVisualRate(rate) {
+    if (this.kind !== 'video') return;
+    const next = Number.isFinite(rate) ? Math.min(4, Math.max(0, rate)) : 1;
+    this.visualRate = next;
+    this.#applyVisualRate(this.video);
+    this.#applyVisualRate(this.alt);
+  }
+
+  #applyVisualRate(video) {
+    if (!video) return;
+    try {
+      video.preservesPitch = false;
+      video.webkitPreservesPitch = false;
+    } catch { /* optional */ }
+    if ((this.visualRate ?? 1) <= 0.001) {
+      if (video === this.video && !this.userPaused && !video.paused) {
+        try { video.pause(); } catch { /* already paused */ }
+      }
+      return;
+    }
+    const applied = Math.min(4, Math.max(0.0625, this.visualRate));
+    if (Math.abs((video.playbackRate || 1) - applied) > 0.01) {
+      try { video.playbackRate = applied; } catch { /* not ready yet */ }
+    }
+  }
+
   #keepPlaying() {
     const v = this.video;
-    if (!v || this.userPaused || this.direction < 0) return;
+    if (!v || this.userPaused || this.direction < 0 || (this.visualRate ?? 1) <= 0.001) return;
     if (this.kind === 'video' && this.playMode === 'once' && v.ended) return;
     if (!v.paused || v._playPending) return;
     v._playPending = true;

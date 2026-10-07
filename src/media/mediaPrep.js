@@ -52,7 +52,7 @@ function setPercent(job, percent) {
   job.row.classList.remove('busy');
 }
 
-function addJob(name, path, file) {
+function addJob(name, path, file, { brand = false } = {}) {
   const id = crypto.randomUUID();
   const row = document.createElement('li');
   row.className = 'prep-job';
@@ -73,6 +73,7 @@ function addJob(name, path, file) {
     bypassed: false,
     settled: false,
     transcoding: false,
+    brand: !!brand,
   };
   bypass.addEventListener('click', (event) => {
     event.preventDefault();
@@ -148,6 +149,19 @@ function noteGlobalSave() {
   window.dispatchEvent(new CustomEvent('vj-global-media'));
 }
 
+function noteBrandFile(name, path) {
+  const leaf = String(name || '').split(/[\\/]/).pop();
+  if (!leaf) return;
+  addMediaTag(leaf, 'brand');
+  window.dispatchEvent(new CustomEvent('vj-brand-ready', {
+    detail: { name: leaf, path: path || '' },
+  }));
+}
+
+function brandMarked() {
+  return !!document.getElementById('prep-brand')?.checked;
+}
+
 async function importPrepared() {
   noteGlobalSave();
 }
@@ -187,6 +201,7 @@ async function bypassDirect(job) {
       paintJob(job, 'Saved to Media Manager', 'done');
       prepShowToast?.('Saved to Media Manager');
       noteGlobalSave();
+      if (job.brand && !job.audio) noteBrandFile(String(saved).split(/[\\/]/).pop(), saved);
       if (job.audio) noteAudioReady(saved, job.play);
       return;
     }
@@ -212,6 +227,7 @@ async function bypassDirect(job) {
     paintJob(job, 'Saved to Media Manager', 'done');
     prepShowToast?.(`Saved ${added[0]} to Media Manager`);
     noteGlobalSave();
+    if (job.brand) noteBrandFile(added[0], '');
   } catch (err) {
     job.bypassed = false;
     job.bypass.disabled = false;
@@ -262,6 +278,7 @@ async function runJob(job, ensureStockDir, showToast) {
     showToast(`Saved ${leaf} to Media Manager`);
     try { await importPrepared(); } catch { /* the file is already in the global folder */ }
     if (job.audio) noteAudioReady(output, job.play, leaf);
+    else if (job.brand) noteBrandFile(leaf, output);
   } catch (err) {
     if (job.bypassed) return;
     const message = err?.message || String(err) || 'Transcode failed';
@@ -292,14 +309,14 @@ async function pump(ensureStockDir, showToast) {
   pumping = false;
 }
 
-function enqueue(name, path, file, ensureStockDir, showToast) {
+function enqueue(name, path, file, ensureStockDir, showToast, options = {}) {
   rememberMediaSource(name, 'user');
-  addJob(name, path, file);
+  addJob(name, path, file, options);
   pump(ensureStockDir, showToast);
 }
 
-export function queueMediaPrep(name, path, file) {
-  enqueue(name, path, file, async () => '', prepShowToast || (() => {}));
+export function queueMediaPrep(name, path, file, options = {}) {
+  enqueue(name, path, file, async () => '', prepShowToast || (() => {}), options);
 }
 
 export function queueAudioPrep(name, path, file, { play = false } = {}) {
@@ -351,7 +368,8 @@ export function bindMediaPrep({ library, ensureStockDir, showToast }) {
       showToast('Drop a video, image, or audio file.', true);
       return;
     }
-    for (const file of videos) enqueue(file.name, pathFromFile(file, event), file, ensureStockDir, showToast);
+    const asBrand = brandMarked();
+    for (const file of videos) enqueue(file.name, pathFromFile(file, event), file, ensureStockDir, showToast, { brand: asBrand });
     for (const file of audio) queueAudioPrep(file.name, pathFromFile(file, event), file);
   });
   zone.addEventListener('click', () => chooseFiles(ensureStockDir, showToast));
@@ -379,7 +397,7 @@ async function chooseFiles(ensureStockDir, showToast) {
     for (const path of paths) {
       const name = String(path).split(/[\\/]/).pop() || 'media';
       if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
-      else if (VIDEO_EXT.test(name)) enqueue(name, path, null, ensureStockDir, showToast);
+      else if (VIDEO_EXT.test(name)) enqueue(name, path, null, ensureStockDir, showToast, { brand: brandMarked() });
     }
     return;
   }
@@ -390,7 +408,7 @@ async function chooseFiles(ensureStockDir, showToast) {
   input.addEventListener('change', () => {
     for (const file of input.files || []) {
       if (isAudio(file)) queueAudioPrep(file.name, '', file);
-      else if (isVideo(file)) enqueue(file.name, '', file, ensureStockDir, showToast);
+      else if (isVideo(file)) enqueue(file.name, '', file, ensureStockDir, showToast, { brand: brandMarked() });
     }
   });
   input.click();

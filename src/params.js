@@ -6,11 +6,11 @@ import { ENGINE_HYDRA, ENGINE_LABELS, ENGINE_PARTICLES, ENGINES, PARTICLE_SOURCE
 
 export const LAYERS = ['A', 'B', 'C'];
 
-export const MODES = ['glitch', 'dither', 'y2k', 'vhs', 'points', 'mesh', 'retro', 'clean', 'win98', 'ps1', 'ascii', 'eater', 'minidv', 'flash', 'starfield', 'metal'];
+export const MODES = ['glitch', 'dither', 'y2k', 'vhs', 'points', 'mesh', 'retro', 'clean', 'win98', 'ps1', 'ascii', 'eater', 'minidv', 'flash', 'starfield', 'metal', 'thermal', 'sort', 'jpeg', 'cd', 'bend', 'home', 'marquee', 'gif', 'cloud', 'brick', 'ink', 'fold', 'chomp'];
 export const MODE_LABELS = [
   'Glitch', 'Pixel Art / Dither', 'Y2K / 2000s', 'VHS', '3D Point Cloud', '3D Spatial Mesh',
   '90s Retro Gaming', 'Clean (no FX)', 'Windows 98 Crash', 'PS1 / N64 CRT', 'ASCII / Pointillism',
-  'Signal Eater', 'MiniDV', 'Flash MX', 'Starfield', 'Black Metallic Y2K',
+  'Signal Eater', 'MiniDV', 'Flash MX', 'Starfield', 'Black Metallic Y2K', 'False-Color Thermal', 'Pixel Sort', 'JPEG Decay', 'CD Seek', 'Data Bend', 'Homepage', 'Marquee', 'Interlaced GIF', 'Digital Clouds', 'Nature Blocks', 'Ink', 'Fold', 'Chomp',
 ];
 /** Removed looks. Their slots stay empty so every later shader keeps its saved number. */
 export const RETIRED_SHADER_MODES = new Set([4, 5]);
@@ -183,6 +183,93 @@ export const LAYER_DEFS = [
   { id: 'porthole', label: 'Porthole', group: 'starfield', min: 0, max: 1, value: 0.65 },
   { id: 'grid', label: 'Vector Grid', group: 'starfield', min: 0, max: 1, value: 0.35 },
   { id: 'flash', label: 'Hyperspace', group: 'starfield', min: 0, max: 1, value: 0.5 },
+
+  { id: 'heat', label: 'Contrast', group: 'thermal', min: 0, max: 2, value: 1,
+    title: 'Spreads the thermal grade around mid gray. 1 keeps the video’s brightness before the palette.' },
+
+  { id: 'sortGate', label: 'Threshold', group: 'sort', min: 0, max: 1, value: 0.55,
+    title: 'How bright a pixel must be before it streaks up the frame.' },
+  { id: 'sortLen', label: 'Length', group: 'sort', min: 0, max: 1, value: 0.4,
+    title: 'How far those pixels streak upward. Low falls back to the picture. A kick or snare throws the streak farther.' },
+  { id: 'sortFall', label: 'Falloff', group: 'sort', min: 0, max: 1, value: 0.45,
+    title: 'How quickly the streak fades as it rises.' },
+
+  { id: 'jpegBlock', label: 'Block', group: 'jpeg', min: 0, max: 1, value: 0.45,
+    title: 'Size of the square blocks. Low keeps the picture.' },
+  { id: 'jpegSmear', label: 'Smear', group: 'jpeg', min: 0, max: 1, value: 0.55,
+    title: 'How far color smears inside each block.' },
+  { id: 'jpegCrush', label: 'Damage', group: 'jpeg', min: 0, max: 1, value: 0.4,
+    title: 'How hard the blocks quantize. A transient or the hats raise it for a moment.' },
+
+  { id: 'cdRing', label: 'Rings', group: 'cd', min: 0, max: 1, value: 0.55,
+    title: 'How strongly the concentric grooves sit on the picture.' },
+  { id: 'cdSeek', label: 'Seek', group: 'cd', min: 0, max: 1, value: 0.4,
+    title: 'How far the picture stutters sideways. A kick triggers a harder seek.' },
+  { id: 'cdRate', label: 'Rate', group: 'cd', min: 0, max: 1, value: 0.35,
+    title: 'How often the disc loses its place. A kick chatters the seek.' },
+
+  { id: 'bendAmt', label: 'Bend', group: 'bend', min: 0, max: 1, value: 0.45,
+    title: 'How far the bottom of the frame slides. The top stays put. A kick adds one extra shove.' },
+  { id: 'bendCurve', label: 'Curve', group: 'bend', min: 0, max: 1, value: 0.35,
+    title: 'How quickly the slide grows toward the bottom. Low is a straight shear.' },
+  { id: 'bendLean', label: 'Lean', group: 'bend', min: 0, max: 1, value: 1,
+    title: 'Which way the rows slide. Left at 0, right at 1.' },
+
+  { id: 'homeTile', label: 'Tile', group: 'home', min: 0, max: 1, value: 0.35,
+    title: 'Size of the repeating wallpaper. A kick punches it larger for a moment, then it falls back.' },
+  { id: 'homeMix', label: 'Frame', group: 'home', min: 0, max: 1, value: 0.65,
+    title: 'Moves from tiled wallpaper to the framed photo sitting on that page.' },
+  { id: 'homeBevel', label: 'Bevel', group: 'home', min: 0, max: 1, value: 0.7,
+    title: 'Depth of the beveled frame around the photo.' },
+
+  { id: 'marqueeBand', label: 'Band', group: 'marquee', min: 0, max: 1, value: 0.78,
+    title: 'Where the crawling band sits. The rest of the frame holds.' },
+  { id: 'marqueeSize', label: 'Height', group: 'marquee', min: 0, max: 1, value: 0.28,
+    title: 'How tall the crawling band is. Zero leaves the frame still.' },
+  { id: 'marqueeSpeed', label: 'Speed', group: 'marquee', min: 0, max: 1, value: 0.45,
+    title: 'How fast the band scrolls and loops. A kick shoves the scroll.' },
+
+  { id: 'gifLoad', label: 'Load', group: 'gif', min: 0, max: 1, value: 0.35,
+    title: 'How much of the picture has arrived. A kick finishes it, then it falls back toward the coarse pass.' },
+  { id: 'gifGap', label: 'Gap', group: 'gif', min: 0, max: 1, value: 0.65,
+    title: 'How many rows the first pass skips. The missing rows fill in as Load rises.' },
+  { id: 'gifEase', label: 'Ease', group: 'gif', min: 0, max: 1, value: 0.4,
+    title: 'How long the coarse pass holds before the later rows arrive.' },
+
+  { id: 'cloudCover', label: 'Cover', group: 'cloud', min: 0, max: 1, value: 0.45,
+    title: 'How much of the frame is cloud. Bass swells the cover. Zero leaves the picture.' },
+  { id: 'cloudDrift', label: 'Drift', group: 'cloud', min: 0, max: 1, value: 0.4,
+    title: 'How fast the puffs travel. A kick pushes them, then they fall back.' },
+  { id: 'cloudBand', label: 'Bands', group: 'cloud', min: 0, max: 1, value: 0.55,
+    title: 'How many shade steps the puffs keep. Low is chunkier.' },
+
+  { id: 'brickSize', label: 'Size', group: 'brick', min: 0, max: 1, value: 0.42,
+    title: 'How big each brick is. A kick nudges the size for a moment, then it falls back.' },
+  { id: 'brickStud', label: 'Studs', group: 'brick', min: 0, max: 1, value: 0.75,
+    title: 'How strong the stud on each brick is. Zero leaves the faces bare.' },
+  { id: 'brickTint', label: 'Tint', group: 'brick', min: 0, max: 1, value: 0.8,
+    title: 'How far each brick is pushed toward grass, leaf, lime, moss, and soil.' },
+
+  { id: 'inkLife', label: 'Life', group: 'ink', min: 0, max: 1, value: 0.72,
+    title: 'How long the stirred picture stays. Zero shows the live frame.' },
+  { id: 'inkStir', label: 'Stir', group: 'ink', min: 0, max: 1, value: 0.45,
+    title: 'How hard the ink moves. A kick throws a short, harder stir.' },
+  { id: 'inkCurl', label: 'Curl', group: 'ink', min: 0, max: 1, value: 0.4,
+    title: 'How tight the swirls are. The curl follows the picture’s brightness.' },
+
+  { id: 'foldDepth', label: 'Depth', group: 'fold', min: 0, max: 1, value: 0.45,
+    title: 'How deep the picture folds into itself. Bass deepens it. Zero leaves the frame.' },
+  { id: 'foldScale', label: 'Scale', group: 'fold', min: 0, max: 1, value: 0.4,
+    title: 'Size of the sheets. A kick snaps them tighter for a moment.' },
+  { id: 'foldSheets', label: 'Sheets', group: 'fold', min: 0, max: 1, value: 0.7,
+    title: 'How many reads of this frame meet in one pixel.' },
+
+  { id: 'chompSize', label: 'Size', group: 'chomp', min: 0, max: 1, value: 0.35,
+    title: 'How big the disc is. Larger discs take fewer rows to cross the frame.' },
+  { id: 'chompSpeed', label: 'Speed', group: 'chomp', min: 0, max: 1, value: 0.4,
+    title: 'How fast the disc crosses. A kick advances it one bite.' },
+  { id: 'chompMouth', label: 'Mouth', group: 'chomp', min: 0, max: 1, value: 0.75,
+    title: 'How wide the mouth opens between bites. A kick closes it.' },
 ];
 
 // Layers start as a usable stack: A visible, B and C ready but faded out.
@@ -306,6 +393,43 @@ const PARAM_META = {
   porthole: { friendlyLabel: 'Porthole', description: 'Size of the round window that holds the live picture.', unit: '%', category: lookSection('starfield'), neutralValue: 0 },
   grid: { friendlyLabel: 'Vector Grid', description: 'Brightness of the flat floor grid under the window.', unit: '%', category: lookSection('starfield'), neutralValue: 0 },
   flash: { friendlyLabel: 'Hyperspace', description: 'How hard a kick whites out the streaks for a moment.', unit: '%', category: lookSection('starfield'), neutralValue: 0 },
+  heat: { friendlyLabel: 'Thermal Contrast', description: 'Spreads or crushes the video around mid gray before it is painted in the thermal palette. 1x keeps the picture’s brightness.', unit: 'x', category: lookSection('thermal'), neutralValue: 1 },
+  sortGate: { friendlyLabel: 'Sort Threshold', description: 'Pixels brighter than this streak up the frame. Dimmer pixels stay put.', unit: '%', category: lookSection('sort'), neutralValue: 0 },
+  sortLen: { friendlyLabel: 'Sort Length', description: 'How far a bright pixel streaks upward. Zero falls back to the picture. A kick or snare throws that streak farther.', unit: '%', category: lookSection('sort'), neutralValue: 0 },
+  sortFall: { friendlyLabel: 'Sort Falloff', description: 'How quickly the streak fades along its length. Higher dies off sooner.', unit: '%', category: lookSection('sort'), neutralValue: 0 },
+  jpegBlock: { friendlyLabel: 'JPEG Block', description: 'Size of the square blocks, like a late-90s download. Zero keeps the picture.', unit: '%', category: lookSection('jpeg'), neutralValue: 0 },
+  jpegSmear: { friendlyLabel: 'JPEG Smear', description: 'How far the color smears inside each block.', unit: '%', category: lookSection('jpeg'), neutralValue: 0 },
+  jpegCrush: { friendlyLabel: 'JPEG Damage', description: 'How few color steps each block keeps. A transient or the hats raise the damage for a moment.', unit: '%', category: lookSection('jpeg'), neutralValue: 0 },
+  cdRing: { friendlyLabel: 'CD Rings', description: 'Strength of the concentric grooves on the picture. Zero leaves the frame bare.', unit: '%', category: lookSection('cd'), neutralValue: 0 },
+  cdSeek: { friendlyLabel: 'CD Seek', description: 'How far the picture stutters sideways, like a disc losing its place. A kick triggers a harder seek.', unit: '%', category: lookSection('cd'), neutralValue: 0 },
+  cdRate: { friendlyLabel: 'CD Rate', description: 'How often the sideways seek hops. A kick makes those hops come faster.', unit: '%', category: lookSection('cd'), neutralValue: 0 },
+  bendAmt: { friendlyLabel: 'Data Bend', description: 'How far each row slides sideways. The top stays put and the slide grows toward the bottom. A kick adds one extra shove.', unit: '%', category: lookSection('bend'), neutralValue: 0 },
+  bendCurve: { friendlyLabel: 'Bend Curve', description: 'How quickly that slide grows down the frame. Low is a straight shear.', unit: '%', category: lookSection('bend'), neutralValue: 0 },
+  bendLean: { friendlyLabel: 'Bend Lean', description: 'Which way the rows slide. The left end leans left, the right end leans right.', unit: '%', category: lookSection('bend'), neutralValue: 0.5 },
+  homeTile: { friendlyLabel: 'Homepage Tile', description: 'Size of each repeated wallpaper tile. A kick punches the tiles larger, then they fall back.', unit: '%', category: lookSection('home'), neutralValue: 0 },
+  homeMix: { friendlyLabel: 'Homepage Frame', description: 'Moves from the tiled wallpaper to one framed photo on that page.', unit: '%', category: lookSection('home'), neutralValue: 0 },
+  homeBevel: { friendlyLabel: 'Homepage Bevel', description: 'Depth of the raised frame around the photo.', unit: '%', category: lookSection('home'), neutralValue: 0 },
+  marqueeBand: { friendlyLabel: 'Marquee Band', description: 'Where the crawling strip sits on the frame. Everything outside it stays still.', unit: '%', category: lookSection('marquee'), neutralValue: 0.5 },
+  marqueeSize: { friendlyLabel: 'Marquee Height', description: 'How tall the crawling band is. Zero leaves the picture still.', unit: '%', category: lookSection('marquee'), neutralValue: 0 },
+  marqueeSpeed: { friendlyLabel: 'Marquee Speed', description: 'How fast the band scrolls sideways and loops. A kick shoves the scroll.', unit: '%', category: lookSection('marquee'), neutralValue: 0 },
+  gifLoad: { friendlyLabel: 'GIF Load', description: 'How much of the interlaced picture has arrived. A kick finishes the load, then it falls back toward the coarse pass.', unit: '%', category: lookSection('gif'), neutralValue: 0 },
+  gifGap: { friendlyLabel: 'GIF Gap', description: 'How many rows the first pass skips. Later rows fill in as the load rises.', unit: '%', category: lookSection('gif'), neutralValue: 0 },
+  gifEase: { friendlyLabel: 'GIF Ease', description: 'How long the coarse pass holds before the missing rows arrive.', unit: '%', category: lookSection('gif'), neutralValue: 0 },
+  cloudCover: { friendlyLabel: 'Cloud Cover', description: 'How much of the frame clots into puffs. Bass swells the cover. Zero leaves the picture.', unit: '%', category: lookSection('cloud'), neutralValue: 0 },
+  cloudDrift: { friendlyLabel: 'Cloud Drift', description: 'How fast the puffs travel. A kick pushes them, then they settle back.', unit: '%', category: lookSection('cloud'), neutralValue: 0 },
+  cloudBand: { friendlyLabel: 'Cloud Bands', description: 'How many shade steps the puffs keep. Fewer steps look more like a late-90s sky render.', unit: '%', category: lookSection('cloud'), neutralValue: 0 },
+  brickSize: { friendlyLabel: 'Brick Size', description: 'How big each brick is. A kick nudges the size for a moment, then it falls back.', unit: '%', category: lookSection('brick'), neutralValue: 0 },
+  brickStud: { friendlyLabel: 'Brick Studs', description: 'How strong the stud on each brick is. Zero leaves the faces bare.', unit: '%', category: lookSection('brick'), neutralValue: 0 },
+  brickTint: { friendlyLabel: 'Brick Tint', description: 'How far each flat cell is pushed toward grass, leaf, lime, moss, and soil.', unit: '%', category: lookSection('brick'), neutralValue: 0 },
+  inkLife: { friendlyLabel: 'Ink Life', description: 'How long the stirred picture stays. Zero shows the live frame.', unit: '%', category: lookSection('ink'), neutralValue: 0 },
+  inkStir: { friendlyLabel: 'Ink Stir', description: 'How hard the ink moves along the picture’s brightness. A kick throws a short, harder stir.', unit: '%', category: lookSection('ink'), neutralValue: 0 },
+  inkCurl: { friendlyLabel: 'Ink Curl', description: 'How tight the swirls are. The curl is taken from the picture’s own brightness.', unit: '%', category: lookSection('ink'), neutralValue: 0 },
+  foldDepth: { friendlyLabel: 'Fold Depth', description: 'How far the picture folds into itself inside this frame. Bass deepens the fold. Zero leaves the picture.', unit: '%', category: lookSection('fold'), neutralValue: 0 },
+  foldScale: { friendlyLabel: 'Fold Scale', description: 'Size of the sheets. A kick snaps them tighter for a moment, then they fall back.', unit: '%', category: lookSection('fold'), neutralValue: 0 },
+  foldSheets: { friendlyLabel: 'Fold Sheets', description: 'How strongly several reads of the same frame meet in one pixel.', unit: '%', category: lookSection('fold'), neutralValue: 0 },
+  chompSize: { friendlyLabel: 'Chomp Size', description: 'How big the disc is. Larger discs cross the frame in fewer rows.', unit: '%', category: lookSection('chomp'), neutralValue: 0 },
+  chompSpeed: { friendlyLabel: 'Chomp Speed', description: 'How fast the disc travels. A kick advances it one bite.', unit: '%', category: lookSection('chomp'), neutralValue: 0 },
+  chompMouth: { friendlyLabel: 'Chomp Mouth', description: 'How wide the mouth opens. A kick closes it for one bite.', unit: '%', category: lookSection('chomp'), neutralValue: 0 },
 };
 
 export function neutralOf(def) {

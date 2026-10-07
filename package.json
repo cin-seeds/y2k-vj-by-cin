@@ -1,7 +1,7 @@
 {
   "name": "live-vj-tool",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.5.0",
   "type": "module",
   "description": "Local live generative VJ performance tool (Vite + Three.js + WebGL shaders)",
   "scripts": {

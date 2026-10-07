@@ -391,10 +391,20 @@ export class SceneBar {
 
   updatePlayhead() {
     const tl = this.timeline;
-    const left = (tl.beat / tl.lengthBeats) * 100;
-    if (this.headPct !== left) {
-      this.headPct = left;
-      this.headEl.style.left = `${left}%`;
+    const len = tl.lengthBeats || 1;
+    const frac = Math.min(1, Math.max(0, tl.beat / len));
+    const width = this.trackEl?.clientWidth || 0;
+    const px = width * frac;
+    if (this.headPx !== px) {
+      this.headPx = px;
+      this.headEl.style.left = `${px}px`;
+      this.headEl.style.right = 'auto';
+      const fill = $('tl-progress');
+      if (fill) {
+        fill.style.left = '0';
+        fill.style.right = 'auto';
+        fill.style.width = `${px}px`;
+      }
     }
     const b = Math.min(tl.beat, tl.lengthBeats - 0.0001);
     const label = `${Math.floor(b / 4) + 1}.${Math.floor(b % 4) + 1}`;

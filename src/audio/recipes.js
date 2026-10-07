@@ -8,8 +8,8 @@ export const BAND = { all: 0, bass: 1, mids: 2, treble: 3, off: 4 };
 
 /** Natural audio band per look. Particles and Hydra engines also use bass. */
 export const NATURAL_BANDS = {
-  bass: ['glitch', 'y2k', 'dither', 'eater', 'starfield', 'flash', 'ps1', 'win98', 'ascii', 'metal'],
-  treble: ['vhs', 'retro'],
+  bass: ['glitch', 'y2k', 'dither', 'eater', 'starfield', 'flash', 'ps1', 'win98', 'ascii', 'metal', 'thermal', 'sort', 'cd', 'bend', 'home', 'marquee', 'gif', 'cloud', 'brick', 'ink', 'fold', 'chomp'],
+  treble: ['vhs', 'retro', 'jpeg'],
   off: ['clean', 'minidv'],
 };
 
@@ -19,7 +19,7 @@ const TREBLE_MODES = new Set(NATURAL_BANDS.treble);
 export const KICK_MODES = new Set(NATURAL_BANDS.bass);
 
 /** Sliders the shader already moves from bass or kick. A matrix route on these is a second listen. */
-export const KICK_DRIVEN = ['glitch', 'feedback', 'bite', 'warp', 'pixelSize', 'pSpeed'];
+export const KICK_DRIVEN = ['glitch', 'feedback', 'bite', 'warp', 'pixelSize', 'pSpeed', 'heat', 'sortLen', 'jpegCrush', 'cdSeek', 'bendAmt', 'homeTile', 'marqueeSpeed', 'gifLoad', 'cloudCover', 'cloudDrift', 'brickSize', 'inkStir', 'foldDepth', 'foldScale', 'chompSpeed', 'chompMouth'];
 
 /** Accent targets for recipe matrix routes. Never glitch / feedback / bite / warp / pixelSize / pSpeed. */
 export const ACCENT_SLIDERS = [

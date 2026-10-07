@@ -20,6 +20,7 @@ const SOURCE_EMPTY = {
   image: 'No images in the library yet.',
   fetch: 'No fetched clips yet. Use Live Text-to-Visual to download a loop.',
   audio: 'No audio stored yet. Drop a track above, or download stock audio.',
+  brand: 'No brand assets yet. Tick Brand asset, then add a file.',
 };
 
 function readSources() {
@@ -197,6 +198,8 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   }
 
   function rowVisible(row) {
+    const branded = tagsFor(row.name).some((tag) => tag.toLowerCase() === 'brand');
+    if (sourceFilter === 'brand' && !branded) return false;
     if (sourceFilter === 'fetch' && rowSource(row) !== 'fetch') return false;
     if ((sourceFilter === 'video' || sourceFilter === 'audio' || sourceFilter === 'image') && rowKind(row) !== sourceFilter) return false;
     if (tagFilter && !tagsFor(row.name).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase())) return false;
@@ -244,8 +247,10 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       const meta = document.createElement('i');
       meta.className = 'global-meta';
       const fetched = rowSource(row) === 'fetch';
-      meta.textContent = fetched ? 'Fetched' : kindLabel(kind);
-      meta.title = fetched && kind !== 'audio' ? `Fetched ${kindLabel(kind).toLowerCase()}` : kindLabel(kind);
+      const branded = tagsFor(row.name).some((tag) => tag.toLowerCase() === 'brand');
+      meta.textContent = branded ? 'Brand' : (fetched ? 'Fetched' : kindLabel(kind));
+      meta.title = branded ? 'Brand asset' : (fetched && kind !== 'audio' ? `Fetched ${kindLabel(kind).toLowerCase()}` : kindLabel(kind));
+      if (branded) card.classList.add('is-brand');
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'global-delete';
@@ -361,12 +366,20 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       showToast?.('Select clips, then tag them');
       return;
     }
+    const wantsBrand = tag.toLowerCase() === 'brand' || tag.toLowerCase() === 'logo';
     for (const name of selected) {
       const list = tagsFor(name).slice();
       if (!list.some((item) => item.toLowerCase() === tag.toLowerCase())) list.push(tag);
+      if (wantsBrand && !list.some((item) => item.toLowerCase() === 'brand')) list.push('brand');
       mediaTags[name] = list.slice(0, 8);
     }
     writeMediaTags();
+    if (wantsBrand) {
+      for (const name of selected) {
+        const row = latest.find((item) => item.name === name);
+        window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name, path: row?.path || '' } }));
+      }
+    }
     if (tagInput) tagInput.value = '';
     if (tagAdd) tagAdd.disabled = true;
     paint(latest);
@@ -476,15 +489,19 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       rememberMediaSource(name, 'user');
       const path = pathFrom(file, event);
       if (isTauri() && video) {
-        queueMediaPrep(name, path, path ? null : file);
+        queueMediaPrep(name, path, path ? null : file, { brand: brandUpload() });
         queued += 1;
         continue;
       }
       if (isTauri() && image && path) {
         const asBrand = brandUpload();
         invoke('copy_into_global_media', { inputPath: path })
-          .then(() => {
-            if (asBrand) addMediaTag(name, 'brand');
+          .then((saved) => {
+            const leaf = String(saved || path).split(/[\\/]/).pop() || name;
+            if (asBrand) {
+              addMediaTag(leaf, 'brand');
+              window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name: leaf, path: saved || path } }));
+            }
             window.dispatchEvent(new CustomEvent('vj-global-media'));
           })
           .catch((err) => showToast?.(err?.message || 'Could not save that image', true));
@@ -492,7 +509,10 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         continue;
       }
       library.add([file]);
-      if (brandUpload()) addMediaTag(name, 'brand');
+      if (brandUpload()) {
+        addMediaTag(name, 'brand');
+        window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name, path: '' } }));
+      }
       queued += 1;
     }
     if (queued && !isTauri()) render();
@@ -516,10 +536,14 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         const name = String(path).split(/[\\/]/).pop() || 'media';
         if (VIDEO_EXT.test(name) || IMAGE_EXT.test(name)) rememberMediaSource(name, 'user');
         if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
-        else if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null);
+        else if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null, { brand: brandUpload() });
         else if (IMAGE_EXT.test(name)) {
-          await invoke('copy_into_global_media', { inputPath: path });
-          if (brandUpload()) addMediaTag(name, 'brand');
+        const saved = await invoke('copy_into_global_media', { inputPath: path });
+        const leaf = String(saved || path).split(/[\\/]/).pop() || name;
+        if (brandUpload()) {
+          addMediaTag(leaf, 'brand');
+          window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name: leaf, path: saved || path } }));
+        }
         }
       }
       window.dispatchEvent(new CustomEvent('vj-global-media'));
@@ -678,7 +702,12 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     return rows.filter((row) => isAudioRow(row) || row.kind === 'audio');
   }
 
-  return { open: show, refresh: render, ingest, close, libraryAudio };
+  function showSource(source) {
+    applySource(source);
+    render();
+  }
+
+  return { open: show, refresh: render, ingest, close, libraryAudio, showSource };
 }
 
 const PREP_SPLIT_KEY = 'vj.prepSplit';
@@ -880,64 +909,117 @@ function paintCover(source, sw, sh) {
   return canvas.toDataURL('image/jpeg', 0.7);
 }
 
-async function captureSquare(filePath) {
+function waitMedia(el, event, ms) {
+  if (event === 'loadeddata' && el.readyState >= 2) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('thumb'));
+    }, ms);
+    const onOk = () => { cleanup(); resolve(); };
+    const onErr = () => { cleanup(); reject(new Error('thumb')); };
+    const cleanup = () => {
+      clearTimeout(timer);
+      el.removeEventListener(event, onOk);
+      el.removeEventListener('error', onErr);
+    };
+    el.addEventListener(event, onOk);
+    el.addEventListener('error', onErr);
+  });
+}
+
+async function assetSrc(filePath) {
   const { convertFileSrc } = await import('@tauri-apps/api/core');
   const src = convertFileSrc(filePath);
-  if (IMAGE_EXT.test(filePath)) {
-    const img = new Image();
+  if (!src || /^file:/i.test(src)) throw new Error('thumb');
+  return src;
+}
+
+async function blobUrlForAsset(filePath) {
+  const src = await assetSrc(filePath);
+  const res = await fetch(src);
+  if (!res.ok) throw new Error('thumb');
+  const blob = await res.blob();
+  if (!blob.size) throw new Error('thumb');
+  return URL.createObjectURL(blob);
+}
+
+function detachProbe(el) {
+  try { el.pause(); } catch { /* already stopped */ }
+  el.removeAttribute('src');
+  el.src = '';
+  try { el.load(); } catch { /* detached */ }
+  el.remove();
+}
+
+async function captureImageElement(src) {
+  const img = new Image();
+  await new Promise((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('thumb'));
     img.src = src;
-    await new Promise((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error('thumb'));
-    });
-    return paintCover(img, img.naturalWidth, img.naturalHeight);
-  }
+  });
+  if ((img.naturalWidth | 0) < 2 || (img.naturalHeight | 0) < 2) throw new Error('thumb');
+  return paintCover(img, img.naturalWidth, img.naturalHeight);
+}
+
+async function captureVideoElement(src) {
   const video = document.createElement('video');
   video.muted = true;
+  video.defaultMuted = true;
   video.playsInline = true;
   video.preload = 'auto';
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', '');
+  video.style.cssText = 'position:fixed;left:0;top:0;width:160px;height:90px;opacity:0.02;pointer-events:none';
+  document.body.append(video);
   video.src = src;
-  await new Promise((resolve, reject) => {
-    if (video.readyState >= 2) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(() => reject(new Error('thumb')), 8000);
-    video.onloadeddata = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    video.onerror = () => {
-      clearTimeout(timer);
-      reject(new Error('thumb'));
-    };
-  });
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const sw = video.videoWidth | 0;
-  const sh = video.videoHeight | 0;
-  const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
-  const later = dur > 0
-    ? Math.min(Math.max(0.5, dur * 0.05), Math.max(0, dur - 0.04))
-    : 0.5;
-  if ((sw < 2 || sh < 2 || frameIsBlank(video, sw, sh)) && later > 0.03) {
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 2500);
-      video.onseeked = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      try { video.currentTime = later; }
-      catch {
-        clearTimeout(timer);
-        resolve();
+  try {
+    await waitMedia(video, 'loadeddata', 8000);
+    try {
+      await video.play();
+      video.pause();
+    } catch { /* a later seek can still present a frame */ }
+    const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const later = dur > 0
+      ? Math.min(Math.max(0.5, dur * 0.05), Math.max(0, dur - 0.04))
+      : 0.5;
+    const targets = [0];
+    if (later > 0.03) targets.push(later);
+    if (dur > later + 0.2) targets.push(Math.min(dur * 0.2, dur - 0.04));
+    for (const target of targets) {
+      if (target > 0.03) {
+        const seeked = waitMedia(video, 'seeked', 2500).catch(() => {});
+        try { video.currentTime = target; } catch { /* stay on the current frame */ }
+        await seeked;
       }
-    });
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const sw = video.videoWidth | 0;
+      const sh = video.videoHeight | 0;
+      if (sw < 2 || sh < 2) continue;
+      let painted = '';
+      try { painted = paintCover(video, sw, sh); }
+      catch { continue; }
+      if (!frameIsBlank(video, sw, sh)) return painted;
+    }
+    throw new Error('thumb');
+  } finally {
+    detachProbe(video);
   }
-  const url = paintCover(video, video.videoWidth, video.videoHeight);
-  video.removeAttribute('src');
-  video.load();
-  return url;
+}
+
+async function captureSquare(filePath) {
+  let objectUrl = '';
+  try {
+    try { objectUrl = await blobUrlForAsset(filePath); }
+    catch { objectUrl = ''; }
+    const src = objectUrl || await assetSrc(filePath);
+    if (IMAGE_EXT.test(filePath)) return await captureImageElement(src);
+    return await captureVideoElement(src);
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function checkDelete(row, snapshot, force) {

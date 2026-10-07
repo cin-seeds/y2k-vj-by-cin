@@ -185,6 +185,81 @@ fn default_stock_dir() -> Result<String, String> {
   Ok(dir.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn default_recordings_dir() -> Result<String, String> {
+  let dir = stock_root().join("Recordings");
+  std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+  Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_folder(path: String) -> Result<(), String> {
+  let dir = if path.trim().is_empty() {
+    stock_root()
+  } else {
+    PathBuf::from(path.trim())
+  };
+  std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+  #[cfg(target_os = "windows")]
+  {
+    std::process::Command::new("explorer")
+      .arg(&dir)
+      .spawn()
+      .map_err(|err| err.to_string())?;
+  }
+  #[cfg(target_os = "macos")]
+  {
+    std::process::Command::new("open")
+      .arg(&dir)
+      .spawn()
+      .map_err(|err| err.to_string())?;
+  }
+  #[cfg(all(unix, not(target_os = "macos")))]
+  {
+    std::process::Command::new("xdg-open")
+      .arg(&dir)
+      .spawn()
+      .map_err(|err| err.to_string())?;
+  }
+  Ok(())
+}
+
+/// Write one chunk of a recording or other binary file. Folder and name ride in headers.
+#[tauri::command]
+async fn write_binary_file(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+  let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+    return Err("The file did not arrive as binary.".into());
+  };
+  let header = |key: &str| {
+    request
+      .headers()
+      .get(key)
+      .and_then(|value| value.to_str().ok())
+      .map(percent_decode)
+      .unwrap_or_default()
+  };
+  let dir_text = header("x-dir");
+  let name = safe_filename(&header("x-name"))?;
+  let append = header("x-append") == "1";
+  if dir_text.trim().is_empty() {
+    return Err("Choose a folder first.".into());
+  }
+  let dir = PathBuf::from(dir_text.trim());
+  tokio::fs::create_dir_all(&dir).await.map_err(|err| err.to_string())?;
+  let dest = dir.join(&name);
+  let mut file = tokio::fs::OpenOptions::new()
+    .create(true)
+    .write(true)
+    .append(append)
+    .truncate(!append)
+    .open(&dest)
+    .await
+    .map_err(|err| err.to_string())?;
+  file.write_all(&bytes).await.map_err(|err| err.to_string())?;
+  file.flush().await.map_err(|err| err.to_string())?;
+  Ok(dest.to_string_lossy().to_string())
+}
+
 fn stock_api_host(url: &reqwest::Url) -> bool {
   let host = url.host_str().unwrap_or("").to_ascii_lowercase();
   host == "commons.wikimedia.org"
@@ -1452,6 +1527,9 @@ pub fn run() {
       download_video,
       download_audio,
       default_stock_dir,
+      default_recordings_dir,
+      open_folder,
+      write_binary_file,
       write_text_file,
       read_text_file,
       copy_project_asset,
