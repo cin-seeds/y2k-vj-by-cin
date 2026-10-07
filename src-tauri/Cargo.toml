@@ -1,6 +1,6 @@
 [package]
 name = "y2k-vj-by-cin"
-version = "2.3.0"
+version = "2.4.0"
 description = "Local live generative VJ performance tool"
 authors = ["you"]
 license = ""
