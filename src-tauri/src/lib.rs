@@ -179,6 +179,89 @@ async fn write_project_asset(app: tauri::AppHandle, request: tauri::ipc::Request
 }
 
 #[tauri::command]
+fn default_documents_dir() -> Result<String, String> {
+  let dir = dirs::document_dir().unwrap_or_else(|| stock_root());
+  Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn default_downloads_dir() -> Result<String, String> {
+  let dir = dirs::download_dir().unwrap_or_else(|| stock_root());
+  Ok(dir.to_string_lossy().to_string())
+}
+
+fn reserved_leaf(name: &str) -> bool {
+  let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+  matches!(
+    stem.as_str(),
+    "CON" | "PRN" | "AUX" | "NUL"
+      | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
+      | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+  )
+}
+
+fn clean_project_name(name: &str) -> String {
+  let folded: String = name
+    .chars()
+    .map(|ch| if ch.is_control() || "\\/:*?\"<>|".contains(ch) { ' ' } else { ch })
+    .collect();
+  let collapsed = folded.split_whitespace().collect::<Vec<_>>().join(" ");
+  let trimmed = collapsed.trim().trim_matches('.').trim();
+  let mut base = if trimmed.is_empty() { "Untitled".to_string() } else { trimmed.to_string() };
+  if base.chars().count() > 48 {
+    base = base.chars().take(48).collect();
+    base = base.trim().trim_end_matches('.').to_string();
+  }
+  if base.is_empty() || reserved_leaf(&base) {
+    base = format!("{base}_");
+    if base == "_" { base = "Untitled".to_string(); }
+  }
+  base
+}
+
+/// Create `Y2K-VJ-<name>` once, with Recordings, Stock, and Source, and return the .vjproj path.
+#[tauri::command]
+fn create_project_folder(app: tauri::AppHandle, root: String, name: String) -> Result<String, String> {
+  let base = PathBuf::from(root.trim());
+  if root.trim().is_empty() || !base.is_absolute() {
+    return Err("Choose where new projects are created.".into());
+  }
+  std::fs::create_dir_all(&base).map_err(|err| err.to_string())?;
+  let title = clean_project_name(&name);
+  let leaf = format!("Y2K-VJ-{title}");
+  let mut folder = base.join(&leaf);
+  let mut file_stem = title.clone();
+  let mut n = 2;
+  while folder.exists() {
+    folder = base.join(format!("{leaf}-{n}"));
+    file_stem = format!("{title}-{n}");
+    n += 1;
+    if n > 99 {
+      return Err("That project name is already used.".into());
+    }
+  }
+  for sub in ["Recordings", "Stock", "Source"] {
+    std::fs::create_dir_all(folder.join(sub)).map_err(|err| err.to_string())?;
+  }
+  allow_media_dir(&app, &folder)?;
+  Ok(folder.join(format!("{file_stem}.vjproj")).to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn ensure_folder(app: tauri::AppHandle, path: String) -> Result<String, String> {
+  let trimmed = path.trim();
+  if trimmed.is_empty() {
+    return Err("That folder is missing a path.".into());
+  }
+  let dir = PathBuf::from(trimmed);
+  std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+  if dir.is_dir() {
+    allow_media_dir(&app, &dir)?;
+  }
+  Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn default_stock_dir() -> Result<String, String> {
   let dir = stock_root();
   std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
@@ -381,7 +464,7 @@ fn safe_audio_leaf(filename: &str) -> String {
 
 /// Download a Commons audio file and write a 44.1 kHz stereo wav into the global library.
 #[tauri::command]
-async fn download_audio(app: tauri::AppHandle, url: String, filename: String) -> Result<String, String> {
+async fn download_audio(app: tauri::AppHandle, url: String, filename: String, save_dir: String) -> Result<String, String> {
   let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "That audio link is not a download address.".to_string())?;
   if parsed.scheme() != "https" && parsed.scheme() != "http" {
     return Err("That audio link is not a download address.".into());
@@ -389,7 +472,13 @@ async fn download_audio(app: tauri::AppHandle, url: String, filename: String) ->
   if !audio_download_host(&parsed) {
     return Err("That audio host cannot be downloaded.".into());
   }
-  let dir = global_media_root(&app)?;
+  let dir = if save_dir.trim().is_empty() {
+    global_media_root(&app)?
+  } else {
+    let chosen = PathBuf::from(save_dir.trim());
+    tokio::fs::create_dir_all(&chosen).await.map_err(|err| err.to_string())?;
+    chosen
+  };
   allow_media_dir(&app, &dir)?;
   let leaf = safe_audio_leaf(&filename);
   let dest = dir.join(&leaf);
@@ -526,6 +615,40 @@ fn allow_media_dir(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
     .map_err(|err| err.to_string())
 }
 
+/// Let the asset protocol play files from a folder chosen on this computer.
+#[tauri::command]
+fn allow_media_folder(app: tauri::AppHandle, path: String) -> Result<bool, String> {
+  let trimmed = path.trim();
+  if trimmed.is_empty() {
+    return Ok(false);
+  }
+  let dir = PathBuf::from(trimmed);
+  if !dir.is_dir() {
+    return Ok(false);
+  }
+  allow_media_dir(&app, &dir)?;
+  Ok(true)
+}
+
+/// True when a clip, audio file, or logo is present, and its folder may play.
+#[tauri::command]
+fn media_file_ready(app: tauri::AppHandle, path: String) -> Result<bool, String> {
+  let trimmed = path.trim();
+  if trimmed.is_empty() {
+    return Ok(false);
+  }
+  let file = PathBuf::from(trimmed);
+  if !file.is_file() {
+    return Ok(false);
+  }
+  if let Some(dir) = file.parent() {
+    if !dir.as_os_str().is_empty() {
+      allow_media_dir(&app, dir)?;
+    }
+  }
+  Ok(true)
+}
+
 fn is_media_leaf(name: &str) -> bool {
   let lower = name.to_ascii_lowercase();
   lower.ends_with(".mp4")
@@ -612,16 +735,124 @@ fn list_global_media(app: tauri::AppHandle, save_dir: String) -> Result<Vec<Glob
   Ok(out)
 }
 
-/// Copy an already-playable file into the global library without transcoding.
+fn walk_media_dir(
+  app: &tauri::AppHandle,
+  dir: &Path,
+  out: &mut Vec<GlobalMediaItem>,
+  seen: &mut HashSet<String>,
+  depth: u32,
+) {
+  if depth > 6 || out.len() > 4000 || !dir.is_dir() || is_drive_root(dir) {
+    return;
+  }
+  let _ = allow_media_dir(app, dir);
+  let Ok(entries) = std::fs::read_dir(dir) else { return };
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.is_dir() {
+      let name = path.file_name().and_then(|leaf| leaf.to_str()).unwrap_or("");
+      if name.starts_with('.') || name == "node_modules" {
+        continue;
+      }
+      walk_media_dir(app, &path, out, seen, depth + 1);
+      continue;
+    }
+    if !path.is_file() {
+      continue;
+    }
+    let Some(name) = path.file_name().and_then(|leaf| leaf.to_str()) else { continue };
+    if !is_media_leaf(name) {
+      continue;
+    }
+    let text = path.to_string_lossy().to_string();
+    if !seen.insert(norm_path(&text)) {
+      continue;
+    }
+    out.push(GlobalMediaItem { name: name.to_string(), path: text });
+  }
+}
+
+/// Media files under a project folder, including subfolders.
 #[tauri::command]
-fn copy_into_global_media(app: tauri::AppHandle, input_path: String) -> Result<String, String> {
+fn list_dir_media(app: tauri::AppHandle, dir: String) -> Result<Vec<GlobalMediaItem>, String> {
+  let mut out = Vec::new();
+  let mut seen = HashSet::new();
+  let root = PathBuf::from(dir.trim());
+  if dir.trim().is_empty() || !root.is_dir() {
+    return Ok(out);
+  }
+  walk_media_dir(&app, &root, &mut out, &mut seen, 0);
+  out.sort_by(|a, b| a.path.len().cmp(&b.path.len()).then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase())));
+  Ok(out)
+}
+
+fn image_leaf(name: &str) -> bool {
+  let lower = name.to_ascii_lowercase();
+  lower.ends_with(".png")
+    || lower.ends_with(".jpg")
+    || lower.ends_with(".jpeg")
+    || lower.ends_with(".gif")
+    || lower.ends_with(".webp")
+    || lower.ends_with(".bmp")
+    || lower.ends_with(".avif")
+}
+
+/// Images and the app's prepared outputs can be connected. Original footage stays unconnected.
+#[tauri::command]
+async fn file_is_prepared(app: tauri::AppHandle, path: String) -> Result<bool, String> {
+  let file = PathBuf::from(path.trim());
+  if path.trim().is_empty() || !file.is_file() {
+    return Ok(false);
+  }
+  let Some(name) = file.file_name().and_then(|leaf| leaf.to_str()) else { return Ok(false) };
+  if image_leaf(name) || name.to_ascii_lowercase().ends_with(".m4a") {
+    return Ok(true);
+  }
+  if !name.to_ascii_lowercase().ends_with(".mp4") {
+    return Ok(false);
+  }
+  let input = file.to_string_lossy().to_string();
+  let Ok(sidecar) = app.shell().sidecar("ffmpeg") else { return Ok(false) };
+  let Ok((mut rx, _child)) = sidecar.args(["-hide_banner", "-i", &input]).spawn() else { return Ok(false) };
+  let mut text = String::new();
+  while let Some(event) = rx.recv().await {
+    match event {
+      CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        if text.len() > 12000 {
+          break;
+        }
+      }
+      CommandEvent::Terminated(_) => break,
+      _ => {}
+    }
+  }
+  let lower = text.to_ascii_lowercase();
+  Ok(lower.contains("video: h264") && lower.contains("1920x1080"))
+}
+
+fn path_inside(path: &Path, root: &Path) -> bool {
+  let file = norm_path(&path.to_string_lossy());
+  let base = norm_path(&root.to_string_lossy());
+  !base.is_empty() && (file == base || file.starts_with(&format!("{base}/")))
+}
+
+/// Copy an already-playable file. A save dir keeps it there and does not copy it into the private library.
+#[tauri::command]
+fn copy_into_global_media(app: tauri::AppHandle, input_path: String, save_dir: String) -> Result<String, String> {
   let input = absolute_sanitized(Path::new(input_path.trim()))?;
   if !input.is_file() {
     return Err("That file was not found.".into());
   }
-  let dir = global_media_root(&app)?;
+  let dir = if save_dir.trim().is_empty() {
+    global_media_root(&app)?
+  } else {
+    let chosen = PathBuf::from(save_dir.trim());
+    std::fs::create_dir_all(&chosen).map_err(|err| err.to_string())?;
+    chosen
+  };
   allow_media_dir(&app, &dir)?;
-  if input.parent() == Some(dir.as_path()) {
+  if path_inside(&input, &dir) {
     return Ok(input.to_string_lossy().to_string());
   }
   let leaf = input
@@ -1230,12 +1461,17 @@ async fn transcode_media(
   save_dir: String,
   keyint: Option<u32>,
 ) -> Result<String, String> {
-  let _ = save_dir;
   let input = absolute_sanitized(Path::new(input_path.trim()))?;
   if !input.is_file() {
     return Err("That video file was not found.".into());
   }
-  let output_dir = global_media_root(&app)?;
+  let output_dir = if save_dir.trim().is_empty() {
+    global_media_root(&app)?
+  } else {
+    let chosen = PathBuf::from(save_dir.trim());
+    std::fs::create_dir_all(&chosen).map_err(|err| err.to_string())?;
+    chosen
+  };
   let dest = prep_output(&output_dir, &input);
   let output = dest.to_string_lossy().to_string();
   let input_arg = input.to_string_lossy().to_string();
@@ -1373,12 +1609,19 @@ async fn transcode_audio(
   app: tauri::AppHandle,
   job_id: String,
   input_path: String,
+  save_dir: String,
 ) -> Result<String, String> {
   let input = absolute_sanitized(Path::new(input_path.trim()))?;
   if !input.is_file() {
     return Err("That audio file was not found.".into());
   }
-  let output_dir = global_media_root(&app)?;
+  let output_dir = if save_dir.trim().is_empty() {
+    global_media_root(&app)?
+  } else {
+    let chosen = PathBuf::from(save_dir.trim());
+    std::fs::create_dir_all(&chosen).map_err(|err| err.to_string())?;
+    chosen
+  };
   allow_media_dir(&app, &output_dir)?;
   let dest = audio_output(&output_dir, &input);
   let output = dest.to_string_lossy().to_string();
@@ -1526,6 +1769,10 @@ pub fn run() {
       fetch_stock_json,
       download_video,
       download_audio,
+      default_documents_dir,
+      default_downloads_dir,
+      create_project_folder,
+      ensure_folder,
       default_stock_dir,
       default_recordings_dir,
       open_folder,
@@ -1538,7 +1785,11 @@ pub fn run() {
       stage_prep_bytes,
       stage_prep_discard,
       global_media_dir,
+      allow_media_folder,
+      media_file_ready,
       list_global_media,
+      list_dir_media,
+      file_is_prepared,
       copy_into_global_media,
       delete_global_media,
       transcode_media,

@@ -166,14 +166,18 @@ async function importPrepared() {
   noteGlobalSave();
 }
 
-async function resolveSaveDir(ensureStockDir) {
+let ensurePreparedDir = async () => '';
+
+async function resolveSaveDir(ensureSaveDir) {
+  const chosen = await ensureSaveDir();
+  if (chosen) return chosen;
   if (IS_TAURI) {
     try {
       const dir = await invoke('global_media_dir');
       if (dir) return dir;
-    } catch { /* the stock folder is the fallback */ }
+    } catch { /* the private folder is only a fallback when no project folder exists */ }
   }
-  return ensureStockDir();
+  return '';
 }
 
 let libraryRef = null;
@@ -195,7 +199,8 @@ async function bypassDirect(job) {
   }
   try {
     if (job.path && IS_TAURI) {
-      const saved = await invoke('copy_into_global_media', { inputPath: job.path });
+      const saveDir = await ensurePreparedDir();
+      const saved = await invoke('copy_into_global_media', { inputPath: job.path, saveDir });
       job.settled = true;
       setPercent(job, 100);
       paintJob(job, 'Saved to Media Manager', 'done');
@@ -259,7 +264,7 @@ async function runJob(job, ensureStockDir, showToast) {
     let output;
     try {
       output = job.audio
-        ? await invoke('transcode_audio', { jobId: job.id, inputPath })
+        ? await invoke('transcode_audio', { jobId: job.id, inputPath, saveDir })
         : await invoke('transcode_media', {
           jobId: job.id,
           inputPath,
@@ -316,7 +321,7 @@ function enqueue(name, path, file, ensureStockDir, showToast, options = {}) {
 }
 
 export function queueMediaPrep(name, path, file, options = {}) {
-  enqueue(name, path, file, async () => '', prepShowToast || (() => {}), options);
+  enqueue(name, path, file, ensurePreparedDir, prepShowToast || (() => {}), options);
 }
 
 export function queueAudioPrep(name, path, file, { play = false } = {}) {
@@ -333,12 +338,13 @@ export function queueAudioPrep(name, path, file, { play = false } = {}) {
   const job = addJob(name, path, file);
   job.audio = true;
   job.play = !!play;
-  pump(async () => '', prepShowToast || (() => {}));
+  pump(ensurePreparedDir, prepShowToast || (() => {}));
 }
 
 export function bindMediaPrep({ library, ensureStockDir, showToast }) {
   libraryRef = library;
   prepShowToast = showToast;
+  ensurePreparedDir = ensureStockDir;
   const zone = $('prep-drop');
   const allow = (event) => {
     event.preventDefault();

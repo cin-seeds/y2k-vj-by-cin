@@ -16,6 +16,7 @@ const MASTER_OUTPUT = 'master-output';
 const PROJECTION_SCREEN = 'projection-screen';
 const MIRROR_CHANNEL = 'vj-output-mirror';
 const OUTPUT_URL_TYPE = 'vj-output-url';
+const OUTPUT_CLOSE_TYPE = 'vj-output-close';
 // Same string as windows[0].additionalBrowserArgs in src-tauri/tauri.conf.json.
 const DESK_BROWSER_ARGS = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --autoplay-policy=no-user-gesture-required --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows';
 
@@ -149,6 +150,22 @@ export class OutputWindow {
     this.channel = null;
     this.unlistenResize = null;
     this.lastBlockMessage = '';
+    this.#channel().addEventListener('message', (event) => {
+      if (event.data?.type !== OUTPUT_CLOSE_TYPE) return;
+      this.close();
+    });
+  }
+
+  /** Close the projector. The desk stays open and the output button turns off. */
+  async close() {
+    if (this.native) await this.#closeNative();
+    else if (this.win && !this.win.closed) {
+      try { this.win.close(); } catch { /* already gone */ }
+      this.win = null;
+      this.outCanvas = null;
+      this.outCtx = null;
+    }
+    window.dispatchEvent(new CustomEvent('vj-output-closed'));
   }
 
   #closingNative = false;

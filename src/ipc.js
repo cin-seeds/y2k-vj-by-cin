@@ -7,7 +7,12 @@ function browserStub(command) {
   console.warn(`${command} needs the desktop app.`);
   switch (command) {
     case 'list_global_media':
+    case 'list_dir_media':
       return [];
+    case 'file_is_prepared':
+    case 'allow_media_folder':
+    case 'media_file_ready':
+      return false;
     case 'picture_recv_sources':
       return { ndi: [], spout: [], local: '' };
     case 'picture_recv_watch':
@@ -22,6 +27,10 @@ function browserStub(command) {
       return { deleted: false, uses: [] };
     case 'default_stock_dir':
     case 'default_recordings_dir':
+    case 'default_documents_dir':
+    case 'default_downloads_dir':
+    case 'create_project_folder':
+    case 'ensure_folder':
     case 'open_folder':
     case 'write_binary_file':
     case 'global_media_dir':

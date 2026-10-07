@@ -2,6 +2,8 @@
 // timeline markers. Clips stay in the pool. The timeline only stores which
 // scene starts on which bar.
 
+import { coercePacks, seedPacks } from '../audio/packs.js';
+
 const STORAGE_KEY = 'vj.project';
 
 const emptyTransport = () => ({
@@ -63,6 +65,7 @@ export class ProjectState {
     this.desk = null;
     this.view = null;
     this.name = '';
+    this.packs = seedPacks();
     this.#load();
   }
 
@@ -84,6 +87,7 @@ export class ProjectState {
       desk: this.desk,
       view: this.view,
       name: this.name,
+      packs: this.packs,
     };
   }
 
@@ -120,6 +124,11 @@ export class ProjectState {
 
   setCompositions(next) {
     this.compositions = normalizeCompositions(next);
+    this.#write();
+  }
+
+  setPacks(packs) {
+    this.packs = Array.isArray(packs) ? coercePacks(packs) : seedPacks();
     this.#write();
   }
 
@@ -160,6 +169,7 @@ export class ProjectState {
     this.desk = doc.desk;
     this.view = doc.view;
     this.name = doc.name;
+    this.packs = doc.packs;
     this.#write();
     return doc;
   }
@@ -176,6 +186,7 @@ export class ProjectState {
     this.desk = null;
     this.view = null;
     this.name = '';
+    this.packs = seedPacks();
     this.#write();
   }
 
@@ -207,6 +218,8 @@ export class ProjectState {
         this.desk = doc.desk;
         this.view = doc.view;
         this.name = doc.name;
+        this.packs = doc.packs;
+        if (!Object.prototype.hasOwnProperty.call(raw, 'packs')) this.#write();
         return;
       }
     } catch { /* fall through to the older keys */ }
@@ -231,6 +244,7 @@ export class ProjectState {
     this.desk = doc.desk;
     this.view = doc.view;
     this.name = doc.name;
+    this.packs = doc.packs;
     this.#write();
   }
 }
@@ -393,6 +407,7 @@ export function coerceDocument(data = {}) {
     desk: normalizeDesk(data.desk),
     view: normalizeView(data.view),
     name: normalizeProjectName(data.name),
+    packs: coercePacks(data.packs),
     legacy: data,
     ...routesFromDocument(data),
   };

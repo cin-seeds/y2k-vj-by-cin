@@ -86,10 +86,41 @@ function categoryPad(kind, x, ctx) {
   };
 }
 
+function shiftCompositionPad(note, ctx) {
+  const bottom = [
+    ['C1', () => ctx.recallComp?.(0)],
+    ['C2', () => ctx.recallComp?.(1)],
+    ['C3', () => ctx.recallComp?.(2)],
+    ['Shuffle', () => ctx.shuffleLayer?.()],
+    ['Clear', () => ctx.clearComposition?.()],
+    ['Still', () => ctx.launchPack?.('still')],
+    ['Push', () => ctx.launchPack?.('push')],
+    ['Hit', () => ctx.launchPack?.('hit')],
+  ];
+  if (note < 8) return amberPad(bottom[note][0], bottom[note][1]);
+  const stack = (ctx.stacks || [])[note - 8];
+  if (!stack) return amberPad('—', null);
+  return amberPad(stack.name, () => ctx.applyStack?.(stack.id));
+}
+
+function amberPad(name, apply) {
+  return {
+    tag: '⇧',
+    name,
+    empty: false,
+    on: false,
+    color: '',
+    led: LED.amber,
+    hold: false,
+    apply,
+  };
+}
+
 /** What one grid pad does on the current page and bank, plus the LED it should show. */
 export function describePad(note, page, ctx) {
   const x = note % 8;
   const y = Math.floor(note / 8);
+  if (ctx.shift && note < 15) return shiftCompositionPad(note, ctx);
   if (page === 0) {
     const index = ctx.bank * 64 + note;
     const scene = ctx.scenes[index];

@@ -11,6 +11,9 @@ import xfadeFrag from './shaders/xfade.frag?raw';
 import stingFrag from './shaders/sting.frag?raw';
 
 import { LAYERS, LAYER_DEFS, MODE_LABELS, SHADER_KEY_MODES, ParamStore, layerParam, neutralOf } from './params.js';
+import { START_STACKS, applyStart, clearComposition } from './ui/compStarts.js';
+import { seedPacks } from './audio/packs.js';
+import { mountAudioPacks, refreshAudioPacks, tickAudioPacks } from './ui/audioPacks.js';
 import { createParamHistory } from './history/ParamHistory.js';
 import { ENGINE_FX, ENGINE_PARTICLES } from './engines/constants.js';
 import { liveFormulaModel, liveStackModel } from './ui/liveCode.js';
@@ -1156,6 +1159,11 @@ function refreshLibraryUi() {
     }
     card.querySelector('.media-name').textContent = name;
     card.querySelector('.media-name').title = name;
+    if (mediaHydrated && !audioFile && !library.has(name)) {
+      card.classList.add('is-missing');
+      card.querySelector('.media-name').textContent = `(missing) ${name}`;
+      card.querySelector('.media-name').title = `${name} is missing from the Media Library folder`;
+    }
     const badges = card.querySelector('.media-badges');
     for (const id of used) {
       const mark = document.createElement('i');
@@ -1365,6 +1373,13 @@ function libraryName(clip) {
 
 const STOCK_DIR_KEY = 'vj.stockDir';
 const RECORD_DIR_KEY = 'vj.recordDir';
+const LIBRARY_DIR_KEY = 'vj.libraryDir';
+const PROJECT_ROOT_KEY = 'vj.projectRoot';
+const PROJECT_ROOT_ASKED = 'vj.projectRootAsked';
+const PROJECT_ROOT_LABEL = 'vj.projectRootLabel';
+const ROOT_HANDLE_DB = 'vj-folders';
+const ROOT_HANDLE_STORE = 'handles';
+const SOURCE_DIR_KEY = 'vj.sourceDir';
 let toastTimer = 0;
 
 function showToast(text, isError = false) {
@@ -1390,7 +1405,20 @@ function paintRecordDir(path) {
   input.title = path || 'Recordings folder';
 }
 
-async function ensureStockDir() {
+function paintLibraryDir(path, chosen) {
+  const input = $('media-library-dir');
+  if (!input) return;
+  input.value = path || '';
+  input.title = chosen ? (path || 'Media Library folder') : (path ? `${path} (app media folder)` : 'App media folder');
+}
+
+async function ensureStockDir({ create = false } = {}) {
+  const projectStock = await ensureNamedChild('Stock', { create });
+  if (projectStock) {
+    try { localStorage.setItem(STOCK_DIR_KEY, projectStock); } catch { /* private mode */ }
+    paintStockDir(projectStock);
+    return projectStock;
+  }
   let saved = '';
   try { saved = localStorage.getItem(STOCK_DIR_KEY)?.trim() || ''; } catch { saved = ''; }
   if (saved) {
@@ -1407,7 +1435,13 @@ async function ensureStockDir() {
   return dir;
 }
 
-async function ensureRecordDir() {
+async function ensureRecordDir({ create = false } = {}) {
+  const projectRecordings = await ensureNamedChild('Recordings', { create });
+  if (projectRecordings) {
+    try { localStorage.setItem(RECORD_DIR_KEY, projectRecordings); } catch { /* private mode */ }
+    paintRecordDir(projectRecordings);
+    return projectRecordings;
+  }
   let saved = '';
   try { saved = localStorage.getItem(RECORD_DIR_KEY)?.trim() || ''; } catch { saved = ''; }
   if (saved) {
@@ -1421,6 +1455,236 @@ async function ensureRecordDir() {
   const dir = await invoke('default_recordings_dir');
   try { localStorage.setItem(RECORD_DIR_KEY, dir); } catch { /* private mode */ }
   paintRecordDir(dir);
+  return dir;
+}
+
+function savedLibraryDir() {
+  try { return localStorage.getItem(LIBRARY_DIR_KEY)?.trim() || ''; } catch { return ''; }
+}
+
+async function mediaLibraryRoot() {
+  const saved = savedLibraryDir();
+  if (saved) return saved;
+  return ensureGlobalMediaRoot();
+}
+
+function paintProjectRoot(path, chosen) {
+  const input = $('project-root-dir');
+  if (!input) return;
+  input.value = path || '';
+  input.title = chosen ? (path || 'New projects folder') : (path ? `${path} (Documents)` : 'Documents');
+}
+
+function savedProjectRoot() {
+  try { return localStorage.getItem(PROJECT_ROOT_KEY)?.trim() || ''; } catch { return ''; }
+}
+
+function savedProjectRootLabel() {
+  try { return localStorage.getItem(PROJECT_ROOT_LABEL)?.trim() || ''; } catch { return ''; }
+}
+
+let projectRootHandle = null;
+
+function openRootHandleDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(ROOT_HANDLE_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(ROOT_HANDLE_STORE)) {
+        request.result.createObjectStore(ROOT_HANDLE_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveRootHandle(handle) {
+  projectRootHandle = handle || null;
+  try {
+    const db = await openRootHandleDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(ROOT_HANDLE_STORE, 'readwrite');
+      const store = tx.objectStore(ROOT_HANDLE_STORE);
+      if (handle) store.put(handle, 'projectRoot');
+      else store.delete('projectRoot');
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch { /* private mode or a browser that cannot store a folder */ }
+}
+
+async function loadRootHandle() {
+  if (projectRootHandle) return projectRootHandle;
+  try {
+    const db = await openRootHandleDb();
+    const handle = await new Promise((resolve, reject) => {
+      const tx = db.transaction(ROOT_HANDLE_STORE, 'readonly');
+      const request = tx.objectStore(ROOT_HANDLE_STORE).get('projectRoot');
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    projectRootHandle = handle || null;
+    return projectRootHandle;
+  } catch {
+    return null;
+  }
+}
+
+async function browserProjectRoot() {
+  const handle = await loadRootHandle();
+  if (!handle?.queryPermission) return null;
+  let state = 'prompt';
+  try { state = await handle.queryPermission({ mode: 'readwrite' }); } catch { return null; }
+  if (state !== 'granted') {
+    try { state = await handle.requestPermission({ mode: 'readwrite' }); } catch { return null; }
+  }
+  return state === 'granted' ? handle : null;
+}
+
+function cleanBrowserProjectName(name) {
+  const folded = String(name || '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+|\.+$/g, '');
+  const base = folded.slice(0, 48).trim().replace(/\.+$/g, '');
+  return base || 'Untitled';
+}
+
+async function writeBrowserProject(root, data) {
+  const title = cleanBrowserProjectName(projectTitle());
+  let leaf = `Y2K-VJ-${title}`;
+  let stem = title;
+  let n = 2;
+  while (n < 100) {
+    try {
+      await root.getDirectoryHandle(leaf);
+      leaf = `Y2K-VJ-${title}-${n}`;
+      stem = `${title}-${n}`;
+      n += 1;
+    } catch (err) {
+      if (err?.name === 'NotFoundError') break;
+      throw err;
+    }
+  }
+  if (n >= 100) throw new Error('That project name is already used.');
+  const folder = await root.getDirectoryHandle(leaf, { create: true });
+  for (const sub of ['Recordings', 'Stock', 'Source']) {
+    await folder.getDirectoryHandle(sub, { create: true });
+  }
+  const file = await folder.getFileHandle(`${stem}.vjproj`, { create: true });
+  const writable = await file.createWritable();
+  await writable.write(JSON.stringify(data, null, 2));
+  await writable.close();
+}
+
+async function ensureProjectRoot() {
+  const saved = savedProjectRoot();
+  if (saved) return saved;
+  if (!isTauri()) return '';
+  try { return (await invoke('default_documents_dir')) || ''; } catch { return ''; }
+}
+
+async function ensureProjectRootDir() {
+  const saved = savedProjectRoot();
+  if (saved) {
+    paintProjectRoot(saved, true);
+    return saved;
+  }
+  const label = savedProjectRootLabel();
+  if (label) {
+    paintProjectRoot(label, true);
+    return '';
+  }
+  const dir = await ensureProjectRoot();
+  paintProjectRoot(dir, false);
+  return dir;
+}
+
+function projectHome(projectPath) {
+  return String(projectPath || '').replace(/[/\\][^/\\]+$/, '');
+}
+
+function projectChild(projectPath, name) {
+  const home = projectHome(projectPath);
+  if (!home) return '';
+  const sep = String(projectPath).includes('\\') ? '\\' : '/';
+  return `${home}${sep}${name}`;
+}
+
+function openedProjectFile() {
+  return openProjectPath || currentProjectPath() || '';
+}
+
+function isNamedProjectFolder(projectPath) {
+  const leaf = projectHome(projectPath).split(/[\\/]/).pop() || '';
+  return /^Y2K-VJ-/i.test(leaf);
+}
+
+function currentSourceDir() {
+  const path = openedProjectFile();
+  if (path) return projectChild(path, 'Source');
+  try { return localStorage.getItem(SOURCE_DIR_KEY)?.trim() || ''; } catch { return ''; }
+}
+
+async function adoptProjectFolders(projectPath) {
+  if (!isTauri() || !projectPath || !projectHome(projectPath)) return;
+  const stock = projectChild(projectPath, 'Stock');
+  const recordings = projectChild(projectPath, 'Recordings');
+  const source = projectChild(projectPath, 'Source');
+  await invoke('ensure_folder', { path: stock }).catch(() => {});
+  await invoke('ensure_folder', { path: recordings }).catch(() => {});
+  await invoke('ensure_folder', { path: source }).catch(() => {});
+  try {
+    localStorage.setItem(STOCK_DIR_KEY, stock);
+    localStorage.setItem(RECORD_DIR_KEY, recordings);
+    localStorage.setItem(SOURCE_DIR_KEY, source);
+  } catch { /* private mode */ }
+  paintStockDir(stock);
+  paintRecordDir(recordings);
+}
+
+async function createNewProjectFile() {
+  if (!isTauri()) return '';
+  const root = await ensureProjectRoot();
+  if (!root) return '';
+  const path = await invoke('create_project_folder', { root, name: projectTitle() });
+  if (!path) return '';
+  rememberProjectPath(path);
+  openProjectPath = path;
+  await adoptProjectFolders(path);
+  return path;
+}
+
+async function ensureNamedChild(which, { create = false } = {}) {
+  let path = currentProjectPath() || openProjectPath;
+  if (isTauri() && create && !path) {
+    try { path = await createNewProjectFile(); } catch { path = ''; }
+  }
+  if (!path || !projectHome(path)) return '';
+  const child = projectChild(path, which);
+  const dir = await invoke('ensure_folder', { path: child }).catch(() => child);
+  return dir || child;
+}
+
+async function ensureSourceDir() {
+  const dir = await ensureNamedChild('Source', { create: true });
+  if (dir) {
+    try { localStorage.setItem(SOURCE_DIR_KEY, dir); } catch { /* private mode */ }
+  }
+  return dir;
+}
+
+async function ensureLibraryDir() {
+  const saved = savedLibraryDir();
+  if (saved) {
+    paintLibraryDir(saved, true);
+    return saved;
+  }
+  const dir = await mediaLibraryRoot();
+  paintLibraryDir(dir, false);
   return dir;
 }
 
@@ -1457,7 +1721,7 @@ async function writeBinaryFile(dir, filename, blob) {
 
 async function saveRecordingFile(blob, filename) {
   if (!isTauri()) return false;
-  const dir = await ensureRecordDir();
+  const dir = await ensureRecordDir({ create: true });
   if (!dir) return false;
   const path = await writeBinaryFile(dir, filename, blob);
   showToast(`Recording saved to ${path || dir}`);
@@ -1474,7 +1738,7 @@ async function fileFromStock(clip, onPhase) {
   const filename = libraryName(clip);
   const type = /\.webm$/i.test(filename) ? 'video/webm' : 'video/mp4';
   if (IS_TAURI) {
-    const saveDir = await ensureStockDir();
+    const saveDir = await ensureStockDir({ create: true });
     const { convertFileSrc } = await import('@tauri-apps/api/core');
     const path = await invoke('download_video', { url: clip.videoUrl, filename, saveDir });
     onPhase?.('Transcoding...');
@@ -1807,6 +2071,8 @@ function applySceneRouting(routing) {
 
 const BIN_SPLIT = 'vj.mediaBinSplit';
 let mediaHydrated = false;
+let openProjectPath = '';
+const clipSourcePaths = new Map();
 
 function mediaKind(name) {
   if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) return 'image';
@@ -1865,7 +2131,8 @@ function addToBin(entry) {
   if (!name) return false;
   if (project.mediaPool.some((item) => item.name === name)) return false;
   const rawPath = typeof entry.path === 'string' ? entry.path : '';
-  const path = rawPath && isTauri() ? libraryReference(name) : rawPath;
+  if (rawPath && absoluteMediaPath(rawPath)) clipSourcePaths.set(name, rawPath);
+  const path = poolPathFor(name, rawPath);
   project.setMediaPool(project.mediaPool.concat([{
     id: name,
     name,
@@ -1905,12 +2172,17 @@ async function removeFromBin(name) {
 async function hydrateProjectMedia() {
   await library.ensureCached(project.mediaPool.map((item) => item.name));
   if (!isTauri()) return;
+  const root = await mediaLibraryRoot();
+  if (root) await allowLibraryFolder(root);
   await ensureGlobalMediaRoot();
   const { convertFileSrc } = await import('@tauri-apps/api/core');
+  const projectPath = openProjectPath || currentProjectPath();
   for (const item of project.mediaPool) {
     if (item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
-    const path = resolveLibraryPath(item.path);
+    const path = await resolveProjectMediaPath(item.path, projectPath);
     if (!path || !absoluteMediaPath(path) || library.has(item.name)) continue;
+    const ready = await mediaFileReady(path);
+    if (!ready) continue;
     library.addRemote({ name: item.name, url: convertFileSrc(path) });
   }
 }
@@ -2397,7 +2669,55 @@ function paintCompositions() {
   });
 }
 
+function showStackMenu(select) {
+  for (const opt of select.options) {
+    if (!opt.value) {
+      opt.textContent = 'None';
+      continue;
+    }
+    opt.textContent = opt.dataset.label || opt.textContent;
+  }
+}
+
+function paintStackFace(select) {
+  const current = select.value;
+  for (const opt of select.options) {
+    if (!opt.value) {
+      opt.textContent = 'Stacks';
+      continue;
+    }
+    const label = opt.dataset.label || opt.textContent;
+    opt.textContent = opt.value === current ? `Stacks: ${label}` : label;
+  }
+  const chosen = current ? select.selectedOptions[0]?.dataset.label : '';
+  select.title = chosen
+    ? `Stacks: ${chosen}. Write this stack onto the live layers. One undo step.`
+    : 'Write a built-in stack onto the live layers. One undo step. Clips, mixes, BPM, Code, and the screensaver stay.';
+}
+
 function mountCompositions() {
+  const starts = $('comp-starts');
+  if (starts && !starts.dataset.bound) {
+    starts.dataset.bound = '1';
+    paintStackFace(starts);
+    const openMenu = () => showStackMenu(starts);
+    starts.addEventListener('pointerdown', openMenu);
+    starts.addEventListener('focus', openMenu);
+    starts.addEventListener('blur', () => paintStackFace(starts));
+    starts.addEventListener('change', () => {
+      const stack = START_STACKS.find((item) => item.id === starts.value);
+      if (stack) applyStart(params, stack, {
+        setSpeed: (speed) => setMasterSpeed(speed, { history: 'commit' }),
+        mods,
+        lfo,
+        sync: () => panel.refreshAutomation(),
+      });
+      paintStackFace(starts);
+    });
+    $('comp-clear')?.addEventListener('click', () => {
+      clearComposition(params, (speed) => setMasterSpeed(speed, { history: 'commit' }));
+    });
+  }
   const host = $('comp-slot-host');
   if (!host || host.querySelector('.comp-slot')) return;
   const row = host.querySelector('.comp-slots') || document.createElement('div');
@@ -2469,13 +2789,71 @@ function mountCompositions() {
         paintCompositions();
       }, 'commit');
     });
-    if (shuffle && shuffle.parentElement === row) row.insertBefore(btn, shuffle);
+    const tools = row.querySelector('.comp-tool-row');
+    if (tools) row.insertBefore(btn, tools);
+    else if (shuffle && shuffle.parentElement === row) row.insertBefore(btn, shuffle);
     else row.append(btn);
   });
   if (!row.parentElement) host.append(row);
   paintCompositions();
 }
 mountCompositions();
+
+function launchPack(slot, packOverride) {
+  const pack = packOverride || (project.packs || []).find((item) => item.assign === slot);
+  if (!pack) return;
+  params.history.group(() => {
+    const speedBefore = masterSpeed;
+    const before = params.snapshot();
+    const mediaBefore = Object.fromEntries(LAYERS.map((id) => [id, mediaSnap(id)]));
+    const sceneName = (pack.scene || '').trim();
+    const scene = sceneName ? scenes.scenes.find((item) => item.name === sceneName) : null;
+    if (scene) scenes.launch(scene.id, 0);
+    const mid = params.snapshot();
+    for (const id of Object.keys(mid)) {
+      if (before[id] !== mid[id]) params.history.note(id, before[id], mid[id], 'commit');
+    }
+    if (masterSpeed !== speedBefore) {
+      params.history.edit('speed', speedBefore, masterSpeed, (v) => setMasterSpeed(v), 'commit');
+    }
+    for (const id of LAYERS) {
+      const now = mediaSnap(id);
+      const prev = mediaBefore[id];
+      if (now.key !== prev.key || now.mirror !== prev.mirror) {
+        params.history.edit(`media:${id}`, prev, now, (m) => {
+          setLayerMedia(id, m.key, { mirror: m.mirror });
+        }, 'commit');
+      }
+    }
+    applyStart(params, pack, {
+      setSpeed: (speed) => setMasterSpeed(speed, { history: 'commit' }),
+      mods,
+      lfo,
+      sync: () => panel.refreshAutomation(),
+    });
+    for (const id of LAYERS) {
+      const clip = (pack[id]?.clip || '').trim();
+      if (!clip) continue;
+      const prev = mediaSnap(id);
+      const key = clipKey(clip);
+      if (prev.key === key) continue;
+      const next = { key, mirror: prev.mirror };
+      params.history.edit(`media:${id}`, prev, next, (m) => {
+        setLayerMedia(id, m.key, { mirror: m.mirror });
+      }, 'commit');
+      setLayerMedia(id, key, { mirror: prev.mirror });
+    }
+  });
+}
+
+mountAudioPacks({
+  project,
+  params,
+  launch: launchPack,
+  sceneNames: () => scenes.scenes.map((scene) => scene.name).filter(Boolean),
+  clipNames: () => (project.mediaPool || []).map((item) => item.name).filter(Boolean),
+  desk: () => ({ params, mods, layers, audible: (id) => bus.audible(id) }),
+});
 
 function setBrandScale(value) {
   const next = Math.min(220, Math.max(40, Math.round(Number(value) || 100)));
@@ -2843,6 +3221,7 @@ const diag = new Diagnostics($('diag-panel'), (item) => {
 });
 const LIBRARY_FOLD_KEY = 'vj.accLeft';
 const LIBRARY_FOLDS = [
+  ['acc-packs', false],
   ['diag-panel', false],
   ['acc-media', false],
   ['acc-audio', false],
@@ -3382,6 +3761,176 @@ function isLibraryReference(path) {
   return normMediaPath(path).startsWith('library/');
 }
 
+function projectBundlePath(path) {
+  return /^[^/]+\.media\//.test(normMediaPath(path));
+}
+
+function safeRelative(path) {
+  const rel = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!rel || absoluteMediaPath(rel)) return '';
+  if (rel.split('/').some((part) => !part || part === '.' || part === '..')) return '';
+  return rel;
+}
+
+function joinLibraryPath(root, rel) {
+  const clean = safeRelative(rel);
+  const base = String(root || '').replace(/[\\/]+$/, '');
+  if (!base || !clean) return '';
+  const sep = base.includes('\\') ? '\\' : '/';
+  return `${base}${sep}${clean.replace(/\//g, sep)}`;
+}
+
+function relativeToLibrary(root, file) {
+  if (!isInsideGlobalLibrary(file, root)) return '';
+  const parts = String(file).replace(/\\/g, '/').split('/');
+  const rootParts = String(root).replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+  if (parts.length <= rootParts.length) return '';
+  return safeRelative(parts.slice(rootParts.length).join('/'));
+}
+
+function sameFolder(a, b) {
+  return !!a && !!b && normMediaPath(a) === normMediaPath(b);
+}
+
+function keepLibraryReference(path, name) {
+  const raw = String(path || '').replace(/\\/g, '/');
+  const at = raw.toLowerCase().indexOf('library/');
+  const rest = at >= 0 ? safeRelative(raw.slice(at + 'library/'.length)) : '';
+  return rest ? `library/${rest}` : libraryReference(name || path);
+}
+
+function peeledProjectRelative(path) {
+  const raw = String(path || '').replace(/\\/g, '/');
+  const match = raw.match(/(?:^|\/)((?:Source|Stock|Recordings)\/.+)$/i);
+  if (!match) return '';
+  const rest = match[1];
+  const slash = rest.indexOf('/');
+  const head = rest.slice(0, slash);
+  const tail = rest.slice(slash + 1);
+  const canon = /^stock$/i.test(head) ? 'Stock' : /^recordings$/i.test(head) ? 'Recordings' : 'Source';
+  return safeRelative(`${canon}/${tail}`);
+}
+
+function relativeToProject(projectPath, file) {
+  const home = projectHome(projectPath);
+  if (!home || !file || !isInsideGlobalLibrary(file, home)) return '';
+  const parts = String(file).replace(/\\/g, '/').split('/');
+  const rootParts = home.replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+  if (parts.length <= rootParts.length) return '';
+  return safeRelative(parts.slice(rootParts.length).join('/'));
+}
+
+function poolPathFor(name, rawPath) {
+  if (!rawPath || !isTauri()) return rawPath || '';
+  if (isLibraryReference(rawPath)) return keepLibraryReference(rawPath, name);
+  const beside = openedProjectFile();
+  if (beside) {
+    const peeled = peeledProjectRelative(rawPath);
+    if (peeled) return peeled;
+    if (absoluteMediaPath(rawPath)) {
+      const rel = relativeToProject(beside, rawPath);
+      if (rel) return rel;
+    }
+  }
+  const chosen = savedLibraryDir() || globalMediaRoot;
+  if (absoluteMediaPath(rawPath) && chosen) {
+    const rel = relativeToLibrary(chosen, rawPath);
+    if (rel) return rel;
+  }
+  if (absoluteMediaPath(rawPath) && globalMediaRoot && isInsideGlobalLibrary(rawPath, globalMediaRoot)) {
+    if (savedLibraryDir() && !sameFolder(savedLibraryDir(), globalMediaRoot)) return libraryReference(name);
+    return relativeToLibrary(globalMediaRoot, rawPath) || libraryReference(name);
+  }
+  if (!absoluteMediaPath(rawPath)) return safeRelative(rawPath);
+  return '';
+}
+
+async function allowLibraryFolder(path) {
+  if (!path || !isTauri()) return false;
+  try { return await invoke('allow_media_folder', { path }) === true; } catch { return false; }
+}
+
+async function mediaFileReady(path) {
+  if (!path || !isTauri()) return false;
+  try { return await invoke('media_file_ready', { path }) === true; } catch { return false; }
+}
+
+async function resolveProjectMediaPath(stored, projectPath = '') {
+  const path = String(stored || '').trim();
+  if (!path) return '';
+  if (isLibraryReference(path)) {
+    await ensureGlobalMediaRoot();
+    return resolveLibraryPath(path);
+  }
+  const home = projectPath || openedProjectFile();
+  if (home) {
+    const rel = absoluteMediaPath(path) ? peeledProjectRelative(path) : safeRelative(path);
+    if (rel && (projectBundlePath(rel) || /^(Source|Stock|Recordings)\//.test(rel))) {
+      return projectDirJoin(home, rel);
+    }
+    if (!absoluteMediaPath(path)) {
+      const plain = safeRelative(path);
+      if (plain && projectBundlePath(plain)) return projectDirJoin(home, plain);
+    }
+    if (absoluteMediaPath(path)) {
+      const inside = relativeToProject(home, path);
+      if (inside) return projectDirJoin(home, inside);
+      return '';
+    }
+    return '';
+  }
+  if (absoluteMediaPath(path)) return path;
+  if (projectBundlePath(path)) return projectPath ? projectDirJoin(projectPath, path) : '';
+  const root = await mediaLibraryRoot();
+  if (!root) return '';
+  return joinLibraryPath(root, path);
+}
+
+function savedMediaPath(projectPath, stored, absoluteHint = '') {
+  const path = String(stored || '').trim();
+  if (isLibraryReference(path)) return keepLibraryReference(path, path);
+  const peeled = peeledProjectRelative(path) || peeledProjectRelative(absoluteHint);
+  if (peeled) return peeled;
+  const home = projectPath || openedProjectFile();
+  if (home) {
+    const beside = relativeToProject(home, absoluteHint) || relativeToProject(home, path);
+    if (beside) return beside;
+  }
+  if (path && !absoluteMediaPath(path)) {
+    const rel = safeRelative(path);
+    if (rel && !absoluteMediaPath(rel)) return rel;
+  }
+  return '';
+}
+
+async function libraryStoredPath(stored, name, projectPath, absoluteHint = '') {
+  const path = String(stored || '').trim();
+  if (isLibraryReference(path)) return keepLibraryReference(path, name);
+  const kept = savedMediaPath(projectPath, path, absoluteHint);
+  if (kept) return kept;
+  const home = projectPath || openedProjectFile();
+  if (home && (absoluteMediaPath(path) || absoluteMediaPath(absoluteHint))) return '';
+  const root = await mediaLibraryRoot();
+  const globalRoot = await ensureGlobalMediaRoot();
+  let abs = '';
+  if (absoluteMediaPath(path)) abs = path;
+  else if (absoluteHint && absoluteMediaPath(absoluteHint)) abs = absoluteHint;
+  else if (path && projectBundlePath(path) && projectPath) abs = projectDirJoin(projectPath, path);
+  else if (path && root) abs = joinLibraryPath(root, path);
+  if (abs && root && isInsideGlobalLibrary(abs, root)) {
+    const rel = relativeToLibrary(root, abs);
+    if (rel) return rel;
+  }
+  if (abs && globalRoot && isInsideGlobalLibrary(abs, globalRoot) && !sameFolder(root, globalRoot)) {
+    return libraryReference(name || abs);
+  }
+  if (path && !absoluteMediaPath(path) && !projectBundlePath(path)) {
+    const rel = safeRelative(path);
+    if (rel) return rel;
+  }
+  return '';
+}
+
 let globalMediaRoot = '';
 
 async function ensureGlobalMediaRoot() {
@@ -3415,6 +3964,8 @@ const PROJECT_CHUNK = 8 * 1024 * 1024;
 
 async function storeProjectAsset(projectPath, leaf, file, sourcePath) {
   if (!IS_TAURI) return '';
+  const beside = savedMediaPath(projectPath, '', sourcePath);
+  if (beside && /^(Source|Stock|Recordings)\//.test(beside)) return beside;
   if (sourcePath && absoluteMediaPath(sourcePath)) {
     try {
       return await invoke('copy_project_asset', { projectPath, sourcePath, leaf });
@@ -3450,90 +4001,316 @@ async function bundleProjectAssets(data, projectPath) {
     const rows = await invoke('list_global_media', { saveDir: '' });
     vault = new Set((Array.isArray(rows) ? rows : []).map((row) => row.name));
   } catch { /* a file we cannot see in the vault is copied beside the project */ }
+  const libraryRoot = await mediaLibraryRoot();
+  const sideRows = await projectSideRows(projectPath);
   for (const item of saved.mediaPool || []) {
     if (!item?.name) continue;
     const path = typeof item.path === 'string' ? item.path : '';
-    const abs = isLibraryReference(path) ? resolveLibraryPath(path) : path;
-    if (isLibraryReference(path) || vault.has(item.name) || isInsideGlobalLibrary(abs, root)) {
-      item.path = libraryReference(item.name);
+    const hint = clipSourcePaths.get(item.name) || '';
+    const stored = await libraryStoredPath(path, item.name, projectPath, hint);
+    if (stored && !absoluteMediaPath(stored)) {
+      item.path = stored;
+      continue;
+    }
+    const side = matchMediaName(sideRows, item.name);
+    const sideRel = side?.path ? savedMediaPath(projectPath, '', side.path) : '';
+    if (sideRel) {
+      item.path = sideRel;
+      continue;
+    }
+    if (vault.has(item.name) && !sideRel) {
+      const leaf = String(item.name).split(/[\\/]/).pop() || item.name;
+      item.path = sameFolder(libraryRoot, root) ? leaf : libraryReference(item.name);
       continue;
     }
     try {
-      const rel = await storeProjectAsset(projectPath, item.name, library.get(item.name), path);
+      const source = absoluteMediaPath(path) ? path : (absoluteMediaPath(hint) ? hint : '');
+      const rel = await storeProjectAsset(projectPath, item.name, library.get(item.name), source);
       if (rel) item.path = rel;
+      else if (absoluteMediaPath(item.path)) item.path = '';
     } catch (err) {
+      if (absoluteMediaPath(item.path)) item.path = '';
       missed.push(item.name);
       console.warn('Could not store project media', item.name, err);
     }
   }
   const audioFileName = saved.desk?.audio?.file || '';
   if (saved.desk?.audio?.mode === 'file' && audioFileName) {
-    try {
-      const audioFile = await library.getAudio(audioFileName);
-      const rel = await storeProjectAsset(projectPath, audioFileName, audioFile, absoluteMediaPath(audioAssetPath) ? audioAssetPath : '');
-      if (rel) saved.desk.audio.path = rel;
-    } catch (err) {
-      missed.push(audioFileName);
-      console.warn('Could not store the audio file', err);
+    const audioPath = saved.desk.audio.path || '';
+    const audioHint = absoluteMediaPath(audioAssetPath) ? audioAssetPath : '';
+    const stored = await libraryStoredPath(audioPath, audioFileName, projectPath, audioHint);
+    const side = matchMediaName(sideRows, audioFileName);
+    const sideRel = side?.path ? savedMediaPath(projectPath, '', side.path) : '';
+    if ((stored && !absoluteMediaPath(stored)) || sideRel) {
+      saved.desk.audio.path = (stored && !absoluteMediaPath(stored)) ? stored : sideRel;
+    } else {
+      try {
+        const audioFile = await library.getAudio(audioFileName);
+        const source = absoluteMediaPath(audioPath) ? audioPath : audioHint;
+        const rel = await storeProjectAsset(projectPath, audioFileName, audioFile, source);
+        if (rel) saved.desk.audio.path = rel;
+        else if (absoluteMediaPath(saved.desk.audio.path)) saved.desk.audio.path = '';
+      } catch (err) {
+        if (absoluteMediaPath(saved.desk.audio.path)) saved.desk.audio.path = '';
+        missed.push(audioFileName);
+        console.warn('Could not store the audio file', err);
+      }
     }
   }
   for (let i = 0; i < 3; i += 1) {
     const row = saved.desk?.logos?.[i];
     const slot = stings.slots[i];
     if (!row || !slot?.cacheKey) continue;
+    const rowPath = row.path || '';
+    const logoHint = absoluteMediaPath(slot.assetPath || '') ? slot.assetPath : '';
     try {
       const file = await library.getBlob(slot.cacheKey);
       const leaf = `logo-${i + 1}-${file?.name || row.name || 'logo'}`;
-      const rel = await storeProjectAsset(projectPath, leaf, file, absoluteMediaPath(slot.assetPath || '') ? slot.assetPath : '');
-      if (rel) row.path = rel;
+      const stored = await libraryStoredPath(rowPath, leaf, projectPath, logoHint);
+      const side = matchMediaName(sideRows, slot.name || row.name || '');
+      const sideRel = side?.path ? savedMediaPath(projectPath, '', side.path) : '';
+      const kept = (stored && !absoluteMediaPath(stored)) ? stored : sideRel;
+      if (kept) {
+        row.path = kept;
+        slot.assetPath = kept;
+        continue;
+      }
+      const source = absoluteMediaPath(rowPath) ? rowPath : logoHint;
+      const rel = await storeProjectAsset(projectPath, leaf, file, source);
+      if (rel) {
+        row.path = rel;
+        slot.assetPath = rel;
+      } else if (absoluteMediaPath(row.path)) row.path = '';
     } catch (err) {
+      if (absoluteMediaPath(row.path)) row.path = '';
       missed.push(row.name || `Logo ${i + 1}`);
       console.warn('Could not store a logo', err);
     }
   }
   if (missed.length) showToast(`Saved the project. These files stayed in the app only: ${missed.join(', ')}`, true);
+  for (const item of saved.mediaPool || []) {
+    if (item) item.path = blankAbsolute(item.path);
+  }
+  if (saved.desk?.audio) saved.desk.audio.path = blankAbsolute(saved.desk.audio.path);
+  for (const row of saved.desk?.logos || []) {
+    if (row) row.path = blankAbsolute(row.path);
+  }
   return saved;
+}
+
+function blankAbsolute(value) {
+  const text = String(value || '').trim().replace(/\\/g, '/');
+  if (!text || absoluteMediaPath(text)) return '';
+  return text;
+}
+
+function wantedProjectNames() {
+  const names = [];
+  const seen = new Set();
+  const add = (name) => {
+    const text = String(name || '').trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) return;
+    seen.add(key);
+    names.push(text);
+  };
+  for (const item of project.mediaPool) {
+    if (!item?.name || item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
+    add(item.name);
+  }
+  add(project.desk?.audio?.file);
+  for (const slot of stings.slots) add(slot?.name);
+  return names;
+}
+
+function matchMediaName(rows, name) {
+  const want = String(name || '').trim().toLowerCase();
+  if (!want) return null;
+  return (rows || []).find((row) => String(row?.name || '').trim().toLowerCase() === want) || null;
+}
+
+async function listFolderMedia(dir) {
+  if (!dir || !isTauri()) return [];
+  try {
+    const rows = await invoke('list_dir_media', { dir });
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+async function projectSideRows(projectPath) {
+  const rows = [];
+  for (const name of ['Source', 'Stock']) {
+    const dir = projectChild(projectPath, name);
+    if (!(await allowLibraryFolder(dir))) continue;
+    rows.push(...await listFolderMedia(dir));
+  }
+  return rows;
+}
+
+async function connectFoundFile(name, filePath) {
+  if (!name || !filePath) return;
+  const ready = await mediaFileReady(filePath);
+  if (!ready) return;
+  const audioName = project.desk?.audio?.file || '';
+  if (audioName && audioName.toLowerCase() === name.toLowerCase()) {
+    const { convertFileSrc } = await import('@tauri-apps/api/core');
+    const res = await fetch(convertFileSrc(filePath));
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const stored = project.desk?.audio?.path || '';
+    const beside = besideStoredPath(openedProjectFile(), filePath);
+    audioAssetPath = stored && !absoluteMediaPath(stored) ? stored : (beside || '');
+    await useAudioFile(new File([blob], name, { type: blob.type || 'audio/mpeg' }));
+    return;
+  }
+  const logo = stings.slots.find((slot) => slot?.name && slot.name.toLowerCase() === name.toLowerCase());
+  if (logo) {
+    const { convertFileSrc } = await import('@tauri-apps/api/core');
+    const res = await fetch(convertFileSrc(filePath));
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const kept = logo.assetPath;
+    const beside = besideStoredPath(openedProjectFile(), filePath);
+    stings.loadFile(logo.index, new File([blob], name, { type: blob.type || 'image/png' }));
+    logo.assetPath = kept && !absoluteMediaPath(kept) ? kept : (beside || '');
+    return;
+  }
+  const { convertFileSrc } = await import('@tauri-apps/api/core');
+  library.addRemote({ name, url: convertFileSrc(filePath) });
+}
+
+function besideStoredPath(projectPath, filePath) {
+  return relativeToProject(projectPath, filePath) || peeledProjectRelative(filePath);
+}
+
+async function connectProjectFiles(projectPath) {
+  if (!isTauri() || !projectPath || !projectHome(projectPath)) return;
+  const sourceDir = projectChild(projectPath, 'Source');
+  const stockDir = projectChild(projectPath, 'Stock');
+  const hasSource = await allowLibraryFolder(sourceDir);
+  const hasStock = await allowLibraryFolder(stockDir);
+  if (!hasSource && !hasStock) return;
+  await allowLibraryFolder(projectHome(projectPath));
+  const sourceRows = hasSource ? await listFolderMedia(sourceDir) : [];
+  const stockRows = hasStock ? await listFolderMedia(stockDir) : [];
+  const found = new Map();
+  const missing = [];
+  for (const name of wantedProjectNames()) {
+    const hit = matchMediaName(sourceRows, name) || matchMediaName(stockRows, name);
+    if (hit?.path) {
+      found.set(name.toLowerCase(), hit.path);
+      await connectFoundFile(name, hit.path);
+    } else missing.push(name);
+  }
+  let still = missing;
+  if (still.length) {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({ title: 'Find a missing file', multiple: false });
+      if (typeof picked === 'string' && picked) {
+        const folder = picked.replace(/[/\\][^/\\]+$/, '');
+        const rows = await listFolderMedia(folder);
+        const left = [];
+        for (const name of still) {
+          const hit = matchMediaName(rows, name);
+          const prepared = hit?.path ? await invoke('file_is_prepared', { path: hit.path }).catch(() => false) : false;
+          if (hit?.path && prepared) {
+            found.set(name.toLowerCase(), hit.path);
+            await connectFoundFile(name, hit.path);
+          }
+          else left.push(name);
+        }
+        still = left;
+      }
+    } catch { /* the names stay missing */ }
+  }
+  for (const name of still) {
+    const audioName = project.desk?.audio?.file || '';
+    if (audioName && audioName.toLowerCase() === name.toLowerCase()) {
+      setStatus($('audio-status'), `${audioName} is missing from this project folder`, true);
+      continue;
+    }
+    const logo = stings.slots.find((slot) => slot?.name && slot.name.toLowerCase() === name.toLowerCase());
+    if (logo && !logo.ready) stings.markMissing(logo.index);
+    if (library.has(name)) library.remove(name);
+  }
+  let poolChanged = false;
+  const pool = project.mediaPool.map((item) => {
+    const hit = found.get(String(item?.name || '').toLowerCase());
+    const rel = hit ? besideStoredPath(projectPath, hit) : '';
+    const stored = typeof item.path === 'string' ? item.path : '';
+    if (rel && (!stored || absoluteMediaPath(stored))) {
+      poolChanged = true;
+      return { ...item, path: rel };
+    }
+    if (stored && absoluteMediaPath(stored)) {
+      const peeled = peeledProjectRelative(stored) || relativeToProject(projectPath, stored);
+      poolChanged = true;
+      return { ...item, path: peeled || '' };
+    }
+    return item;
+  });
+  if (poolChanged) project.setMediaPool(pool);
+  refreshLibraryUi();
 }
 
 async function pointProjectAtFolder(projectPath) {
   if (!isTauri() || !projectPath) return;
+  openProjectPath = projectPath;
   const { convertFileSrc } = await import('@tauri-apps/api/core');
-  await ensureGlobalMediaRoot();
-  const pool = project.mediaPool.map((item) => {
-    if (!item.path || absoluteMediaPath(item.path) || isLibraryReference(item.path)) return item;
-    return { ...item, path: projectDirJoin(projectPath, item.path) };
-  });
-  project.setMediaPool(pool);
+  await allowLibraryFolder(projectHome(projectPath));
   await hydrateProjectMedia();
   for (let i = 0; i < 3; i += 1) {
     const slot = stings.slots[i];
     const rel = slot?.assetPath || '';
     if (!slot || !rel || absoluteMediaPath(rel) || slot.ready) continue;
     try {
-      const res = await fetch(convertFileSrc(projectDirJoin(projectPath, rel)));
-      if (!res.ok) continue;
+      const abs = await resolveProjectMediaPath(rel, projectPath);
+      const ready = abs && absoluteMediaPath(abs) && await mediaFileReady(abs);
+      if (!ready) {
+        stings.markMissing(i);
+        continue;
+      }
+      const res = await fetch(convertFileSrc(abs));
+      if (!res.ok) {
+        stings.markMissing(i);
+        continue;
+      }
       const blob = await res.blob();
       const name = slot.name || rel.split(/[/\\]/).pop() || `logo-${i + 1}`;
       stings.loadFile(i, new File([blob], name, { type: blob.type || 'video/mp4' }));
       slot.assetPath = rel;
-    } catch { /* the logo stays missing */ }
+    } catch {
+      stings.markMissing(i);
+    }
   }
   const audioRow = project.desk?.audio;
   if (audioRow?.mode === 'file' && audioRow.file) {
     let file = null;
-    if (audioRow.path && !absoluteMediaPath(audioRow.path)) {
+    if (audioRow.path) {
       try {
-        const res = await fetch(convertFileSrc(projectDirJoin(projectPath, audioRow.path)));
-        if (res.ok) {
-          const blob = await res.blob();
-          file = new File([blob], audioRow.file, { type: blob.type || 'audio/mpeg' });
+        const abs = await resolveProjectMediaPath(audioRow.path, projectPath);
+        const ready = abs && absoluteMediaPath(abs) && await mediaFileReady(abs);
+        if (ready) {
+          const res = await fetch(convertFileSrc(abs));
+          if (res.ok) {
+            const blob = await res.blob();
+            file = new File([blob], audioRow.file, { type: blob.type || 'audio/mpeg' });
+          }
         }
-      } catch { /* use the cached file */ }
+      } catch { /* the audio file stays missing */ }
     }
     if (!file) file = await library.getAudio(audioRow.file);
     if (file) {
-      audioAssetPath = audioRow.path || '';
+      const stored = audioRow.path || '';
+      audioAssetPath = stored && !absoluteMediaPath(stored)
+        ? stored
+        : (peeledProjectRelative(stored) || relativeToProject(projectPath, stored) || '');
       await useAudioFile(file);
+    } else if (audioRow.path) {
+      setStatus($('audio-status'), `${audioRow.file} is missing from this project folder`, true);
     }
   }
 }
@@ -3590,36 +4367,41 @@ function currentProjectPath() {
 
 function rememberSavedProject(path, bundled) {
   rememberProjectPath(path);
+  openProjectPath = path;
   audioAssetPath = bundled.desk?.audio?.path || '';
   for (let i = 0; i < 3; i += 1) {
     const rel = bundled.desk?.logos?.[i]?.path || '';
     if (rel && stings.slots[i]) stings.slots[i].assetPath = rel;
   }
   if (bundled.desk) project.setDesk(captureDesk());
-  if (Array.isArray(bundled.mediaPool)) {
-    project.setMediaPool(bundled.mediaPool.map((item) => (
-      item?.path && !absoluteMediaPath(item.path)
-        ? { ...item, path: projectDirJoin(path, item.path) }
-        : item
-    )));
-  }
+  if (Array.isArray(bundled.mediaPool)) project.setMediaPool(bundled.mediaPool);
+}
+
+function disarmProjectPath() {
+  openProjectPath = '';
+  try { localStorage.removeItem(LAST_PROJECT_KEY); } catch { /* ignore */ }
 }
 
 async function storeProjectFile(data, filename, { ask = true, title = 'Save Project' } = {}) {
   if (!isTauri()) {
+    const root = await browserProjectRoot();
+    if (root) {
+      try {
+        await writeBrowserProject(root, data);
+        showToast(`Saved in ${root.name || 'the chosen folder'}.`);
+        return true;
+      } catch (err) {
+        showToast(err?.message || 'Could not save in that folder.', true);
+        return false;
+      }
+    }
     downloadProjectFile(data, filename);
     return true;
   }
   let path = ask ? '' : currentProjectPath();
   if (!path) {
-    const { save } = await import('@tauri-apps/plugin-dialog');
-    const picked = await save({
-      defaultPath: filename,
-      title,
-      filters: [{ name: 'Y2K VJ project', extensions: ['vjproj'] }],
-    });
-    if (typeof picked !== 'string' || !picked) return false;
-    path = /\.(vjproj|json)$/i.test(picked) ? picked : `${picked}.vjproj`;
+    path = await createNewProjectFile();
+    if (!path) return false;
   }
   const bundled = await bundleProjectAssets(data, path);
   await invoke('write_text_file', { path, contents: JSON.stringify(bundled, null, 2) });
@@ -3721,14 +4503,17 @@ async function reopenLastProject() {
     on = localStorage.getItem('vj.reopenProject') === '1';
     path = localStorage.getItem(LAST_PROJECT_KEY) || '';
   } catch { /* start from the template */ }
-  if (on && path) {
-    try {
-      const text = await invoke('read_text_file', { path });
-      const leaf = path.split(/[/\\]/).pop() || 'project.vjproj';
-      await loadProject(new File([text], leaf, { type: 'application/json' }), path);
-      return;
-    } catch { /* the saved file is gone */ }
+  if (!(on && path)) return;
+  let opened = false;
+  try {
+    const text = await invoke('read_text_file', { path });
+    const leaf = path.split(/[/\\]/).pop() || 'project.vjproj';
+    opened = await loadProject(new File([text], leaf, { type: 'application/json' }), path) === true;
+  } catch {
+    opened = false;
   }
+  if (opened) return;
+  disarmProjectPath();
   if (isMacDesktop()) newProject({ keepLastPath: true });
 }
 
@@ -3742,7 +4527,7 @@ async function loadProject(file, sourcePath = '') {
     data = JSON.parse(await file.text());
   } catch {
     alert('That file is not valid JSON.');
-    return;
+    return false;
   }
   const looksLikeProject = data && (
     Array.isArray(data.scenes)
@@ -3752,8 +4537,9 @@ async function loadProject(file, sourcePath = '') {
   );
   if (!looksLikeProject) {
     alert('That file is not a Y2K VJ project.');
-    return;
+    return false;
   }
+  openProjectPath = sourcePath || '';
   project.setName(data.name);
   paintProjectName();
   const doc = coerceDocument(data);
@@ -3802,6 +4588,8 @@ async function loadProject(file, sourcePath = '') {
   if (doc.view) applyProjectView(doc.view, { workspace: true });
   await restoreLogoFiles();
   await pointProjectAtFolder(sourcePath);
+  if (sourcePath && isNamedProjectFolder(sourcePath)) await adoptProjectFolders(sourcePath);
+  if (sourcePath) await connectProjectFiles(sourcePath);
   {
     const shown = showRecordOutput(doc.recordOutput);
     project.setRecordOutput(shown);
@@ -3810,6 +4598,8 @@ async function loadProject(file, sourcePath = '') {
   }
   project.setCompositions(doc.compositions);
   paintCompositions();
+  project.setPacks(doc.packs);
+  refreshAudioPacks();
   if (data.live?.params) {
     for (const [id, v] of Object.entries(data.live.params)) {
       if (!params.defs.get(id)?.layer) params.set(id, v);
@@ -3817,10 +4607,12 @@ async function loadProject(file, sourcePath = '') {
     scenes.launch({ params: data.live.params, media: data.live.media || {}, routing: layerRouting() }, 0);
   }
   refreshLayerUi();
+  refreshLibraryUi();
   sceneBar.setBank(0);
   panel.applyFoldDefaults();
   if (doc.view) project.setView(doc.view);
   params.history?.clear();
+  return true;
 }
 
 function isMacDesktop() {
@@ -3832,10 +4624,14 @@ function newProject({ keepLastPath = false } = {}) {
   audio.clearFile();
   try {
     localStorage.removeItem('vj.audioFile');
-    if (!keepLastPath) localStorage.removeItem(LAST_PROJECT_KEY);
+    if (!keepLastPath) {
+      localStorage.removeItem(LAST_PROJECT_KEY);
+      openProjectPath = '';
+    }
     localStorage.setItem(LIBRARY_FOLD_KEY, JSON.stringify(Object.fromEntries(LIBRARY_FOLDS)));
   } catch { /* ignore */ }
   setStatus($('audio-status'), '');
+  paintGlanceAudio();
   paintAudioRecent();
   project.setName('');
   paintProjectName();
@@ -3855,6 +4651,8 @@ function newProject({ keepLastPath = false } = {}) {
   showRoutes(project.recordings, project.outputs);
   project.setCompositions([null, null, null]);
   paintCompositions();
+  project.setPacks(seedPacks());
+  refreshAudioPacks();
   project.setDesk(captureDesk());
   project.setLocks({});
   applyLocks();
@@ -3911,9 +4709,10 @@ const sceneBar = new SceneBar({
       if (typeof picked !== 'string' || !picked) return true;
       const text = await invoke('read_text_file', { path: picked });
       const leaf = picked.split(/[/\\]/).pop() || 'project.vjproj';
-      rememberProjectPath(picked);
-      await loadProject(new File([text], leaf, { type: 'application/json' }), picked);
+      const opened = await loadProject(new File([text], leaf, { type: 'application/json' }), picked);
+      if (opened) rememberProjectPath(picked);
     } catch (err) {
+      disarmProjectPath();
       showToast(err?.message || String(err) || 'Could not load the project.', true);
     }
     return true;
@@ -3974,6 +4773,7 @@ function showAudioMode(mode) {
   }
   try { localStorage.setItem('vj.audioMode', audioMode); } catch { /* ignore */ }
   persistDesk();
+  paintGlanceAudio();
 }
 
 async function refreshAudioDevices() {
@@ -3989,6 +4789,7 @@ async function refreshAudioDevices() {
     console.warn('Audio device enumeration failed', err);
     setStatus($('audio-status'), err.message, true);
   }
+  paintGlanceAudio();
 }
 
 const AUDIO_OUTPUT_KEY = 'vj.audioOutput';
@@ -4054,14 +4855,50 @@ navigator.mediaDevices?.addEventListener('devicechange', () => {
 });
 refreshAudioOutputs().catch((err) => console.warn('Audio output list failed', err));
 
+function paintGlanceAudio() {
+  const el = $('glance-audio');
+  if (!el) return;
+  const nameEl = el.querySelector('b');
+  const timeEl = el.querySelector('i');
+  let name = '';
+  let time = '';
+  let title = '';
+  if (audioMode === 'file' && audio.fileName) {
+    name = audio.fileName;
+    time = $('audio-time')?.textContent || '';
+    title = audio.fileName;
+  } else if (audioMode === 'device') {
+    const sel = $('audio-device');
+    const chosen = sel?.value ? (sel.selectedOptions[0]?.textContent || '').trim() : '';
+    if (chosen) {
+      name = chosen;
+      title = chosen;
+    }
+  }
+  if (!name) {
+    const mode = audioMode === 'file' ? 'Local File' : 'Live Hardware';
+    name = `${mode} · ready to load`;
+  }
+  if (nameEl.textContent !== name) nameEl.textContent = name;
+  const showTime = !!time;
+  if (timeEl.hidden === showTime) timeEl.hidden = !showTime;
+  if (showTime && timeEl.textContent !== time) timeEl.textContent = time;
+  if ((el.getAttribute('title') || '') !== title) {
+    if (title) el.title = title;
+    else el.removeAttribute('title');
+  }
+}
+
 function syncTransport() {
   const t = audio.transport;
   $('audio-play').disabled = !t.ready;
   $('audio-scrub').disabled = !t.ready;
-  if (!t.ready) return;
-  if (!scrubbing) $('audio-scrub').value = String(Math.round((t.currentTime / t.duration) * 1000));
-  $('audio-time').textContent = `${fmtTime(t.currentTime)} / ${fmtTime(t.duration)}`;
-  $('audio-play').textContent = t.paused ? 'Play' : 'Pause';
+  if (t.ready) {
+    if (!scrubbing) $('audio-scrub').value = String(Math.round((t.currentTime / t.duration) * 1000));
+    $('audio-time').textContent = `${fmtTime(t.currentTime)} / ${fmtTime(t.duration)}`;
+    $('audio-play').textContent = t.paused ? 'Play' : 'Pause';
+  }
+  paintGlanceAudio();
 }
 
 const masterTransport = { state: 'playing' };
@@ -4485,6 +5322,7 @@ $('audio-device').addEventListener('change', async (e) => {
   } catch (err) {
     setStatus($('audio-status'), err.message, true);
   }
+  paintGlanceAudio();
 });
 audio.onDeviceLost = () => {
   setStatus($('audio-status'), 'Audio input disconnected - pick the device again', true);
@@ -4497,17 +5335,16 @@ navigator.mediaDevices?.addEventListener('devicechange', () => {
 
 async function useProjectAudio(entry) {
   showAudioMode('file');
-  let audioPath = entry?.path || '';
-  if (isLibraryReference(audioPath)) {
-    await ensureGlobalMediaRoot();
-    audioPath = resolveLibraryPath(audioPath);
-  }
+  let audioPath = await resolveProjectMediaPath(entry?.path || '', openProjectPath || currentProjectPath());
   if (audioPath && absoluteMediaPath(audioPath) && isTauri()) {
+    const ready = await mediaFileReady(audioPath);
+    if (!ready) throw new Error(openedProjectFile() ? 'That audio file is missing from this project folder.' : 'That audio file is missing from the Media Library folder.');
     const { convertFileSrc } = await import('@tauri-apps/api/core');
     const res = await fetch(convertFileSrc(audioPath));
     if (!res.ok) throw new Error('Could not read that audio file');
     const blob = await res.blob();
-    audioAssetPath = audioPath;
+    const stored = await libraryStoredPath(entry?.path || '', entry?.name || '', openProjectPath || currentProjectPath(), audioPath);
+    audioAssetPath = stored || '';
     await useAudioFile(new File([blob], entry.name, { type: blob.type || 'audio/wav' }));
     return;
   }
@@ -4545,7 +5382,8 @@ async function pullAudioBlob(url, title) {
   } catch (err) {
     if (!IS_TAURI) throw err;
     console.warn('Direct audio fetch was blocked; downloading through the desktop client.', err);
-    const path = await invoke('download_audio', { url, filename: title || 'sample' });
+    const saveDir = await ensureStockDir({ create: true });
+    const path = await invoke('download_audio', { url, filename: title || 'sample', saveDir });
     const { convertFileSrc } = await import('@tauri-apps/api/core');
     const res = await fetch(convertFileSrc(path));
     if (!res.ok) throw new Error('Download failed');
@@ -4651,7 +5489,8 @@ async function saveStockAudio(hit, button) {
   try {
     if (IS_TAURI) {
       const { convertFileSrc } = await import('@tauri-apps/api/core');
-      const path = await invoke('download_audio', { url: hit.url, filename: hit.title });
+      const saveDir = await ensureStockDir({ create: true });
+      const path = await invoke('download_audio', { url: hit.url, filename: hit.title, saveDir });
       window.dispatchEvent(new CustomEvent('vj-global-media'));
       globalLibrary?.refresh();
       const res = await fetch(convertFileSrc(path));
@@ -5639,6 +6478,23 @@ apcView = new ApcView({
       return macro && macro.value != null ? macro.value : 0;
     },
     shuffleLayer: () => panel.shuffleSelectedLayer(),
+    recallComp: (index) => {
+      const mix = project.compositions?.[index];
+      if (mix) recallComposition(mix);
+    },
+    clearComposition: () => clearComposition(params, (speed) => setMasterSpeed(speed, { history: 'commit' })),
+    launchPack: (slot) => launchPack(slot),
+    applyStack: (id) => {
+      const stack = START_STACKS.find((item) => item.id === id);
+      if (!stack) return;
+      applyStart(params, stack, {
+        setSpeed: (speed) => setMasterSpeed(speed, { history: 'commit' }),
+        mods,
+        lfo,
+        sync: () => panel.refreshAutomation(),
+      });
+    },
+    stacks: () => START_STACKS.map((stack) => ({ id: stack.id, name: stack.label })),
     toggleCategory: (layer, name) => panel.blocks.get(`${layer}:${name}`)?.mute.click(),
     shuffleCategory: (layer, name) => panel.shuffleGroup(layer, name),
     categoryMuted: (layer, name) => panel.muted.has(`${layer}:${name}`),
@@ -5963,6 +6819,8 @@ function openPrefs(open) {
     openGuide(false);
     ensureStockDir().catch(() => {});
     ensureRecordDir().catch(() => {});
+    ensureLibraryDir().catch(() => {});
+    ensureProjectRootDir().catch(() => {});
     refreshAudioOutputs({ ask: true }).catch((err) => console.warn('Audio output list failed', err));
   }
 }
@@ -6001,6 +6859,79 @@ $('record-dir-open').addEventListener('click', async () => {
   try {
     const path = $('record-dir')?.value || await ensureRecordDir();
     await openSavedFolder(path, 'Choose the recordings folder first.');
+  } catch (err) {
+    showToast(err?.message || 'Could not open that folder.', true);
+  }
+});
+async function chooseProjectRootFolder() {
+  if (isTauri()) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const picked = await open({ directory: true, multiple: false, title: 'New Projects Folder' });
+    if (typeof picked !== 'string' || !picked) return null;
+    return { path: picked };
+  }
+  if (typeof window.showDirectoryPicker !== 'function') {
+    showToast('This browser cannot browse for a folder.', true);
+    return null;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: 'vj-new-projects' });
+    return { name: handle.name || 'Chosen folder', handle };
+  } catch (err) {
+    if (err?.name === 'AbortError') return null;
+    showToast(err?.message || 'Could not browse for a folder.', true);
+    return null;
+  }
+}
+
+function rememberProjectRoot(kind, picked) {
+  try {
+    localStorage.setItem(PROJECT_ROOT_ASKED, '1');
+    localStorage.setItem('vj.projectRootKind', kind);
+    if (picked?.path) {
+      localStorage.setItem(PROJECT_ROOT_KEY, picked.path);
+      localStorage.removeItem(PROJECT_ROOT_LABEL);
+    } else if (picked?.name) {
+      localStorage.removeItem(PROJECT_ROOT_KEY);
+      localStorage.setItem(PROJECT_ROOT_LABEL, picked.name);
+    } else {
+      localStorage.removeItem(PROJECT_ROOT_KEY);
+      localStorage.removeItem(PROJECT_ROOT_LABEL);
+    }
+  } catch { /* private mode */ }
+  saveRootHandle(picked?.handle || null);
+}
+
+$('project-root-pick').addEventListener('click', async () => {
+  const picked = await chooseProjectRootFolder();
+  if (!picked) return;
+  rememberProjectRoot('custom', picked);
+  paintProjectRoot(picked.path || picked.name || '', true);
+});
+$('project-root-open').addEventListener('click', async () => {
+  try {
+    const path = $('project-root-dir')?.value || await ensureProjectRootDir();
+    await openSavedFolder(path, 'Choose where new projects are created first.');
+  } catch (err) {
+    showToast(err?.message || 'Could not open that folder.', true);
+  }
+});
+$('media-library-pick').addEventListener('click', async () => {
+  if (!isTauri()) {
+    showToast('Choose the folder in the desktop app.', true);
+    return;
+  }
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({ directory: true, multiple: false, title: 'Media Library Folder' });
+  if (typeof picked !== 'string' || !picked) return;
+  try { localStorage.setItem(LIBRARY_DIR_KEY, picked); } catch { /* private mode */ }
+  paintLibraryDir(picked, true);
+  await allowLibraryFolder(picked);
+});
+$('media-library-open').addEventListener('click', async () => {
+  try {
+    const path = $('media-library-dir')?.value || await ensureLibraryDir();
+    await openSavedFolder(path, 'Choose the Media Library folder first.');
   } catch (err) {
     showToast(err?.message || 'Could not open that folder.', true);
   }
@@ -6330,12 +7261,30 @@ window.addEventListener('keydown', (e) => {
   if (redo) params.history.redo();
   else params.history.undo();
 });
+function escapeBusy(event) {
+  const el = event.target;
+  if (el instanceof HTMLElement && (el.isContentEditable || el.closest('input, textarea, select'))) return true;
+  for (const node of document.querySelectorAll('[role="dialog"], [role="menu"], #scene-menu, #layer-media-gallery, #pack-editor, .num-editor')) {
+    if (!node.closest('[hidden]')) return true;
+  }
+  return false;
+}
+
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  $('screen-menu').hidden = true;
-  if (!$('output-map-modal').hidden) openOutputMap(false);
-  if (!$('prefs-modal').hidden) openPrefs(false);
-  if (!$('guide-modal').hidden) openGuide(false);
+  const screen = $('screen-menu');
+  const screenOpen = !!(screen && !screen.hidden);
+  const mapOpen = !$('output-map-modal')?.hidden;
+  const prefsOpen = !$('prefs-modal')?.hidden;
+  const guideOpen = !$('guide-modal')?.hidden;
+  if (screenOpen) screen.hidden = true;
+  if (mapOpen) openOutputMap(false);
+  if (prefsOpen) openPrefs(false);
+  if (guideOpen) openGuide(false);
+  if (screenOpen || mapOpen || prefsOpen || guideOpen || escapeBusy(e)) return;
+  if (!outputWin.open) return;
+  e.preventDefault();
+  outputWin.close();
 });
 $('fs-btn').addEventListener('click', toggleFullscreen);
 
@@ -6697,6 +7646,7 @@ function frame(stamp) {
       bpmReadout.parentElement.classList.toggle('sync', bpmMode === 'auto');
     }
     panel.tickLive(live);
+    tickAudioPacks(audio);
     const hudSize = mods.modulate({ min: 10, max: 48 }, Number($('hud-size').value), 'hud.size', a, beatClock.pulse);
     if (Math.abs((hud.chrome?.size ?? hudSize) - hudSize) > 0.05) hud.applyChrome({ size: hudSize });
     if (!isPerformMode) {
@@ -7032,10 +7982,22 @@ if (isLinuxSystem()) {
   const openIn = openInMode();
   if (openIn !== 'live') setDeskMode(openIn);
 }
-bindMediaPrep({ library, ensureStockDir, showToast });
+bindMediaPrep({ library, ensureStockDir: ensureSourceDir, showToast });
 globalLibrary = bindGlobalLibrary({
   library,
   showToast,
+  sourceDir: async () => currentSourceDir(),
+  projectMediaDirs: async () => {
+    const path = openedProjectFile();
+    if (!path) return [];
+    const dirs = [];
+    for (const name of ['Source', 'Stock']) {
+      const dir = projectChild(path, name);
+      if (await allowLibraryFolder(dir)) dirs.push(dir);
+    }
+    return dirs;
+  },
+  prepareDir: ensureSourceDir,
   inBin: (name) => project.mediaPool.some((item) => item.name === name),
   projectSnapshot,
   onDeleted: async (name) => {

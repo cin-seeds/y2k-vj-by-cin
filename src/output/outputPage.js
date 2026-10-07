@@ -14,6 +14,23 @@ function sameOutput(url) {
   }
 }
 
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.repeat) return;
+  event.preventDefault();
+  event.stopPropagation();
+  try {
+    const note = new BroadcastChannel('vj-output-mirror');
+    note.postMessage({ type: 'vj-output-close' });
+  } catch { /* the window still closes */ }
+  if (native) {
+    import('@tauri-apps/api/webviewWindow').then(({ getCurrentWebviewWindow }) => {
+      getCurrentWebviewWindow().close().catch(() => {});
+    });
+  } else {
+    window.close();
+  }
+}, true);
+
 if (!native) {
   // The desk draws straight into #mirror.
 } else {

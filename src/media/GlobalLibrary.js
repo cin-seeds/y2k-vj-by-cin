@@ -56,7 +56,7 @@ function kindLabel(kind) {
   return 'Video';
 }
 
-export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSnapshot, showToast }) {
+export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSnapshot, showToast, sourceDir, prepareDir, projectMediaDirs }) {
   const modal = document.getElementById('global-library');
   const grid = document.getElementById('prep-grid');
   const empty = document.getElementById('prep-gallery-empty');
@@ -96,8 +96,29 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     const disk = [];
     if (IS_TAURI) {
       try {
-        const rows = await invoke('list_global_media', { saveDir: stockSaveDir() });
-        if (Array.isArray(rows)) disk.push(...rows);
+        const beside = typeof projectMediaDirs === 'function' ? await projectMediaDirs() : [];
+        const dirs = Array.isArray(beside) ? beside.filter(Boolean) : [];
+        if (dirs.length) {
+          const seenBeside = new Set();
+          for (const dir of dirs) {
+            const rows = await invoke('list_dir_media', { dir });
+            if (!Array.isArray(rows)) continue;
+            for (const row of rows) {
+              const key = String(row?.name || '').toLowerCase();
+              if (!key || seenBeside.has(key)) continue;
+              seenBeside.add(key);
+              disk.push(row);
+            }
+          }
+        } else {
+          const rows = await invoke('list_global_media', { saveDir: stockSaveDir() });
+          if (Array.isArray(rows)) disk.push(...rows);
+          const source = typeof sourceDir === 'function' ? await sourceDir() : '';
+          if (source) {
+            const prepared = await invoke('list_dir_media', { dir: source });
+            if (Array.isArray(prepared)) disk.push(...prepared);
+          }
+        }
       } catch (err) {
         showToast?.(err?.message || 'Could not read Media Manager', true);
       }
@@ -495,7 +516,8 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       }
       if (isTauri() && image && path) {
         const asBrand = brandUpload();
-        invoke('copy_into_global_media', { inputPath: path })
+        const prepared = typeof prepareDir === 'function' ? prepareDir() : (typeof sourceDir === 'function' ? sourceDir() : Promise.resolve(''));
+        prepared.then((saveDir) => invoke('copy_into_global_media', { inputPath: path, saveDir: saveDir || '' }))
           .then((saved) => {
             const leaf = String(saved || path).split(/[\\/]/).pop() || name;
             if (asBrand) {
@@ -538,7 +560,8 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
         else if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null, { brand: brandUpload() });
         else if (IMAGE_EXT.test(name)) {
-        const saved = await invoke('copy_into_global_media', { inputPath: path });
+        const saveDir = typeof prepareDir === 'function' ? await prepareDir() : (typeof sourceDir === 'function' ? await sourceDir() : '');
+        const saved = await invoke('copy_into_global_media', { inputPath: path, saveDir: saveDir || '' });
         const leaf = String(saved || path).split(/[\\/]/).pop() || name;
         if (brandUpload()) {
           addMediaTag(leaf, 'brand');

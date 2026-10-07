@@ -186,6 +186,11 @@
           <h2 class="col-title">Project</h2>
           <input id="project-name" class="project-name" type="text" maxlength="48" placeholder="Name" spellcheck="false" autocomplete="off" aria-label="Project name" />
         </header>
+        <details id="acc-packs" class="fold">
+          <summary>Audio Reactivity</summary>
+          <p class="hint">Each pack is the audio wiring for Still, Push, or Hit. Hover a pack to read its values.</p>
+          <div id="pack-list" class="pack-list"></div>
+        </details>
         <details id="diag-panel" class="fold diag">
           <summary>Helper / Diagnostics <i id="diag-nominal" class="diag-nominal" hidden>All Systems Nominal</i><i id="diag-badge" class="diag-badge" hidden>0</i></summary>
           <p class="hint">Click a warning to select that layer, open its group, and flash the slider for two seconds.</p>
@@ -560,6 +565,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             <div class="clock-bar">
               <div class="glance-row glance-sound">
                 <i id="beat-led" class="beat-led" title="Flashes on the beat"></i>
+                <span id="glance-audio" class="glance-audio"><b></b><i hidden></i></span>
                 <span class="bpm-readout locked" title="Global tempo. Shaders read it as uBeat / uBeatPhase."><b id="bpm-value">120.0</b></span>
                 <input id="bpm-slider" type="range" min="20" max="300" step="0.1" value="120" title="Manual BPM (double-click for 120)" />
                 <button id="bpm-mode" type="button" aria-pressed="false" title="Read the tempo from the playing audio.">Auto: Read Live</button>
@@ -704,7 +710,23 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           </header>
           <div id="comp-slot-host">
             <div class="comp-slots">
-              <button id="shuffle-layer-fx" type="button" class="shuffle" title="Randomize Color, Distortion, and Motion. Barrel stays put.">&#x1F3B2; Shuffle</button>
+              <div class="comp-tool-row">
+                <button id="shuffle-layer-fx" type="button" class="shuffle" title="Randomize Color, Distortion, and Motion. Barrel stays put.">&#x1F3B2; Shuffle</button>
+                <button id="comp-clear" type="button" title="Reset layer looks and the composition grade in one undo step. Clips stay.">Clear</button>
+                <select id="comp-starts" aria-label="Stacks" title="Write a built-in stack onto the live layers. One undo step. Clips, mixes, BPM, Code, and the screensaver stay.">
+                  <option value="">Stacks</option>
+                  <option value="page" data-label="Page">Page</option>
+                  <option value="download" data-label="Download">Download</option>
+                  <option value="chrome" data-label="Chrome">Chrome</option>
+                  <option value="garden" data-label="Garden">Garden</option>
+                  <option value="stir" data-label="Stir">Stir</option>
+                  <option value="arcade" data-label="Arcade">Arcade</option>
+                  <option value="warp" data-label="Warp">Warp</option>
+                </select>
+              </div>
+              <button id="pack-still" type="button" class="comp-pack" data-slot="still">Still</button>
+              <button id="pack-push" type="button" class="comp-pack" data-slot="push">Push</button>
+              <button id="pack-hit" type="button" class="comp-pack" data-slot="hit">Hit</button>
             </div>
           </div>
           <div id="master-params" class="master-params"></div>
@@ -778,7 +800,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             <li>
               <h3>Hello</h3>
               <p><b>Hello</b> holds <b>New Project</b>, <b>Load Project</b>, <b>Save</b>, and <b>Save New</b>. <b>Save</b> writes into the current project file. <b>Save New</b> asks where to put a copy. Both store the scenes, timeline, project media, audio, levels, output, recording settings, and which views are open. In the desktop app, media, audio, and logo files are copied into a folder next to the project.</p>
-              <p><b>Undo</b> and <b>Redo</b> sit in the top bar (<b>Ctrl+Z</b>, <b>Ctrl+Shift+Z</b> or <b>Ctrl+Y</b>). <b>Preferences</b> sets the UI scale, whether the app opens in <b>Live</b>, <b>Perform</b>, or <b>Media Manager</b>, whether it reopens the last project, the fetched-media folder, and the recordings folder. <b>Open</b> shows that folder on the computer. The <b>View</b> checks show or hide the timeline, <b>Project Media</b>, the <b>Inspector</b>, each layer, and <b>Composition</b>.</p>
+              <p><b>Undo</b> and <b>Redo</b> sit in the top bar (<b>Ctrl+Z</b>, <b>Ctrl+Shift+Z</b> or <b>Ctrl+Y</b>). <b>Preferences</b> sets the UI scale, whether the app opens in <b>Live</b>, <b>Perform</b>, or <b>Media Manager</b>, whether it reopens the last project, where new projects are created, the media library folder, the fetched-media folder, and the recordings folder. <b>Open</b> shows that folder on the computer. The <b>View</b> checks show or hide the timeline, <b>Project Media</b>, the <b>Inspector</b>, each layer, and <b>Composition</b>.</p>
             </li>
             <li>
               <h3>Media Manager</h3>
@@ -895,6 +917,24 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
         </section>
         <section class="prefs-block" aria-labelledby="prefs-media">
           <h3 id="prefs-media">Media</h3>
+          <div class="stock-dir-field">
+            <label for="project-root-dir">New Projects Folder</label>
+            <div class="row stock-dir-row">
+              <input id="project-root-dir" type="text" readonly placeholder="Documents" />
+              <button id="project-root-pick" type="button">Choose</button>
+              <button id="project-root-open" type="button" title="Show this folder in the file browser">Open</button>
+            </div>
+            <p class="hint">New projects go in Documents. Choose points this folder somewhere else.</p>
+          </div>
+          <div class="stock-dir-field">
+            <label for="media-library-dir">Media Library Folder</label>
+            <div class="row stock-dir-row">
+              <input id="media-library-dir" type="text" readonly placeholder="App media folder" />
+              <button id="media-library-pick" type="button">Choose</button>
+              <button id="media-library-open" type="button" title="Show this folder in the file browser">Open</button>
+            </div>
+            <p class="hint">Clip, audio, and logo paths in a project are relative to this folder. Leave it unset to use the app media folder.</p>
+          </div>
           <div class="stock-dir-field">
             <label for="stock-dir">Fetched Media Folder</label>
             <div class="row stock-dir-row">
