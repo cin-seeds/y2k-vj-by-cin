@@ -16,7 +16,7 @@ export function beginDrag(event, item) {
   // keeps the last write. text/plain is set after the custom type on purpose.
   try { event.dataTransfer.setData(DRAG_MIME, packed); } catch { /* custom type is optional */ }
   event.dataTransfer.setData('text/plain', packed);
-  event.dataTransfer.effectAllowed = 'copy';
+  event.dataTransfer.effectAllowed = 'copyMove';
   window.__vjDragPayload = payload;
 
   const ghost = document.createElement('div');

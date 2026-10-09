@@ -24,10 +24,15 @@ const SEED = [
     scene: '',
     speed: 0.8,
     grade: { gradeSat: 0.95, gradeContrast: 1.05, crtScan: 0.06, chroma: 0.03, strobe: 0, master: 0.9 },
-    A: { mode: 'clean', opacity: 1, band: 4, reactivity: 0 },
+    // Clean has no shader listen; punch ducks the plate a little so the bed still breathes on bass.
+    A: {
+      mode: 'clean', opacity: 1, band: 4, reactivity: 0,
+      opacityRoute: { route: 'punch', depth: -0.14, gate: 0.28 },
+    },
     B: {
-      mode: 'cloud', opacity: 0.35, blend: 2, band: 1, reactivity: 0.45, beat: 0,
-      sliders: { cloudCover: 0.35, cloudDrift: 0.25, cloudBand: 0.55 },
+      mode: 'cloud', opacity: 0.58, blend: 2, band: 1, reactivity: 0.82, beat: 0.18,
+      sliders: { cloudCover: 0.48, cloudDrift: 0.42, cloudBand: 0.68 },
+      opacityRoute: { route: 'peak', depth: 0.28, gate: 0.32 },
     },
     C: { mode: 'glitch', opacity: 0, band: 1, beat: 0 },
   },
@@ -41,14 +46,19 @@ const SEED = [
       gradeSat: 0.7, gradeContrast: 1.35, crtScan: 0.15, crtBleed: 0.1, chroma: 0.1,
       strobe: 0.1, strobeSrc: 1, strobePol: 0, master: 1,
     },
-    A: { mode: 'clean', opacity: 1, band: 4, reactivity: 0 },
+    A: {
+      mode: 'clean', opacity: 1, band: 4, reactivity: 0,
+      opacityRoute: { route: 'punch', depth: -0.18, gate: 0.25 },
+    },
     B: {
-      mode: 'starfield', opacity: 0.2, blend: 2, band: 1, reactivity: 0.7, beat: 0,
-      sliders: { warp: 0.4, porthole: 0.55, grid: 0.15, flash: 0.3 },
+      mode: 'starfield', opacity: 0.48, blend: 2, band: 1, reactivity: 1.0, beat: 0.22,
+      sliders: { warp: 0.55, porthole: 0.5, grid: 0.22, flash: 0.55 },
+      opacityRoute: { route: 'punch', depth: 0.32, gate: 0.28 },
     },
     C: {
-      mode: 'jpeg', opacity: 0.3, blend: 2, band: 3, reactivity: 0.75, beat: 0,
-      sliders: { jpegBlock: 0.35, jpegSmear: 0.4, jpegCrush: 0.3 },
+      mode: 'jpeg', opacity: 0.52, blend: 2, band: 3, reactivity: 0.95, beat: 0.15,
+      sliders: { jpegBlock: 0.45, jpegSmear: 0.52, jpegCrush: 0.42 },
+      opacityRoute: { route: 'peak', depth: 0.3, gate: 0.3 },
     },
   },
   {
@@ -62,15 +72,19 @@ const SEED = [
       strobe: 0.22, strobeSrc: 2, strobePol: 1, master: 1,
     },
     A: {
-      mode: 'bend', opacity: 1, blend: 0, band: 1, reactivity: 0.9, beat: 0,
-      sliders: { bendAmt: 0.5, bendCurve: 0.4, bendLean: 0.25 },
+      mode: 'bend', opacity: 1, blend: 0, band: 1, reactivity: 1.2, beat: 0.22,
+      sliders: { bendAmt: 0.72, bendCurve: 0.52, bendLean: 0.32 },
     },
     B: {
-      mode: 'vhs', opacity: 0.35, blend: 2, band: 3, reactivity: 0.85, beat: 0,
-      sliders: { tracking: 0.35, tapeJitter: 0.45, smear: 0.4, scanlines: 0.4 },
-      opacityRoute: { route: 'peak', depth: 0.5, gate: 0.45 },
+      mode: 'vhs', opacity: 0.55, blend: 2, band: 3, reactivity: 1.05, beat: 0.12,
+      sliders: { tracking: 0.48, tapeJitter: 0.62, smear: 0.55, scanlines: 0.5 },
+      opacityRoute: { route: 'peak', depth: 0.65, gate: 0.32 },
     },
-    C: { mode: 'thermal', opacity: 0.22, blend: 1, band: 2, reactivity: 0.2, beat: 0, sliders: { heat: 1.2 } },
+    C: {
+      mode: 'thermal', opacity: 0.42, blend: 1, band: 2, reactivity: 0.7, beat: 0,
+      sliders: { heat: 1.45 },
+      opacityRoute: { route: 'punch', depth: 0.35, gate: 0.3 },
+    },
   },
 ];
 

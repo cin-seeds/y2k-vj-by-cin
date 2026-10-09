@@ -1,6 +1,6 @@
-// Desktop MIDI for macOS and Linux. Shaped like Web MIDI's MIDIAccess so
-// MidiManager can attach the same way it does in a browser. Windows keeps
-// requestMIDIAccess. Linux uses this path because requestMIDIAccess is missing.
+// Desktop MIDI via midir (Windows, macOS, Linux). Shaped like Web MIDI's
+// MIDIAccess so MidiManager can attach the same way it does in a browser.
+// Used when requestMIDIAccess is missing, throws, or returns no inputs.
 
 import { IS_TAURI, invoke } from '../ipc.js';
 
@@ -26,7 +26,15 @@ export function requestNativeMidiAccess() {
       throw err;
     });
   }
-  return opening;
+  // A second Enable MIDI click re-lists ports in case the first scan was empty.
+  return opening.then(async (access) => {
+    try {
+      const ports = await invoke('midi_list');
+      access.applyPorts?.(ports, false);
+      await invoke('midi_open');
+    } catch { /* keep the access from the first open */ }
+    return access;
+  });
 }
 
 async function openNative() {
@@ -66,6 +74,7 @@ async function openNative() {
     }
     if (notify && typeof access.onstatechange === 'function') access.onstatechange();
   };
+  access.applyPorts = applyPorts;
 
   await listen('midi-in', (event) => {
     const port = event.payload?.port;

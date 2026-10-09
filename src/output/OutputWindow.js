@@ -10,6 +10,7 @@ import { paintScreensaver } from '../overlay/paintScreensaver.js';
 import { dpiState } from '../ui/dpiScale.js';
 import { IS_TAURI } from '../ipc.js';
 import { applyMediaSink } from '../audio/outputSink.js';
+import { fittedBox } from './frameFit.js';
 
 const OVERLAY_KEY = 'vj.hudOutput';
 const MASTER_OUTPUT = 'master-output';
@@ -147,6 +148,7 @@ export class OutputWindow {
     this.localCanvas = null;
     this.localCtx = null;
     this.frameBusy = false;
+    this.fitMode = 'fill';
     this.channel = null;
     this.unlistenResize = null;
     this.lastBlockMessage = '';
@@ -211,8 +213,9 @@ export class OutputWindow {
     if (this.open) this.win.focus();
   }
 
-  /** Copy the main WebGL frame into the output. Letterboxes when the screen shape differs. */
-  mirror(overlay = null, logos = null, source = null, screensaver = null, audioStream = null) {
+  /** Copy the main WebGL frame into the output using the desk Fill / Fit / Original choice. */
+  mirror(overlay = null, logos = null, source = null, screensaver = null, audioStream = null, fitMode = 'fill') {
+    this.fitMode = fitMode === 'fit' || fitMode === 'original' ? fitMode : 'fill';
     if (!this.open) {
       this.outCanvas = null;
       this.outCtx = null;
@@ -551,14 +554,11 @@ export class OutputWindow {
     const sh = src?.height || 0;
     let box = null;
     if (sw > 0 && sh > 0) {
-      const scale = Math.min(w / sw, h / sh);
-      const dw = Math.round(sw * scale);
-      const dh = Math.round(sh * scale);
-      const dx = Math.round((w - dw) / 2);
-      const dy = Math.round((h - dh) / 2);
-      ctx.drawImage(src, 0, 0, sw, sh, dx, dy, dw, dh);
-      box = { dx, dy, dw, dh };
-      if (logos?.length) paintLogos(ctx, box, logos);
+      box = fittedBox(sw, sh, w, h, this.fitMode);
+      if (box) {
+        ctx.drawImage(src, 0, 0, sw, sh, box.dx, box.dy, box.dw, box.dh);
+        if (logos?.length) paintLogos(ctx, box, logos);
+      }
     }
     if (overlay?.lines?.length) this.#drawHud(ctx, w, h, overlay);
     if (screensaver) paintScreensaver(ctx, w, h, box, screensaver);

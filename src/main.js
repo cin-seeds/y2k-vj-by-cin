@@ -10,7 +10,7 @@ import copyFrag from './shaders/copy.frag?raw';
 import xfadeFrag from './shaders/xfade.frag?raw';
 import stingFrag from './shaders/sting.frag?raw';
 
-import { LAYERS, LAYER_DEFS, MODE_LABELS, SHADER_KEY_MODES, ParamStore, layerParam, neutralOf } from './params.js';
+import { LAYERS, LAYER_DEFS, MODE_LABELS, SHADER_KEY_MODES, ParamStore, layerParam, neutralOf, fitModeIndex } from './params.js';
 import { START_STACKS, applyStart, clearComposition } from './ui/compStarts.js';
 import { seedPacks } from './audio/packs.js';
 import { mountAudioPacks, refreshAudioPacks, tickAudioPacks } from './ui/audioPacks.js';
@@ -19,6 +19,7 @@ import { ENGINE_FX, ENGINE_PARTICLES } from './engines/constants.js';
 import { liveFormulaModel, liveStackModel } from './ui/liveCode.js';
 import { ScanLog } from './ui/ScanLog.js';
 import { Layer, activeShaderSource, overlayShaderSource, blankTexture } from './layers/Layer.js';
+import { createTravel } from './layers/Travel.js';
 import { MediaLibrary } from './media/MediaLibrary.js';
 import { fetchVideoLoop } from './media/onlineFetch.js';
 import { searchStockAudio } from './media/stockAudio.js';
@@ -35,15 +36,26 @@ import { MOMENTARY, MomentaryPads } from './midi/Momentary.js';
 import { Recorder } from './output/Recorder.js';
 import { IS_TAURI, invoke } from './ipc.js';
 import { OutputWindow, listScreens, POPUP_BLOCKED, isTauri } from './output/OutputWindow.js';
+import { fittedBox } from './output/frameFit.js';
 import { bindPictureSend } from './output/PictureSend.js';
 import { bindPictureSources, pictureSources, refreshPictureSources } from './input/PictureRecv.js';
 import { bindRangeReadout } from './ui/NumericSlider.js';
-import { beginDrag, endDragSoon } from './ui/dragPayload.js';
-import { bindMediaPrep } from './media/mediaPrep.js';
-import { addMediaTag, bindGlobalLibrary, hasMediaTag, rememberMediaSource } from './media/GlobalLibrary.js';
+import { beginDrag, endDragSoon, readDrag } from './ui/dragPayload.js';
+import { bindMediaPrep, dropVideoAudioPref, setDropVideoAudioPref } from './media/mediaPrep.js';
+import {
+  bindGlobalLibrary,
+  brandTaggedNames,
+  confirmDuplicateAdd,
+  exportMediaTagsFor,
+  hasMediaTag,
+  mediaLibraryHasName,
+  rememberMediaSource,
+  setProjectMediaTags,
+} from './media/GlobalLibrary.js';
 import { dpiState, formatFactor, pixelsOf, setDpiAuto, setOutputPixels, setPreviewScale } from './ui/dpiScale.js';
 import { OutputMap } from './output/OutputMap.js';
 import { SceneManager } from './scenes/SceneManager.js';
+import { SceneClipWarm } from './scenes/SceneClipWarm.js';
 import { Timeline } from './scenes/Timeline.js';
 import { ProjectState, coerceDocument, normalizeDesk } from './project/ProjectState.js';
 import { Hud, HUD_PRESETS, HUD_BOX_DEFAULT, clampHudBox } from './ui/Hud.js';
@@ -131,6 +143,7 @@ const shared = {
 };
 const layers = LAYERS.map((L) => new Layer(L, params, shared));
 const layerById = Object.fromEntries(layers.map((l) => [l.id, l]));
+const travel = createTravel(params, layers);
 
 // Upload one static texture per layer before the first clip arrives.
 {
@@ -321,8 +334,8 @@ const stings = new StingRack($('logo-overlay'), {
   },
   onAssign: (slot, file) => library.cacheBlob(slot.cacheKey, file, 'logo'),
   onPersist: () => persistDesk(),
-  brandMedia: () => brandProjectClips(),
-  onPick: (name) => fileForProjectClip(name),
+  brandMedia: () => brandOverlayClips(),
+  onPick: (name) => fileForBrandClip(name),
 });
 function paintLogoPick() {
   const pick = $('logo-slot-pick');
@@ -492,7 +505,7 @@ onLayerModeChanged(panel.selected);
 // letterboxes that frame; it never changes the buffer's aspect.
 let renderScale = 1;
 let outputAspect = '16:9';
-let fitMode = 'fill';          // 'fill' crops, 'fit' letterboxes
+// Program monitor / output window always cover their host; per-layer framing is A/B/C.fitMode.
 
 const ASPECTS = { '16:9': 16 / 9, '9:16': 9 / 16, '1:1': 1 };
 const PREVIEW_SIZE = {
@@ -517,6 +530,7 @@ function applyPreviewBox() {
   const ratio = w / h;
   wrap.style.aspectRatio = `${w} / ${h}`;
   wrap.style.setProperty('--preview-aspect', String(ratio));
+  document.querySelector('.midi-monitor-stage')?.style.setProperty('--preview-aspect', String(ratio));
 }
 
 const drawSize = new THREE.Vector2();
@@ -542,7 +556,7 @@ function resize() {
   fitTarget(stingRt, size.x, size.y);
   for (const l of layers) {
     l.setSize(size.x, size.y);
-    l.updateUvScale(fitMode);
+    l.updateUvScale(l.mediaFit());
   }
   camera3.aspect = size.x / Math.max(size.y, 1);
   camera3.updateProjectionMatrix();
@@ -633,13 +647,6 @@ function syncLedFrame() {
 outputMap.onChange = syncLedFrame;
 if (outputMap.mask === 'led25') syncLedFrame();
 
-function setFit(mode) {
-  fitMode = mode === 'fit' ? 'fit' : 'fill';
-  $('scale-fill').classList.toggle('on', fitMode === 'fill');
-  $('scale-fit').classList.toggle('on', fitMode === 'fit');
-  for (const l of layers) l.updateUvScale(fitMode);
-}
-
 function setRenderScale(v) {
   const n = Number(v);
   renderScale = n === 0.5 || n === 0.75 || n === 1 ? n : 1;
@@ -647,10 +654,20 @@ function setRenderScale(v) {
   resize();
 }
 
+/** Apply an older project-wide Scale setting onto layers that have no saved Frame yet. */
+function migrateLegacyFit(fit) {
+  const name = fit === 'fit' || fit === 'original' ? fit : 'fill';
+  if (name === 'fill') return;
+  const idx = fitModeIndex(name);
+  for (const L of LAYERS) {
+    const id = layerParam(L, 'fitMode');
+    if (Math.round(params.get(id)) !== 0) continue;
+    params.set(id, idx);
+  }
+}
+
 $('aspect').addEventListener('change', (e) => setAspect(e.target.value));
 $('preview-format').addEventListener('change', (e) => setAspect(e.target.value));
-$('scale-fill').addEventListener('click', () => setFit('fill'));
-$('scale-fit').addEventListener('click', () => setFit('fit'));
 $('render-scale').addEventListener('change', (e) => setRenderScale(e.target.value));
 
 // ---------------------------------------------------------------- layer media
@@ -671,11 +688,19 @@ function clipKey(name) {
   return item?.url ? `url:${name}` : `file:${name}`;
 }
 
-async function setLayerMedia(L, key, { mirror, history = false } = {}) {
+function liveSceneClipKeys() {
+  return layers.map((l) => l.mediaKey).filter((k) => k.startsWith('file:') || k.startsWith('url:'));
+}
+
+function syncSceneClipWarm() {
+  sceneWarm.syncFromScenes(scenes.scenes, liveSceneClipKeys());
+}
+
+async function setLayerMedia(L, key, { mirror, history = false, prepared } = {}) {
   const layer = layerById[L];
   const prev = { key: layer.mediaKey, mirror: !!layer.mirror };
   const cameraLabel = key.startsWith('cam:') ? library.cameraLabel(key.slice(4)) : undefined;
-  const pending = layer.setMedia(key, { library, cameraLabel, mirror, fitMode });
+  const pending = layer.setMedia(key, { library, cameraLabel, mirror, fitMode: layer.mediaFit(), prepared });
   refreshLayerUi();
   await pending;
   if (masterTransport.state !== 'playing' && syncMaster[L] && layer.input.kind === 'video') layer.input.pause();
@@ -685,6 +710,7 @@ async function setLayerMedia(L, key, { mirror, history = false } = {}) {
   }
   refreshLayerUi();
   apcView?.refresh();
+  syncSceneClipWarm();
   if (history) {
     const next = { key: layer.mediaKey, mirror: !!layer.mirror };
     params.history?.edit(`media:${L}`, prev, next, (m) => {
@@ -1121,10 +1147,12 @@ function refreshLibraryUi() {
     card.querySelector('.media-name').title = job.label;
     list.append(card);
   }
-  const pool = [...project.mediaPool].sort((a, b) => Number(isBrandVisual(a)) - Number(isBrandVisual(b)));
+  const pool = project.mediaPool;
+  let brandLabel = false;
   for (const entry of pool) {
     const brand = isBrandVisual(entry);
-    if (brand && !list.querySelector('.media-brand-label')) {
+    if (brand && !brandLabel) {
+      brandLabel = true;
       const label = document.createElement('p');
       label.className = 'hint media-brand-label';
       label.textContent = 'Brand';
@@ -1136,6 +1164,7 @@ function refreshLibraryUi() {
     const card = document.createElement('article');
     card.className = 'media-card';
     card.draggable = true;
+    card.dataset.name = name;
     card.classList.toggle('on', used.length > 0);
     card.innerHTML = '<div class="media-thumb-wrap"><img class="media-thumb" alt="" /><div class="media-badges"></div><div class="media-actions"></div></div><span class="media-name"></span>';
     const audioFile = entry.kind === 'audio' || mediaKind(name) === 'audio';
@@ -1145,7 +1174,6 @@ function refreshLibraryUi() {
     thumb.alt = '';
     if (audioFile) {
       card.classList.add('is-audio');
-      card.draggable = false;
       const mark = document.createElement('i');
       mark.className = 'media-play';
       mark.textContent = '\u266A';
@@ -1162,7 +1190,9 @@ function refreshLibraryUi() {
     if (mediaHydrated && !audioFile && !library.has(name)) {
       card.classList.add('is-missing');
       card.querySelector('.media-name').textContent = `(missing) ${name}`;
-      card.querySelector('.media-name').title = `${name} is missing from the Media Library folder`;
+      card.querySelector('.media-name').title = openedProjectFile()
+        ? `${name} is missing from this project folder`
+        : `${name} is missing from the Media Library folder`;
     }
     const badges = card.querySelector('.media-badges');
     for (const id of used) {
@@ -1209,7 +1239,7 @@ function refreshLibraryUi() {
     });
     actions.append(del);
     card.addEventListener('dragstart', (e) => {
-      if (brand || e.target.closest('button')) {
+      if (e.target.closest('button')) {
         e.preventDefault();
         return;
       }
@@ -1217,18 +1247,25 @@ function refreshLibraryUi() {
         id: item?.id || name,
         name,
         source: 'clip',
-        kind: item?.kind || 'video',
+        kind: item?.kind || entry.kind || (audioFile ? 'audio' : 'video'),
       };
       beginDrag(e, itemData);
-      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.effectAllowed = 'copyMove';
       e.dataTransfer.setData('text/plain', JSON.stringify({
         type: 'SCENE_OR_CLIP',
         id: itemData.id,
         name: itemData.name,
         data: itemData,
       }));
+      card.classList.add('is-dragging');
+      document.body.classList.add('dragging-media');
     });
-    card.addEventListener('dragend', () => endDragSoon());
+    card.addEventListener('dragend', () => {
+      card.classList.remove('is-dragging');
+      document.body.classList.remove('dragging-media');
+      clearMediaDropMarks();
+      endDragSoon();
+    });
     list.append(card);
   }
 
@@ -1247,11 +1284,101 @@ function refreshLibraryUi() {
     ? project.mediaPool.filter((item) => item.name && item.kind !== 'audio' && mediaKind(item.name) !== 'audio' && !library.has(item.name)).map((item) => item.name)
     : [];
   const lines = [];
-  if (gone.length) lines.push(`Missing file: ${gone.join(', ')}`);
+  if (gone.length) {
+    lines.push(openedProjectFile()
+      ? `Missing from this project folder: ${gone.join(', ')}`
+      : `Missing file: ${gone.join(', ')}`);
+  }
   if (missing.length) lines.push(`Scenes need these files. Send them from Media Manager: ${missing.join(', ')}`);
   $('media-missing').hidden = !lines.length;
   $('media-missing').textContent = lines.join(' ');
 }
+
+function clearMediaDropMarks() {
+  for (const node of document.querySelectorAll('#media-list .drop-before, #media-list .drop-after')) {
+    node.classList.remove('drop-before', 'drop-after');
+  }
+}
+
+function mediaInsertIndex(list, clientX, clientY) {
+  const cards = [...list.querySelectorAll('.media-card[data-name]')];
+  if (!cards.length) return project.mediaPool.length;
+  for (let i = 0; i < cards.length; i++) {
+    const rect = cards[i].getBoundingClientRect();
+    if (clientY < rect.top || clientY > rect.bottom) continue;
+    if (clientX < rect.left || clientX > rect.right) continue;
+    return clientX < rect.left + rect.width / 2 ? i : i + 1;
+  }
+  let best = project.mediaPool.length;
+  let bestDist = Infinity;
+  for (let i = 0; i < cards.length; i++) {
+    const rect = cards[i].getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dist = (clientX - cx) ** 2 + (clientY - cy) ** 2;
+    if (dist >= bestDist) continue;
+    bestDist = dist;
+    best = clientX < cx ? i : i + 1;
+  }
+  return best;
+}
+
+function moveMediaPool(name, toIndex) {
+  const pool = project.mediaPool.slice();
+  const from = pool.findIndex((item) => item.name === name);
+  if (from < 0) return false;
+  const max = pool.length;
+  const target = Math.min(max, Math.max(0, Math.round(Number(toIndex) || 0)));
+  let insert = target;
+  if (from < insert) insert -= 1;
+  if (insert === from) return false;
+  const [item] = pool.splice(from, 1);
+  pool.splice(insert, 0, item);
+  project.setMediaPool(pool);
+  refreshLibraryUi();
+  return true;
+}
+
+function bindMediaReorder() {
+  const list = $('media-list');
+  if (!list || list.dataset.reorderBound) return;
+  list.dataset.reorderBound = '1';
+  let insertAt = -1;
+  const mark = (index) => {
+    insertAt = index;
+    clearMediaDropMarks();
+    const cards = [...list.querySelectorAll('.media-card[data-name]')];
+    if (!cards.length) return;
+    if (index >= cards.length) {
+      cards[cards.length - 1].classList.add('drop-after');
+      return;
+    }
+    cards[index].classList.add('drop-before');
+  };
+  list.addEventListener('dragover', (e) => {
+    const payload = window.__vjDragPayload;
+    if (payload?.data?.source !== 'clip') return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    mark(mediaInsertIndex(list, e.clientX, e.clientY));
+  });
+  list.addEventListener('dragleave', (e) => {
+    if (e.relatedTarget && list.contains(e.relatedTarget)) return;
+    clearMediaDropMarks();
+    insertAt = -1;
+  });
+  list.addEventListener('drop', (e) => {
+    const payload = readDrag(e);
+    if (payload?.data?.source !== 'clip') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const at = insertAt >= 0 ? insertAt : mediaInsertIndex(list, e.clientX, e.clientY);
+    clearMediaDropMarks();
+    insertAt = -1;
+    moveMediaPool(payload.name || payload.id, at);
+  });
+}
+bindMediaReorder();
 
 function addFiles(fileList, { bin = false } = {}) {
   const added = library.add(fileList);
@@ -1331,16 +1458,13 @@ $('media-add').addEventListener('click', () => {
 $('media-files').addEventListener('change', (e) => {
   const files = [...(e.target.files || [])];
   const audioFiles = files.filter((file) => file.type.startsWith('audio/') || /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i.test(file.name || ''));
-  const clips = files.filter((file) => !audioFiles.includes(file));
+  const clips = files.filter((file) => !audioFiles.includes(file)).filter((file) => {
+    if (!mediaLibraryHasName(file.name)) return true;
+    return confirmDuplicateAdd(file.name);
+  });
   if (audioFiles.length) globalLibrary?.ingest(audioFiles);
   library.add(clips);
   for (const file of clips) rememberMediaSource(file.name, 'user');
-  if ($('prep-brand')?.checked) {
-    for (const file of clips) {
-      addMediaTag(file.name, 'brand');
-      window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name: file.name, path: '' } }));
-    }
-  }
   e.target.value = '';
   globalLibrary?.refresh();
   globalLibrary?.open();
@@ -1655,6 +1779,8 @@ async function createNewProjectFile() {
   rememberProjectPath(path);
   openProjectPath = path;
   await adoptProjectFolders(path);
+  // Own tags on the stick from here on (Brand marks already in the session travel with Save).
+  setProjectMediaTags(exportMediaTagsFor(brandTaggedNames()));
   return path;
 }
 
@@ -1675,6 +1801,23 @@ async function ensureSourceDir() {
     try { localStorage.setItem(SOURCE_DIR_KEY, dir); } catch { /* private mode */ }
   }
   return dir;
+}
+
+/**
+ * Where new media / brand / show audio land while a project is open:
+ * `<project>/Source/`. Without an open project, fall back to machine global_media.
+ */
+async function projectMediaWriteDir() {
+  const path = openedProjectFile();
+  if (isTauri() && path && projectHome(path)) {
+    const child = projectChild(path, 'Source');
+    const dir = await invoke('ensure_folder', { path: child }).catch(() => child);
+    if (dir) {
+      try { localStorage.setItem(SOURCE_DIR_KEY, dir); } catch { /* private mode */ }
+      return dir;
+    }
+  }
+  return ensureGlobalMediaRoot();
 }
 
 async function ensureLibraryDir() {
@@ -1764,6 +1907,7 @@ async function fileFromStock(clip, onPhase) {
         inputPath: path,
         saveDir,
         keyint: clip.source === 'archive' ? 30 : 1,
+        dropAudio: dropVideoAudioPref(),
       });
     } catch (err) {
       const error = new Error(stockErrorText(err, 'Transcode failed'));
@@ -2086,6 +2230,53 @@ function isBrandVisual(entry) {
   return entry.kind !== 'audio' && mediaKind(name) !== 'audio';
 }
 
+/** Session paths for Brand Overlay Choose (tick can land before Add to Project). */
+const brandAssetPaths = new Map();
+
+function brandAssetPath(name) {
+  return brandAssetPaths.get(name)
+    || project.mediaPool.find((item) => item.name === name)?.path
+    || clipSourcePaths.get(name)
+    || globalLibrary?.pathOf?.(name)
+    || '';
+}
+
+async function ensureBrandInLibrary(name, path = '') {
+  const key = String(name || '');
+  if (!key || mediaKind(key) === 'audio') return false;
+  const resolved = (typeof path === 'string' && path) ? path : brandAssetPath(key);
+  if (resolved) brandAssetPaths.set(key, resolved);
+  if (library.has(key)) return true;
+  if (resolved && isTauri() && absoluteMediaPath(resolved)) {
+    try {
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      library.addRemote({ name: key, url: convertFileSrc(resolved) });
+      return library.has(key);
+    } catch {
+      return false;
+    }
+  }
+  return library.has(key);
+}
+
+/** Brand Overlay Choose list: brand-tagged clips, not only project.mediaPool. */
+function brandOverlayClips() {
+  const names = brandTaggedNames();
+  const clips = [];
+  for (const name of names) {
+    if (mediaKind(name) === 'audio') continue;
+    const path = brandAssetPath(name);
+    if (path) brandAssetPaths.set(name, path);
+    const media = library.mediaItem(name);
+    const thumbnail = media?.thumbnail
+      || (mediaKind(name) === 'image' ? (media?.url || '') : '')
+      || '';
+    clips.push({ name, thumbnail, path: path || '' });
+  }
+  clips.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  return clips;
+}
+
 window.addEventListener('vj-media-tags', () => {
   refreshLibraryUi();
   refreshMediaSelect();
@@ -2094,24 +2285,17 @@ window.addEventListener('vj-media-tags', () => {
 window.addEventListener('vj-brand-ready', async (event) => {
   const name = event.detail?.name;
   const path = typeof event.detail?.path === 'string' ? event.detail.path : '';
-  if (!name) return;
-  if (path && isTauri() && absoluteMediaPath(path) && !library.has(name)) {
-    const { convertFileSrc } = await import('@tauri-apps/api/core');
-    library.addRemote({ name, url: convertFileSrc(path) });
-  }
-  addToBin({ name, path, kind: mediaKind(name) });
-  globalLibrary?.showSource?.('brand');
+  if (!name || mediaKind(name) === 'audio') return;
+  if (path) brandAssetPaths.set(name, path);
+  await ensureBrandInLibrary(name, path || brandAssetPath(name));
+  // Brand Overlay Choose reads tags + library; no project Save / Add to Project required.
+  // Leave the gallery on its current filter — Brand tab is manual only.
 });
 
-function brandProjectClips() {
-  return project.mediaPool
-    .filter((item) => item?.name && mediaKind(item.name) !== 'audio' && hasMediaTag(item.name, 'brand'))
-    .map((item) => {
-      const media = library.mediaItem(item.name);
-      const thumbnail = media?.thumbnail || (mediaKind(item.name) === 'image' ? (media?.url || '') : '');
-      return { name: item.name, thumbnail, path: item.path || '' };
-    });
-}
+window.addEventListener('vj-brand-clear', (event) => {
+  const name = event.detail?.name;
+  if (name) brandAssetPaths.delete(name);
+});
 
 async function fileForProjectClip(name) {
   const item = library.mediaItem(name);
@@ -2124,6 +2308,31 @@ async function fileForProjectClip(name) {
     return new File([blob], name, { type });
   }
   return library.getBlob(name);
+}
+
+async function fileForBrandClip(name) {
+  let path = brandAssetPath(name);
+  if (!path && globalLibrary?.resolvePath) {
+    path = await globalLibrary.resolvePath(name);
+    if (path) brandAssetPaths.set(name, path);
+  }
+  await ensureBrandInLibrary(name, path);
+  let file = await fileForProjectClip(name);
+  if (file) return file;
+  path = brandAssetPath(name);
+  if (!path || !isTauri() || !absoluteMediaPath(path)) return null;
+  try {
+    const { convertFileSrc } = await import('@tauri-apps/api/core');
+    const res = await fetch(convertFileSrc(path));
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    const type = blob.type || (mediaKind(name) === 'image' ? 'image/png' : 'video/mp4');
+    const next = new File([blob], name, { type });
+    if (!library.has(name)) library.add([next]);
+    return next;
+  } catch {
+    return null;
+  }
 }
 
 function addToBin(entry) {
@@ -2172,18 +2381,32 @@ async function removeFromBin(name) {
 async function hydrateProjectMedia() {
   await library.ensureCached(project.mediaPool.map((item) => item.name));
   if (!isTauri()) return;
-  const root = await mediaLibraryRoot();
-  if (root) await allowLibraryFolder(root);
-  await ensureGlobalMediaRoot();
-  const { convertFileSrc } = await import('@tauri-apps/api/core');
   const projectPath = openProjectPath || currentProjectPath();
+  if (projectPath) await allowLibraryFolder(projectHome(projectPath));
+  // Prefer files beside the .vjproj. Global vault / IndexedDB are migration fallbacks only.
+  const { convertFileSrc } = await import('@tauri-apps/api/core');
+  const sideRows = projectPath ? await projectSideRows(projectPath) : [];
   for (const item of project.mediaPool) {
     if (item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
-    const path = await resolveProjectMediaPath(item.path, projectPath);
-    if (!path || !absoluteMediaPath(path) || library.has(item.name)) continue;
+    let path = '';
+    if (item.path && !isLibraryReference(item.path)) {
+      path = await resolveProjectMediaPath(item.path, projectPath);
+    }
+    if ((!path || !absoluteMediaPath(path)) && projectPath) {
+      const side = matchMediaName(sideRows, item.name);
+      if (side?.path) path = side.path;
+    }
+    if ((!path || !absoluteMediaPath(path)) && item.path && isLibraryReference(item.path)) {
+      await ensureGlobalMediaRoot();
+      path = await resolveProjectMediaPath(item.path, projectPath);
+    }
+    if (!path || !absoluteMediaPath(path)) continue;
     const ready = await mediaFileReady(path);
     if (!ready) continue;
+    // Always re-point at the project file so a USB show wins over a same-named IndexedDB blob.
     library.addRemote({ name: item.name, url: convertFileSrc(path) });
+    const rel = besideStoredPath(projectPath, path);
+    if (rel) brandAssetPaths.set(item.name, rel);
   }
 }
 
@@ -2205,13 +2428,22 @@ library.ready.then(async () => {
   mediaHydrated = true;
   refreshLibraryUi();
   refreshMediaSelect();
+  syncSceneClipWarm();
 }).catch(() => {});
+
+const sceneWarm = new SceneClipWarm({
+  getFile: (name) => library.get(name),
+  getRemote: (name) => library.mediaItem(name),
+});
 
 const scenes = new SceneManager({
   params,
   project,
   getMedia: currentMedia,
-  applyMedia: (L, m) => setLayerMedia(L, m.key, { mirror: m.mirror }),
+  applyMedia: (L, m) => setLayerMedia(L, m.key, {
+    mirror: m.mirror,
+    prepared: sceneWarm.take(m.key),
+  }),
   getRouting: layerRouting,
   applyRouting: applySceneRouting,
   getMix: () => captureComposition(),
@@ -3297,6 +3529,8 @@ function triggerScene(id, fade = timeline.fadeSeconds, { history = false } = {})
     ? lookSnap(Object.keys(source.params || {}))
     : null;
   if (fade > 0) snapshotHold();
+  // Prefer warm decoders collected while the scene sat on the pad strip.
+  syncSceneClipWarm();
   scenes.launch(id, fade);
   if (before && source) {
     const after = {
@@ -3317,31 +3551,12 @@ function triggerScene(id, fade = timeline.fadeSeconds, { history = false } = {})
   scheduleSceneThumb(typeof id === 'string' ? id : source?.id);
 }
 
-const programCanvas = $('program-monitor');
-const programCtx = programCanvas?.getContext('2d', { alpha: false });
 const sceneThumbCanvas = document.createElement('canvas');
 sceneThumbCanvas.width = 160;
 sceneThumbCanvas.height = 90;
 const sceneThumbCtx = sceneThumbCanvas.getContext('2d', { alpha: false });
-let programStampMs = 0;
-let programDrawnMs = 0;
 let sceneThumbId = '';
 let sceneThumbDue = 0;
-
-function paintProgramMonitor(nowMs) {
-  if (!programCtx || !document.body.classList.contains('midi-mode')) return;
-  if (nowMs - programStampMs < 1000 / 30) return;
-  programStampMs = nowMs;
-  const aspect = glCanvas.width / Math.max(1, glCanvas.height);
-  const w = 320;
-  const h = Math.max(1, Math.round(w / aspect));
-  if (programCanvas.width !== w || programCanvas.height !== h) {
-    programCanvas.width = w;
-    programCanvas.height = h;
-  }
-  programCtx.drawImage(glCanvas, 0, 0, programCanvas.width, programCanvas.height);
-  programDrawnMs = nowMs;
-}
 
 function scheduleSceneThumb(id) {
   if (!id) return;
@@ -3864,8 +4079,9 @@ async function resolveProjectMediaPath(stored, projectPath = '') {
   }
   const home = projectPath || openedProjectFile();
   if (home) {
+    // Portable form first: Source|Stock|Recordings|<legacy .media> relative to the .vjproj.
     const rel = absoluteMediaPath(path) ? peeledProjectRelative(path) : safeRelative(path);
-    if (rel && (projectBundlePath(rel) || /^(Source|Stock|Recordings)\//.test(rel))) {
+    if (rel && (projectBundlePath(rel) || /^(Source|Stock|Recordings)\//i.test(rel))) {
       return projectDirJoin(home, rel);
     }
     if (!absoluteMediaPath(path)) {
@@ -3875,7 +4091,8 @@ async function resolveProjectMediaPath(stored, projectPath = '') {
     if (absoluteMediaPath(path)) {
       const inside = relativeToProject(home, path);
       if (inside) return projectDirJoin(home, inside);
-      return '';
+      // Migration fallback: keep using the absolute path when the copy never landed.
+      return path;
     }
     return '';
   }
@@ -3991,117 +4208,182 @@ async function storeProjectAsset(projectPath, leaf, file, sourcePath) {
   return rel || '';
 }
 
+/** True when a relative path points at media beside the .vjproj (portable). */
+function isProjectRelativeMedia(path) {
+  const rel = safeRelative(path);
+  if (!rel || isLibraryReference(rel)) return false;
+  return projectBundlePath(rel) || /^(Source|Stock|Recordings)\//i.test(rel);
+}
+
+async function absoluteForProjectCopy(name, stored, hint, vaultRows, libraryRoot, globalRoot) {
+  if (absoluteMediaPath(hint)) return hint;
+  if (absoluteMediaPath(stored)) return stored;
+  if (isLibraryReference(stored) && globalRoot) {
+    const abs = resolveLibraryPath(stored);
+    if (abs) return abs;
+  }
+  const vault = matchMediaName(vaultRows, name);
+  if (vault?.path && absoluteMediaPath(vault.path)) return vault.path;
+  if (stored && !absoluteMediaPath(stored) && !isLibraryReference(stored) && libraryRoot) {
+    const abs = joinLibraryPath(libraryRoot, stored);
+    if (abs) return abs;
+  }
+  if (globalRoot) {
+    const abs = joinLibraryPath(globalRoot, String(name).split(/[\\/]/).pop() || name);
+    if (abs && await mediaFileReady(abs)) return abs;
+  }
+  return '';
+}
+
+async function ensureCopiedBeside(projectPath, name, {
+  stored = '',
+  hint = '',
+  file = null,
+  vaultRows = [],
+  sideRows = [],
+  libraryRoot = '',
+  globalRoot = '',
+} = {}) {
+  const side = matchMediaName(sideRows, name);
+  const sideRel = side?.path ? (besideStoredPath(projectPath, side.path) || savedMediaPath(projectPath, '', side.path)) : '';
+  if (sideRel && isProjectRelativeMedia(sideRel)) {
+    const abs = projectDirJoin(projectPath, sideRel);
+    if (abs && await mediaFileReady(abs)) return sideRel;
+  }
+  if (stored && isProjectRelativeMedia(stored) && !isLibraryReference(stored)) {
+    const abs = projectDirJoin(projectPath, stored);
+    if (abs && await mediaFileReady(abs)) return safeRelative(stored);
+  }
+  const source = await absoluteForProjectCopy(name, stored, hint, vaultRows, libraryRoot, globalRoot);
+  const blob = file || library.get(name);
+  const rel = await storeProjectAsset(projectPath, name, blob, source);
+  return rel && isProjectRelativeMedia(rel) ? rel : '';
+}
+
 async function bundleProjectAssets(data, projectPath) {
   if (!isTauri() || !projectPath) return data;
+  await adoptProjectFolders(projectPath);
   const saved = JSON.parse(JSON.stringify(data));
   const missed = [];
-  const root = await ensureGlobalMediaRoot();
-  let vault = new Set();
-  try {
-    const rows = await invoke('list_global_media', { saveDir: '' });
-    vault = new Set((Array.isArray(rows) ? rows : []).map((row) => row.name));
-  } catch { /* a file we cannot see in the vault is copied beside the project */ }
+  const globalRoot = await ensureGlobalMediaRoot();
   const libraryRoot = await mediaLibraryRoot();
   const sideRows = await projectSideRows(projectPath);
+  let vaultRows = [];
+  try {
+    const rows = await invoke('list_global_media', { saveDir: '' });
+    vaultRows = Array.isArray(rows) ? rows : [];
+  } catch { /* copy from library bytes when the vault list is unavailable */ }
+  const copyOpts = { vaultRows, sideRows, libraryRoot, globalRoot };
+
+  // Brand Overlay assets travel with the stick even without Add to Project.
+  const pool = Array.isArray(saved.mediaPool) ? saved.mediaPool.slice() : [];
+  const have = new Set(pool.map((item) => item?.name).filter(Boolean));
+  for (const name of brandTaggedNames()) {
+    if (!name || mediaKind(name) === 'audio' || have.has(name)) continue;
+    pool.push({
+      id: name,
+      name,
+      kind: mediaKind(name) === 'image' ? 'image' : 'video',
+      path: brandAssetPath(name) || '',
+    });
+    have.add(name);
+  }
+  saved.mediaPool = pool;
+
   for (const item of saved.mediaPool || []) {
     if (!item?.name) continue;
-    const path = typeof item.path === 'string' ? item.path : '';
-    const hint = clipSourcePaths.get(item.name) || '';
-    const stored = await libraryStoredPath(path, item.name, projectPath, hint);
-    if (stored && !absoluteMediaPath(stored)) {
-      item.path = stored;
-      continue;
-    }
-    const side = matchMediaName(sideRows, item.name);
-    const sideRel = side?.path ? savedMediaPath(projectPath, '', side.path) : '';
-    if (sideRel) {
-      item.path = sideRel;
-      continue;
-    }
-    if (vault.has(item.name) && !sideRel) {
-      const leaf = String(item.name).split(/[\\/]/).pop() || item.name;
-      item.path = sameFolder(libraryRoot, root) ? leaf : libraryReference(item.name);
-      continue;
-    }
+    const previous = typeof item.path === 'string' ? item.path : '';
+    const hint = clipSourcePaths.get(item.name) || brandAssetPaths.get(item.name) || '';
     try {
-      const source = absoluteMediaPath(path) ? path : (absoluteMediaPath(hint) ? hint : '');
-      const rel = await storeProjectAsset(projectPath, item.name, library.get(item.name), source);
-      if (rel) item.path = rel;
-      else if (absoluteMediaPath(item.path)) item.path = '';
+      const rel = await ensureCopiedBeside(projectPath, item.name, {
+        ...copyOpts,
+        stored: previous,
+        hint,
+        file: library.get(item.name),
+      });
+      if (rel) {
+        item.path = rel;
+        brandAssetPaths.set(item.name, rel);
+      } else {
+        // Keep the previous path (absolute / library/ ok as migration fallback). Never blank to ''.
+        item.path = previous;
+        missed.push(item.name);
+      }
     } catch (err) {
-      if (absoluteMediaPath(item.path)) item.path = '';
+      item.path = previous;
       missed.push(item.name);
       console.warn('Could not store project media', item.name, err);
     }
   }
+
   const audioFileName = saved.desk?.audio?.file || '';
   if (saved.desk?.audio?.mode === 'file' && audioFileName) {
-    const audioPath = saved.desk.audio.path || '';
+    const previous = saved.desk.audio.path || '';
     const audioHint = absoluteMediaPath(audioAssetPath) ? audioAssetPath : '';
-    const stored = await libraryStoredPath(audioPath, audioFileName, projectPath, audioHint);
-    const side = matchMediaName(sideRows, audioFileName);
-    const sideRel = side?.path ? savedMediaPath(projectPath, '', side.path) : '';
-    if ((stored && !absoluteMediaPath(stored)) || sideRel) {
-      saved.desk.audio.path = (stored && !absoluteMediaPath(stored)) ? stored : sideRel;
-    } else {
-      try {
-        const audioFile = await library.getAudio(audioFileName);
-        const source = absoluteMediaPath(audioPath) ? audioPath : audioHint;
-        const rel = await storeProjectAsset(projectPath, audioFileName, audioFile, source);
-        if (rel) saved.desk.audio.path = rel;
-        else if (absoluteMediaPath(saved.desk.audio.path)) saved.desk.audio.path = '';
-      } catch (err) {
-        if (absoluteMediaPath(saved.desk.audio.path)) saved.desk.audio.path = '';
+    try {
+      const audioFile = await library.getAudio(audioFileName);
+      const rel = await ensureCopiedBeside(projectPath, audioFileName, {
+        ...copyOpts,
+        stored: previous,
+        hint: audioHint,
+        file: audioFile,
+      });
+      if (rel) {
+        saved.desk.audio.path = rel;
+        audioAssetPath = rel;
+      } else {
+        saved.desk.audio.path = previous;
         missed.push(audioFileName);
-        console.warn('Could not store the audio file', err);
       }
+    } catch (err) {
+      saved.desk.audio.path = previous;
+      missed.push(audioFileName);
+      console.warn('Could not store the audio file', err);
     }
   }
+
   for (let i = 0; i < 3; i += 1) {
     const row = saved.desk?.logos?.[i];
     const slot = stings.slots[i];
     if (!row || !slot?.cacheKey) continue;
-    const rowPath = row.path || '';
+    const previous = row.path || '';
     const logoHint = absoluteMediaPath(slot.assetPath || '') ? slot.assetPath : '';
     try {
       const file = await library.getBlob(slot.cacheKey);
       const leaf = `logo-${i + 1}-${file?.name || row.name || 'logo'}`;
-      const stored = await libraryStoredPath(rowPath, leaf, projectPath, logoHint);
-      const side = matchMediaName(sideRows, slot.name || row.name || '');
-      const sideRel = side?.path ? savedMediaPath(projectPath, '', side.path) : '';
-      const kept = (stored && !absoluteMediaPath(stored)) ? stored : sideRel;
-      if (kept) {
-        row.path = kept;
-        slot.assetPath = kept;
-        continue;
-      }
-      const source = absoluteMediaPath(rowPath) ? rowPath : logoHint;
-      const rel = await storeProjectAsset(projectPath, leaf, file, source);
+      const rel = await ensureCopiedBeside(projectPath, leaf, {
+        ...copyOpts,
+        stored: previous,
+        hint: logoHint,
+        file,
+      });
       if (rel) {
         row.path = rel;
         slot.assetPath = rel;
-      } else if (absoluteMediaPath(row.path)) row.path = '';
+      } else {
+        row.path = previous;
+        missed.push(row.name || `Logo ${i + 1}`);
+      }
     } catch (err) {
-      if (absoluteMediaPath(row.path)) row.path = '';
+      row.path = previous;
       missed.push(row.name || `Logo ${i + 1}`);
       console.warn('Could not store a logo', err);
     }
   }
-  if (missed.length) showToast(`Saved the project. These files stayed in the app only: ${missed.join(', ')}`, true);
-  for (const item of saved.mediaPool || []) {
-    if (item) item.path = blankAbsolute(item.path);
-  }
-  if (saved.desk?.audio) saved.desk.audio.path = blankAbsolute(saved.desk.audio.path);
-  for (const row of saved.desk?.logos || []) {
-    if (row) row.path = blankAbsolute(row.path);
+
+  // Tags (including Brand) live in the .vjproj so another machine does not need localStorage.
+  const tagNames = [
+    ...pool.map((item) => item?.name),
+    audioFileName,
+    ...(saved.desk?.logos || []).map((row) => row?.name),
+    ...brandTaggedNames(),
+  ];
+  saved.mediaTags = exportMediaTagsFor(tagNames);
+
+  if (missed.length) {
+    showToast(`Saved the project. Could not copy into the folder: ${missed.join(', ')}`, true);
   }
   return saved;
-}
-
-function blankAbsolute(value) {
-  const text = String(value || '').trim().replace(/\\/g, '/');
-  if (!text || absoluteMediaPath(text)) return '';
-  return text;
 }
 
 function wantedProjectNames() {
@@ -4117,6 +4399,9 @@ function wantedProjectNames() {
   for (const item of project.mediaPool) {
     if (!item?.name || item.kind === 'audio' || mediaKind(item.name) === 'audio') continue;
     add(item.name);
+  }
+  for (const name of brandTaggedNames()) {
+    if (mediaKind(name) !== 'audio') add(name);
   }
   add(project.desk?.audio?.file);
   for (const slot of stings.slots) add(slot?.name);
@@ -4141,12 +4426,24 @@ async function listFolderMedia(dir) {
 
 async function projectSideRows(projectPath) {
   const rows = [];
-  for (const name of ['Source', 'Stock']) {
+  for (const name of ['Source', 'Stock', 'Recordings']) {
     const dir = projectChild(projectPath, name);
     if (!(await allowLibraryFolder(dir))) continue;
     rows.push(...await listFolderMedia(dir));
   }
   return rows;
+}
+
+function storedPathForWantedName(name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return '';
+  const poolItem = project.mediaPool.find((item) => String(item?.name || '').toLowerCase() === key);
+  if (poolItem?.path) return poolItem.path;
+  const audioName = project.desk?.audio?.file || '';
+  if (audioName && audioName.toLowerCase() === key) return project.desk?.audio?.path || '';
+  const logo = stings.slots.find((slot) => slot?.name && slot.name.toLowerCase() === key);
+  if (logo?.assetPath) return logo.assetPath;
+  return brandAssetPaths.get(name) || '';
 }
 
 async function connectFoundFile(name, filePath) {
@@ -4187,19 +4484,24 @@ function besideStoredPath(projectPath, filePath) {
 
 async function connectProjectFiles(projectPath) {
   if (!isTauri() || !projectPath || !projectHome(projectPath)) return;
-  const sourceDir = projectChild(projectPath, 'Source');
-  const stockDir = projectChild(projectPath, 'Stock');
-  const hasSource = await allowLibraryFolder(sourceDir);
-  const hasStock = await allowLibraryFolder(stockDir);
-  if (!hasSource && !hasStock) return;
   await allowLibraryFolder(projectHome(projectPath));
-  const sourceRows = hasSource ? await listFolderMedia(sourceDir) : [];
-  const stockRows = hasStock ? await listFolderMedia(stockDir) : [];
+  const sideRows = await projectSideRows(projectPath);
   const found = new Map();
   const missing = [];
   for (const name of wantedProjectNames()) {
-    const hit = matchMediaName(sourceRows, name) || matchMediaName(stockRows, name);
-    if (hit?.path) {
+    // Resolve relative paths from the project folder first.
+    const stored = storedPathForWantedName(name);
+    let abs = '';
+    if (stored) {
+      abs = await resolveProjectMediaPath(stored, projectPath);
+      if (abs && absoluteMediaPath(abs) && await mediaFileReady(abs)) {
+        found.set(name.toLowerCase(), abs);
+        await connectFoundFile(name, abs);
+        continue;
+      }
+    }
+    const hit = matchMediaName(sideRows, name);
+    if (hit?.path && await mediaFileReady(hit.path)) {
       found.set(name.toLowerCase(), hit.path);
       await connectFoundFile(name, hit.path);
     } else missing.push(name);
@@ -4226,6 +4528,7 @@ async function connectProjectFiles(projectPath) {
       }
     } catch { /* the names stay missing */ }
   }
+  // Mark missing in the UI only — never library.remove / wipe IndexedDB for absent clips.
   for (const name of still) {
     const audioName = project.desk?.audio?.file || '';
     if (audioName && audioName.toLowerCase() === name.toLowerCase()) {
@@ -4234,21 +4537,24 @@ async function connectProjectFiles(projectPath) {
     }
     const logo = stings.slots.find((slot) => slot?.name && slot.name.toLowerCase() === name.toLowerCase());
     if (logo && !logo.ready) stings.markMissing(logo.index);
-    if (library.has(name)) library.remove(name);
   }
   let poolChanged = false;
   const pool = project.mediaPool.map((item) => {
     const hit = found.get(String(item?.name || '').toLowerCase());
     const rel = hit ? besideStoredPath(projectPath, hit) : '';
     const stored = typeof item.path === 'string' ? item.path : '';
-    if (rel && (!stored || absoluteMediaPath(stored))) {
+    if (rel && (!stored || absoluteMediaPath(stored) || isLibraryReference(stored))) {
       poolChanged = true;
       return { ...item, path: rel };
     }
     if (stored && absoluteMediaPath(stored)) {
       const peeled = peeledProjectRelative(stored) || relativeToProject(projectPath, stored);
-      poolChanged = true;
-      return { ...item, path: peeled || '' };
+      if (peeled) {
+        poolChanged = true;
+        return { ...item, path: peeled };
+      }
+      // Keep absolute / library paths as migration fallbacks; do not blank.
+      return item;
     }
     return item;
   });
@@ -4332,10 +4638,18 @@ function projectFile() {
     project.setDesk(captureDesk());
     project.setView(captureView());
   }
+  const base = project.toJSON();
+  const tagNames = [
+    ...(base.mediaPool || []).map((item) => item?.name),
+    base.desk?.audio?.file,
+    ...(base.desk?.logos || []).map((row) => row?.name),
+    ...brandTaggedNames(),
+  ];
   return {
-    ...project.toJSON(),
+    ...base,
+    mediaTags: exportMediaTagsFor(tagNames),
     live: { params: params.snapshot(), media: currentMedia() },
-    output: { aspect: outputAspect, fit: fitMode, renderScale, uiMode: document.body.classList.contains('live-mode') ? 'live' : 'timeline' },
+    output: { aspect: outputAspect, renderScale, uiMode: document.body.classList.contains('live-mode') ? 'live' : 'timeline' },
     outputMap: outputMap.toJSON(),
     bpmMode,
     midi: midi.mappings,
@@ -4375,6 +4689,12 @@ function rememberSavedProject(path, bundled) {
   }
   if (bundled.desk) project.setDesk(captureDesk());
   if (Array.isArray(bundled.mediaPool)) project.setMediaPool(bundled.mediaPool);
+  if (bundled.mediaTags && typeof bundled.mediaTags === 'object') {
+    setProjectMediaTags(bundled.mediaTags);
+    for (const item of bundled.mediaPool || []) {
+      if (item?.name && item.path) brandAssetPaths.set(item.name, item.path);
+    }
+  }
 }
 
 function disarmProjectPath() {
@@ -4542,6 +4862,9 @@ async function loadProject(file, sourcePath = '') {
   openProjectPath = sourcePath || '';
   project.setName(data.name);
   paintProjectName();
+  // Project tags travel on the stick; do not depend on this machine's vj.mediaTags.
+  setProjectMediaTags(data.mediaTags && typeof data.mediaTags === 'object' ? data.mediaTags : {});
+  brandAssetPaths.clear();
   const doc = coerceDocument(data);
   const names = new Set(doc.mediaPool.map((item) => item.name));
   const grab = (media) => {
@@ -4551,6 +4874,7 @@ async function loadProject(file, sourcePath = '') {
   };
   for (const scene of doc.scenes) grab(scene.media);
   grab(data.live?.media);
+  for (const name of brandTaggedNames()) names.add(name);
   await library.ensureCached([...names]);
   const pool = doc.mediaPool.map((item) => ({ ...item }));
   const have = new Set(pool.map((item) => item.name));
@@ -4558,6 +4882,11 @@ async function loadProject(file, sourcePath = '') {
     if (have.has(name)) continue;
     pool.push({ id: name, name, kind: mediaKind(name), path: '' });
     have.add(name);
+  }
+  for (const item of pool) {
+    if (item?.name && item.path && !absoluteMediaPath(item.path) && !isLibraryReference(item.path)) {
+      brandAssetPaths.set(item.name, item.path);
+    }
   }
   project.setMediaPool(pool);
   await hydrateProjectMedia();
@@ -4572,7 +4901,6 @@ async function loadProject(file, sourcePath = '') {
   panel.refreshAutomation();
   if (data.output) {
     setAspect(data.output.aspect);
-    setFit(data.output.fit);
     setRenderScale(data.output.renderScale);
     if (data.output.uiMode) setUiMode(data.output.uiMode);
   }
@@ -4588,7 +4916,7 @@ async function loadProject(file, sourcePath = '') {
   if (doc.view) applyProjectView(doc.view, { workspace: true });
   await restoreLogoFiles();
   await pointProjectAtFolder(sourcePath);
-  if (sourcePath && isNamedProjectFolder(sourcePath)) await adoptProjectFolders(sourcePath);
+  if (sourcePath) await adoptProjectFolders(sourcePath);
   if (sourcePath) await connectProjectFiles(sourcePath);
   {
     const shown = showRecordOutput(doc.recordOutput);
@@ -4606,6 +4934,8 @@ async function loadProject(file, sourcePath = '') {
     }
     scenes.launch({ params: data.live.params, media: data.live.media || {}, routing: layerRouting() }, 0);
   }
+  // Older projects stored one Scale for all layers under Recordings.
+  if (data.output?.fit) migrateLegacyFit(data.output.fit);
   refreshLayerUi();
   refreshLibraryUi();
   sceneBar.setBank(0);
@@ -4622,6 +4952,8 @@ function isMacDesktop() {
 function newProject({ keepLastPath = false } = {}) {
   audioAssetPath = '';
   audio.clearFile();
+  setProjectMediaTags(null);
+  brandAssetPaths.clear();
   try {
     localStorage.removeItem('vj.audioFile');
     if (!keepLastPath) {
@@ -4670,7 +5002,6 @@ function newProject({ keepLastPath = false } = {}) {
     params.set(def.id, def.defaultValue);
   }
   setAspect('16:9');
-  setFit('fill');
   for (const L of LAYERS) {
     bus.mute[L] = false;
     bus.solo[L] = false;
@@ -4729,6 +5060,7 @@ const sceneBar = new SceneBar({
 scenes.onChange(() => {
   refreshLibraryUi();
   sceneBar.updateActive();
+  syncSceneClipWarm();
 });
 
 // ---------------------------------------------------------------- audio UI
@@ -5614,7 +5946,11 @@ window.addEventListener('vj-audio-ready', async (event) => {
     console.warn('Library audio list did not refresh', err);
   }
   if (!detail.play) return;
-  audioAssetPath = detail.path || '';
+  {
+    const raw = detail.path || '';
+    const beside = openedProjectFile() ? besideStoredPath(openedProjectFile(), raw) : '';
+    audioAssetPath = beside || raw;
+  }
   try {
     let file = detail.file || await library.getAudio(detail.name);
     if (!file && detail.path && IS_TAURI) {
@@ -5868,38 +6204,48 @@ midi.onActivity = (key, value) => {
 midi.onTrigger = (sceneId) => {
   triggerScene(sceneId, undefined, { history: true });
 };
+async function enableMidi({ remember = true } = {}) {
+  await midi.init();
+  if (remember) {
+    try { localStorage.setItem('vj.midi.enabled', '1'); } catch { /* private mode */ }
+  }
+  midi.onChange();
+  return midi;
+}
+
+const MIDI_FAIL = 'MIDI access failed — try again';
+
 $('midi-enable').addEventListener('click', async () => {
   try {
-    await midi.init();
-    localStorage.setItem('vj.midi.enabled', '1');
-    midi.onChange();
-  } catch (err) {
-    setStatus($('midi-status'), err.message, true);
+    // Permission prompts only appear from a real click, not page load.
+    await enableMidi();
+  } catch {
+    setStatus($('midi-status'), MIDI_FAIL, true);
   }
 });
-if (localStorage.getItem('vj.midi.enabled') === '1') {
-  midi.init()
-    .then(() => midi.onChange())
-    .catch((err) => setStatus($('midi-status'), err.message, true));
+// Do not call requestMIDIAccess during page load — the prompt often never
+// appears. If MIDI was on last session, wait for Enable MIDI (or Learn / APC).
+if (localStorage.getItem('vj.midi.enabled') === '1' && !midi.access) {
+  setStatus($('midi-status'), 'Click Enable MIDI to reconnect');
 }
 $('midi-learn').addEventListener('click', () => {
   midi.toggleLearn();
   if (midi.learnArmed && !midi.access) {
-    midi.init().catch((err) => setStatus($('midi-status'), err.message, true));
+    enableMidi().catch(() => setStatus($('midi-status'), MIDI_FAIL, true));
   }
 });
 $('apc-preset').addEventListener('click', () => {
   const arm = async () => {
     setMidiMap('apc-mini-mk2');
     setDeskMode('midi');
-    if (!midi.access) await midi.init();
+    if (!midi.access) await enableMidi();
     apcLeds.reset();
     const found = midi.outputs.filter((p) => /apc|akai/i.test(p.name || ''));
     setStatus($('midi-status'), found.length
       ? `APC Mini MK2 · ${found.map((p) => p.name).join(', ')}`
       : 'APC Mini MK2 default map armed');
   };
-  arm().catch((err) => setStatus($('midi-status'), err.message, true));
+  arm().catch(() => setStatus($('midi-status'), MIDI_FAIL, true));
 });
 $('midi-clear').addEventListener('click', () => midi.clear());
 $('macro-add').addEventListener('click', () => macros.add());
@@ -6981,6 +7327,8 @@ function paintMachinePrefs() {
   if (reopen) {
     try { reopen.checked = localStorage.getItem('vj.reopenProject') === '1'; } catch { reopen.checked = false; }
   }
+  const dropAudio = $('prep-drop-video-audio');
+  if (dropAudio) dropAudio.checked = dropVideoAudioPref();
 }
 
 function setOpenIn(mode) {
@@ -7013,6 +7361,9 @@ $('dark-mode')?.addEventListener('change', (e) => {
 $('open-in')?.addEventListener('change', (e) => setOpenIn(e.target.value));
 $('reopen-project')?.addEventListener('change', (e) => {
   try { localStorage.setItem('vj.reopenProject', e.target.checked ? '1' : '0'); } catch { /* ignore */ }
+});
+$('prep-drop-video-audio')?.addEventListener('change', (e) => {
+  setDropVideoAudioPref(!!e.target.checked);
 });
 paintMachinePrefs();
 try {
@@ -7141,6 +7492,92 @@ function bindPreviewSplit(el) {
   applyPreviewSplit(topHeightPercent);
   bindPreviewSplit($('split-preview'));
   window.addEventListener('resize', () => applyPreviewSplit(topHeightPercent));
+}
+
+const programCanvas = $('program-monitor');
+const programCtx = programCanvas?.getContext('2d', { alpha: false });
+
+function fitProgramMonitor() {
+  if (!programCanvas) return;
+  const w = Math.max(2, Math.round(programCanvas.clientWidth));
+  const h = Math.max(2, Math.round(programCanvas.clientHeight));
+  if (w < 2 || h < 2) return;
+  if (programCanvas.width === w && programCanvas.height === h) return;
+  programCanvas.width = w;
+  programCanvas.height = h;
+}
+
+function paintProgramMonitor() {
+  if (deskMode !== 'midi' || !programCtx || !programCanvas) return;
+  if (programCanvas.width < 2 || glCanvas.width < 2) return;
+  const w = programCanvas.width;
+  const h = programCanvas.height;
+  const sw = glCanvas.width;
+  const sh = glCanvas.height;
+  programCtx.fillStyle = '#000';
+  programCtx.fillRect(0, 0, w, h);
+  const box = fittedBox(sw, sh, w, h, 'fill');
+  if (box) programCtx.drawImage(glCanvas, 0, 0, sw, sh, box.dx, box.dy, box.dw, box.dh);
+}
+
+if (programCanvas) new ResizeObserver(() => fitProgramMonitor()).observe(programCanvas);
+
+let midiViewPercent = 36;
+function clampMidiSplit(percent) {
+  return Math.min(62, Math.max(16, percent));
+}
+function applyMidiSplit(percent, save = false) {
+  midiViewPercent = clampMidiSplit(percent);
+  const host = document.querySelector('.midi-perform');
+  if (host) host.style.setProperty('--midi-view-h', `${midiViewPercent}%`);
+  const bar = $('split-midi');
+  if (bar) bar.setAttribute('aria-valuenow', String(Math.round(midiViewPercent)));
+  if (save) {
+    try { localStorage.setItem('vj.midiViewH', String(midiViewPercent)); } catch { /* ignore */ }
+  }
+  fitProgramMonitor();
+}
+function bindMidiSplit(el) {
+  if (!el) return;
+  let pointer = 0;
+  const measure = (clientY) => {
+    const host = document.querySelector('.midi-perform');
+    const rect = host?.getBoundingClientRect();
+    if (!rect || rect.height < 1) return midiViewPercent;
+    return ((clientY - rect.top) / rect.height) * 100;
+  };
+  const onMove = (e) => {
+    if (e.pointerId !== pointer) return;
+    applyMidiSplit(measure(e.clientY));
+  };
+  const onUp = (e) => {
+    if (e.pointerId !== pointer) return;
+    pointer = 0;
+    el.classList.remove('dragging');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    applyMidiSplit(midiViewPercent, true);
+  };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    pointer = e.pointerId;
+    try { el.setPointerCapture(e.pointerId); } catch { /* synthetic press */ }
+    el.classList.add('dragging');
+    applyMidiSplit(measure(e.clientY));
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+  el.addEventListener('dblclick', () => applyMidiSplit(36, true));
+}
+{
+  const savedRaw = localStorage.getItem('vj.midiViewH');
+  const saved = Number(savedRaw);
+  if (savedRaw != null && Number.isFinite(saved)) midiViewPercent = clampMidiSplit(saved);
+  applyMidiSplit(midiViewPercent);
+  bindMidiSplit($('split-midi'));
 }
 
 const TIMELINE_PANE_MIN = 44;
@@ -7296,7 +7733,8 @@ window.addEventListener('keydown', (e) => {
 
   if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
     const slot = Number(e.code.slice(5)) - 1;
-    const scene = slot < sceneBar.bankSize ? scenes.scenes[sceneBar.bank * sceneBar.bankSize + slot] : null;
+    // Slot index follows the saved-scene order (same as scene pads / APC grid).
+    const scene = slot < sceneBar.bankSize ? scenes.at(slot) : null;
     if (scene) triggerScene(scene.id, undefined, { history: true });
   } else if (k === ' ') {
     if (e.target?.matches?.('button, select, input')) return;
@@ -7419,7 +7857,7 @@ function frame(stamp) {
   if (controls.enabled) controls.update();
   for (const l of layers) {
     l.input?.setVisualRate?.(visualOn ? masterSpeed : 0);
-    l.tickMedia(motionDt, renderer, fitMode);
+    l.tickMedia(motionDt, renderer);
   }
 
   const live = lfo.update({
@@ -7448,6 +7886,8 @@ function frame(stamp) {
     layer.liveOverride.set(def.key, n);
     layer.setUniform(def.key, n);
   }
+  // Travel owns scale / posX / posY after LFO so the autopilot wins while it is on.
+  travel.tick(motionDt);
   momentary.apply(layers, grade, now);
   const glitchWas = proLinkGlitch;
   proLinkPulse = Math.max(0, proLinkPulse - dt * 8);
@@ -7486,7 +7926,7 @@ function frame(stamp) {
     const audible = bus.audible(l.id);
     l.opaqueBase = soloing && l.id === soloBase;
     const uv = l.uniforms.uUvScale.value;
-    const masked = fitMode === 'fit' && l.engine === ENGINE_FX && !l.is3D && l.uniforms.uHasInput.value > 0.5;
+    const masked = l.mediaFit() !== 'fill' && l.engine === ENGINE_FX && !l.is3D && l.uniforms.uHasInput.value > 0.5;
     place.scale = l.get('scale') * l.entryZoom;
     place.x = l.get('posX');
     place.y = l.get('posY');
@@ -7590,7 +8030,7 @@ function frame(stamp) {
     else renderer.render(quadScene, camera2d);
   }
 
-  paintProgramMonitor(nowMs);
+  paintProgramMonitor();
   captureSceneThumb(nowMs);
   pictureSend.tick(nowMs, glCanvas);
 
@@ -7764,6 +8204,7 @@ function frame(stamp) {
     frameSource,
     screensaverOutput,
     route.outputs.audio ? audio.recordStream : null,
+    'fill',
   );
   if (performHolding) paintPerformHold();
 }
@@ -7839,7 +8280,7 @@ function idleFrameClock() {
 }
 
 function useDisplayClock() {
-  if (deskMode === 'prep' || gpuLost) {
+  if (gpuLost) {
     idleFrameClock();
     return;
   }
@@ -7851,7 +8292,7 @@ function useDisplayClock() {
 }
 
 function useBackgroundClock() {
-  if (deskMode === 'prep' || gpuLost) {
+  if (gpuLost) {
     idleFrameClock();
     return;
   }
@@ -7865,7 +8306,7 @@ function useBackgroundClock() {
 }
 
 function syncFrameClock() {
-  if (deskMode === 'prep' || gpuLost) {
+  if (gpuLost) {
     idleFrameClock();
     return;
   }
@@ -7894,12 +8335,11 @@ function setDeskMode(mode) {
     $('file-menu-btn').setAttribute('aria-expanded', 'false');
     $('screen-menu').hidden = true;
   }
-  if (prep) {
-    idleFrameClock();
-    globalLibrary?.refresh();
-  }
-  else syncFrameClock();
+  // Prep keeps RAF / background pump / WebGL / master output running.
+  syncFrameClock();
+  if (prep) globalLibrary?.refresh();
   applyMidiSurface();
+  if (midiOn) fitProgramMonitor();
   apcView?.refresh();
   try { localStorage.setItem('vj.workspace', next); } catch { /* ignore */ }
   persistProjectView(true);
@@ -7982,7 +8422,7 @@ if (isLinuxSystem()) {
   const openIn = openInMode();
   if (openIn !== 'live') setDeskMode(openIn);
 }
-bindMediaPrep({ library, ensureStockDir: ensureSourceDir, showToast });
+bindMediaPrep({ library, ensureStockDir: projectMediaWriteDir, showToast });
 globalLibrary = bindGlobalLibrary({
   library,
   showToast,
@@ -7991,13 +8431,14 @@ globalLibrary = bindGlobalLibrary({
     const path = openedProjectFile();
     if (!path) return [];
     const dirs = [];
-    for (const name of ['Source', 'Stock']) {
+    for (const name of ['Source', 'Stock', 'Recordings']) {
       const dir = projectChild(path, name);
       if (await allowLibraryFolder(dir)) dirs.push(dir);
     }
     return dirs;
   },
-  prepareDir: ensureSourceDir,
+  // Open project → write into <project>/Source/. Else machine global_media.
+  prepareDir: projectMediaWriteDir,
   inBin: (name) => project.mediaPool.some((item) => item.name === name),
   projectSnapshot,
   onDeleted: async (name) => {

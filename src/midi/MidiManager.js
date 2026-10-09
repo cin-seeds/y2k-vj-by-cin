@@ -1,6 +1,7 @@
 // Web MIDI with "MIDI learn": arm a parameter, then move any CC / pad / pitch bend.
 // Notes act as momentary controls (velocity on press, 0 on release).
 // Targets named "scene:<id>" are triggers: any non-zero value launches that scene.
+// Those bindings stay on that scene id when the pad order changes; slot maps do not rewrite them.
 
 import { IS_TAURI } from '../ipc.js';
 
@@ -21,6 +22,8 @@ export class MidiManager {
     this.onControl = () => {};
     this.onHardware = () => false;
     this.onRaw = () => false;
+    /** @type {Promise<void> | null} */
+    this._starting = null;
   }
 
   toggleLearn() {
@@ -41,19 +44,72 @@ export class MidiManager {
     return this.#inTauri();
   }
 
+  /**
+   * Open MIDI. Call this from a click or other user gesture so the OS/browser
+   * can show a permission prompt. On desktop, empty or failed Web MIDI falls
+   * through to the native midir path (Windows, macOS, and Linux).
+   */
   async init() {
-    if (!this.supported) throw new Error('Web MIDI is not supported in this browser (use Chrome or Edge).');
-    // Linux WebKit has no requestMIDIAccess. That uses the native MIDI path.
+    if (!this.supported) throw new Error('MIDI access failed — try again');
+    if (this.access) {
+      // Already authorised: re-list native ports on a later Enable MIDI click.
+      if (this.#inTauri() && typeof this.access.applyPorts === 'function') {
+        try {
+          await this.#nativeAccess();
+          this.#attach();
+        } catch { /* keep the open access */ }
+      }
+      return;
+    }
+    if (this._starting) return this._starting;
+    this._starting = this.#open().finally(() => { this._starting = null; });
+    return this._starting;
+  }
+
+  async #open() {
+    let webAccess = null;
+    let webErr = null;
     if (typeof navigator.requestMIDIAccess === 'function') {
       try {
-        this.access = await navigator.requestMIDIAccess({ sysex: false });
+        // Must start from a user gesture. WebView2 on Windows often never shows
+        // a prompt and can hang — time out so midir can take over.
+        webAccess = await raceTimeout(
+          navigator.requestMIDIAccess({ sysex: false }),
+          3000,
+          'MIDI access timed out',
+        );
       } catch (err) {
-        if (!this.#inTauri()) throw err;
-        this.access = await this.#nativeAccess();
+        webErr = err;
       }
-    } else {
-      this.access = await this.#nativeAccess();
     }
+
+    const webInputs = webAccess ? webAccess.inputs.size : 0;
+    if (webAccess && webInputs > 0) {
+      this.#useAccess(webAccess);
+      return;
+    }
+
+    if (this.#inTauri()) {
+      try {
+        // Prefer native whenever Web MIDI failed or listed no inputs, so the
+        // midir poller (not an empty Web MIDI map) owns hot-plug on Windows.
+        const native = await this.#nativeAccess();
+        this.#useAccess(native);
+        return;
+      } catch (nativeErr) {
+        if (!webAccess) throw webErr || nativeErr;
+      }
+    }
+
+    if (webAccess) {
+      this.#useAccess(webAccess);
+      return;
+    }
+    throw webErr || new Error('MIDI access failed — try again');
+  }
+
+  #useAccess(access) {
+    this.access = access;
     this.#attach();
     this.access.onstatechange = () => {
       this.#attach();
@@ -96,6 +152,7 @@ export class MidiManager {
   }
 
   #attach() {
+    if (!this.access) return;
     for (const input of this.access.inputs.values()) {
       input.onmidimessage = (e) => this.#handle(e.data, e.port || input.name);
     }
@@ -162,4 +219,14 @@ export class MidiManager {
   #save() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(this.mappings));
   }
+}
+
+function raceTimeout(promise, ms, message) {
+  let timer = 0;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => { if (timer) clearTimeout(timer); }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    }),
+  ]);
 }

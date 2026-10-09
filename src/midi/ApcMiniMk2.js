@@ -122,8 +122,9 @@ export function describePad(note, page, ctx) {
   const y = Math.floor(note / 8);
   if (ctx.shift && note < 15) return shiftCompositionPad(note, ctx);
   if (page === 0) {
+    // Slot index into the live saved-scene order (reorder moves which scene sits here).
     const index = ctx.bank * 64 + note;
-    const scene = ctx.scenes[index];
+    const scene = typeof ctx.sceneAt === 'function' ? ctx.sceneAt(index) : ctx.scenes?.[index];
     const active = !!scene && scene.id === ctx.activeId;
     const cued = !!scene && scene.id === ctx.cuedId;
     let led = LED.off;

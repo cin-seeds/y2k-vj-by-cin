@@ -4,7 +4,24 @@
 
 import { IS_TAURI, invoke } from '../ipc.js';
 import { isTauri } from '../output/OutputWindow.js';
-import { addMediaTag, rememberMediaSource } from './GlobalLibrary.js';
+import { addMediaTag, confirmDuplicateAdd, mediaLibraryHasName, rememberMediaSource } from './GlobalLibrary.js';
+
+const DROP_VIDEO_AUDIO_KEY = 'vj.prep.dropVideoAudio';
+
+/** Media Manager preference: strip audio from new video transcodes. Default on. */
+export function dropVideoAudioPref() {
+  try {
+    const raw = localStorage.getItem(DROP_VIDEO_AUDIO_KEY);
+    if (raw === null) return true;
+    return raw !== '0';
+  } catch {
+    return true;
+  }
+}
+
+export function setDropVideoAudioPref(on) {
+  try { localStorage.setItem(DROP_VIDEO_AUDIO_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+}
 
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
@@ -158,8 +175,9 @@ function noteBrandFile(name, path) {
   }));
 }
 
-function brandMarked() {
-  return !!document.getElementById('prep-brand')?.checked;
+function allowDuplicate(name) {
+  if (!mediaLibraryHasName(name)) return true;
+  return confirmDuplicateAdd(name);
 }
 
 async function importPrepared() {
@@ -270,6 +288,7 @@ async function runJob(job, ensureStockDir, showToast) {
           inputPath,
           saveDir,
           keyint: 1,
+          dropAudio: dropVideoAudioPref(),
         });
     } finally {
       job.transcoding = false;
@@ -374,9 +393,14 @@ export function bindMediaPrep({ library, ensureStockDir, showToast }) {
       showToast('Drop a video, image, or audio file.', true);
       return;
     }
-    const asBrand = brandMarked();
-    for (const file of videos) enqueue(file.name, pathFromFile(file, event), file, ensureStockDir, showToast, { brand: asBrand });
-    for (const file of audio) queueAudioPrep(file.name, pathFromFile(file, event), file);
+    for (const file of videos) {
+      if (!allowDuplicate(file.name)) continue;
+      enqueue(file.name, pathFromFile(file, event), file, ensureStockDir, showToast);
+    }
+    for (const file of audio) {
+      if (!allowDuplicate(file.name)) continue;
+      queueAudioPrep(file.name, pathFromFile(file, event), file);
+    }
   });
   zone.addEventListener('click', () => chooseFiles(ensureStockDir, showToast));
   zone.addEventListener('keydown', (event) => {
@@ -402,8 +426,9 @@ async function chooseFiles(ensureStockDir, showToast) {
     const paths = Array.isArray(picked) ? picked : [picked];
     for (const path of paths) {
       const name = String(path).split(/[\\/]/).pop() || 'media';
+      if (!allowDuplicate(name)) continue;
       if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
-      else if (VIDEO_EXT.test(name)) enqueue(name, path, null, ensureStockDir, showToast, { brand: brandMarked() });
+      else if (VIDEO_EXT.test(name)) enqueue(name, path, null, ensureStockDir, showToast);
     }
     return;
   }
@@ -413,8 +438,9 @@ async function chooseFiles(ensureStockDir, showToast) {
   input.multiple = true;
   input.addEventListener('change', () => {
     for (const file of input.files || []) {
+      if (!allowDuplicate(file.name)) continue;
       if (isAudio(file)) queueAudioPrep(file.name, '', file);
-      else if (isVideo(file)) enqueue(file.name, '', file, ensureStockDir, showToast, { brand: brandMarked() });
+      else if (isVideo(file)) enqueue(file.name, '', file, ensureStockDir, showToast);
     }
   });
   input.click();

@@ -2,7 +2,7 @@
 // Nine faders use soft takeover. Shift (note 122, the on-screen key, or Shift+click)
 // shows the second function on the track and scene buttons.
 
-import { LAYERS, MODE_LABELS, layerParam } from '../params.js';
+import { layerParam } from '../params.js';
 import {
   FADERS,
   LED,
@@ -15,17 +15,7 @@ import {
   faderByCc,
 } from '../midi/ApcMiniMk2.js';
 
-function mediaName(media) {
-  const key = media?.key;
-  if (media?.label) return media.label;
-  if (!key || key === 'none') return 'Test pattern';
-  const cut = key.indexOf(':');
-  return cut >= 0 ? key.slice(cut + 1) : key;
-}
-
 export class ApcView {
-  #previewStill = new Image();
-
   constructor(opts) {
     this.root = opts.root;
     this.params = opts.params;
@@ -46,8 +36,6 @@ export class ApcView {
     this.follow = true;
     this.cueMode = false;
     this.cuedId = null;
-    this.hoverId = null;
-    this.cuedSceneState = { on: false, id: null, name: '' };
     this.followedId = opts.scenes.activeId;
     this.clipLayer = opts.panel.selected || 'A';
     this.hwShift = false;
@@ -136,6 +124,7 @@ export class ApcView {
     const layer = this.panel.selected || 'A';
     return {
       scenes: this.scenes.scenes,
+      sceneAt: (index) => this.scenes.at(index),
       activeId: this.scenes.activeId,
       cuedId: this.cuedId,
       cueMode: this.cueMode,
@@ -237,13 +226,6 @@ export class ApcView {
           this.#pressPad(note, true);
           setTimeout(() => this.pads[y][x].classList.remove('held'), 140);
           this.#cell(note)?.apply?.();
-        });
-        pad.addEventListener('pointerenter', () => this.#hoverPad(note));
-        pad.addEventListener('pointerleave', (e) => {
-          if (e.relatedTarget?.closest?.('.apc-pad')) return;
-          if (!this.hoverId) return;
-          this.hoverId = null;
-          this.#paintPreview();
         });
         grid.append(pad);
         this.pads[y][x] = pad;
@@ -420,109 +402,7 @@ export class ApcView {
     const id = this.cuedId;
     this.cuedId = null;
     this.launch(id);
-    this.#paintPreview();
-  }
-
-  #hoverPad(note) {
-    if (this.page !== 0) return;
-    const scene = this.scenes.scenes[this.bank * 64 + note];
-    const next = scene?.id || null;
-    if (next === this.hoverId) return;
-    this.hoverId = next;
-    this.#paintPreview();
-  }
-
-  #paintPreview() {
-    const nameEl = document.getElementById('cue-preview-name');
-    const list = document.getElementById('cue-preview-layers');
-    const img = document.getElementById('cue-preview-img');
-    const wait = document.getElementById('cue-preview-wait');
-    if (!nameEl || !list || !img || !wait) return;
-    const scene = this.scenes.get(this.cuedId || this.hoverId);
-    list.replaceChildren();
-    if (!scene) {
-      nameEl.textContent = this.cueMode ? 'Cue a scene' : 'Hover a scene';
-      img.hidden = true;
-      wait.hidden = true;
-      this.#syncCuePreview(null, wait);
-      return;
-    }
-    nameEl.textContent = scene.name || 'Scene';
-    img.hidden = true;
-    this.#syncCuePreview(scene, wait);
-    for (const layer of LAYERS) {
-      const li = document.createElement('li');
-      const mode = scene.params?.[layerParam(layer, 'mode')];
-      const look = MODE_LABELS[mode] || '—';
-      li.textContent = `${layer}  ${look}  ${mediaName(scene.media?.[layer])}`;
-      list.append(li);
-    }
-  }
-
-  #syncCuePreview(scene, wait) {
-    const target = this.cuedId || this.hoverId;
-    const live = target && scene && scene.id === target ? scene : null;
-    this.cuedSceneState = {
-      on: !!live,
-      id: live?.id || null,
-      name: live?.name || '',
-    };
-    if (!live) {
-      this.#stopCuePreview(true);
-      if (wait) wait.hidden = true;
-      return;
-    }
-    if (live.thumb) {
-      this.#drawCueStill(live.thumb);
-      if (wait) wait.hidden = true;
-      return;
-    }
-    this.#stopCuePreview(true);
-    if (wait) wait.hidden = false;
-  }
-
-  #cueCanvas() {
-    return document.getElementById('cue-preview');
-  }
-
-  #cueContext() {
-    const canvas = this.#cueCanvas();
-    return canvas ? canvas.getContext('2d', { alpha: false }) : null;
-  }
-
-  #clearCueCanvas() {
-    const canvas = this.#cueCanvas();
-    const ctx = this.#cueContext();
-    if (!canvas || !ctx) return;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
-
-  #drawCueStill(src) {
-    const canvas = this.#cueCanvas();
-    const ctx = this.#cueContext();
-    if (!canvas || !ctx || !src) return false;
-    const img = this.#previewStill;
-    const sceneId = this.cuedSceneState.id;
-    const paint = () => {
-      if (img.dataset.src !== src || !this.cuedSceneState.on || this.cuedSceneState.id !== sceneId || !img.naturalWidth) return;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    };
-    if ((img.dataset.src === src || img.src === src) && img.complete && img.naturalWidth) {
-      img.dataset.src = src;
-      paint();
-      return true;
-    }
-    img.dataset.src = src;
-    img.onload = paint;
-    img.src = src;
-    return false;
-  }
-
-  #stopCuePreview(clear) {
-    if (!clear) return;
-    this.#previewStill.dataset.src = '';
-    this.#clearCueCanvas();
+    if (!this.scenes.get(id)) this.#paint();
   }
 
   #track(index, down, shifted) {
@@ -617,7 +497,6 @@ export class ApcView {
       cueBtn.setAttribute('aria-pressed', String(this.cueMode));
       cueBtn.textContent = this.cueMode ? 'Cue On' : 'Cue';
     }
-    this.#paintPreview();
   }
 
   #paintKey(el, cell) {

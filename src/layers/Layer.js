@@ -212,6 +212,7 @@ export class Layer {
     this.colorRt = new THREE.WebGLRenderTarget(1, 1, COLOR_RT);
     this.hydraRt = new THREE.WebGLRenderTarget(1, 1, COLOR_RT);
     this.bakedTransform = false;
+    this.fitMode = 'fill';
     this.sigEngine = null;
     this.sigMedia = null;
     this.sigSource = null;
@@ -277,11 +278,18 @@ export class Layer {
     return this.rtRead.texture;
   }
 
+  /** Framing name for this layer’s media (fill / fit / original). */
+  mediaFit() {
+    const i = Math.round(Number(this.get('fitMode')));
+    return i === 1 ? 'fit' : i === 2 ? 'original' : 'fill';
+  }
+
   /** Called by main for every ParamStore change belonging to this layer. */
   onParam(key, v) {
     const u = this.uniforms[uniformName(key)];
-    if (u && key !== 'mode') u.value = v;
+    if (u && key !== 'mode' && key !== 'fitMode') u.value = v;
     if (key === 'mode') this.#syncMode();
+    if (key === 'fitMode') this.updateUvScale(this.mediaFit());
     if (key === 'engine') this.setEngine(ENGINES[v] || ENGINE_FX);
     if (key === 'pCount') this.particles.setCount(v);
     if (key === 'pSource') this.particles.needsSeed = true;
@@ -385,22 +393,39 @@ export class Layer {
     this.hydraRt.setSize(w, h);
   }
 
-  /** Fill keeps the UV factor <= 1 (crop); fit keeps it >= 1 (letterbox). */
+  /**
+   * Fill crops (UV cover). Fit letterboxes (UV contain). Original shows the whole
+   * frame at its own aspect with no upscale and no mesh aspect scale on top of UVs.
+   */
   updateUvScale(fitMode) {
+    const mode = fitMode === 'fit' || fitMode === 'original' ? fitMode : 'fill';
+    this.fitMode = mode;
     const out = this.uniforms.uResolution.value;
     const tex = this.uniforms.uTexRes.value;
-    const sa = out.x / Math.max(out.y, 1);
-    const ta = Math.max(tex.x, 1) / Math.max(tex.y, 1);
-    const pick = fitMode === 'fill' ? Math.min : Math.max;
-    this.uniforms.uUvScale.value.set(pick(1, sa / ta), pick(1, ta / sa));
-    this.uniforms.uFit.value = fitMode === 'fit' ? 1 : 0;
+    const outW = Math.max(out.x, 1);
+    const outH = Math.max(out.y, 1);
+    const texW = Math.max(tex.x, 1);
+    const texH = Math.max(tex.y, 1);
+    const sa = outW / outH;
+    const ta = texW / texH;
 
-    const aspect = this.uniforms.uHasInput.value > 0.5 ? ta : 1;
-    const sx = aspect >= 1 ? 1 : aspect;
-    const sy = aspect >= 1 ? 1 / aspect : 1;
-    this.mesh.scale.set(sx, sy, 1);
+    if (mode === 'original') {
+      // 1:1 pixels when the clip fits; scale down only when it would overflow.
+      const scale = Math.min(1, outW / texW, outH / texH);
+      const dw = texW * scale;
+      const dh = texH * scale;
+      this.uniforms.uUvScale.value.set(outW / dw, outH / dh);
+      this.uniforms.uFit.value = 1;
+    } else {
+      const pick = mode === 'fill' ? Math.min : Math.max;
+      this.uniforms.uUvScale.value.set(pick(1, sa / ta), pick(1, ta / sa));
+      this.uniforms.uFit.value = mode === 'fit' ? 1 : 0;
+    }
 
-    const canvasAspect = out.x / Math.max(out.y, 1);
+    // Framing is UV-only. Mesh aspect used to stack on top of fill/fit and skew portrait clips.
+    this.mesh.scale.set(1, 1, 1);
+
+    const canvasAspect = outW / outH;
     this.uniforms.uAspect.value = canvasAspect;
     const span = this.cloudSpan;
     this.points.scale.set(span * canvasAspect, span, 1);
@@ -414,9 +439,10 @@ export class Layer {
   /**
    * key: 'none' | 'cam:<deviceId>' | 'file:<name>' | 'ndi:<name>' | 'spout:<name>'. Calls are queued so a fast sequence of
    * scene changes never leaves an orphaned camera stream or video element behind.
+   * `prepared` is an already-decoded InputManager (scene warm pool); ownership transfers on success.
    */
-  setMedia(key, { library, cameraLabel, mirror, fitMode } = {}) {
-    this.mediaQueue = this.mediaQueue.then(() => this.#applyMedia(key, library, cameraLabel, mirror, fitMode));
+  setMedia(key, { library, cameraLabel, mirror, fitMode, prepared } = {}) {
+    this.mediaQueue = this.mediaQueue.then(() => this.#applyMedia(key, library, cameraLabel, mirror, fitMode, prepared));
     return this.mediaQueue;
   }
 
@@ -478,14 +504,14 @@ export class Layer {
   }
 
   /** Capture bounce frames / loop mix, then rebind the texture the shaders actually see. */
-  tickMedia(dt, renderer, fitMode) {
+  tickMedia(dt, renderer) {
     this.input.update(dt, renderer);
     if (this.input.kind === 'picture' && this.input.pictureNote && this.input.pictureNote !== this.mediaStatus) {
       this.mediaStatus = this.input.pictureNote;
       this.mediaError = !!this.input.pictureError;
     }
     this.#tickEntry(dt);
-    this.#bindTexture(fitMode);
+    this.#bindTexture();
   }
 
   #bindTexture(fitMode) {
@@ -493,37 +519,40 @@ export class Layer {
     this.uniforms.uTex.value = tex || blankTexture;
     this.uniforms.uHasInput.value = tex ? 1 : 0;
     this.uniforms.uTexRes.value.set(this.input.width, this.input.height);
-    this.updateUvScale(fitMode ?? (this.uniforms.uFit.value > 0.5 ? 'fit' : 'fill'));
+    this.updateUvScale(fitMode ?? this.mediaFit());
   }
 
-  async #applyMedia(key, library, cameraLabel, mirror, fitMode) {
+  async #applyMedia(key, library, cameraLabel, mirror, fitMode, prepared) {
     // Same clip already up: don't tear down the decoder (that would flash).
     if (key === this.mediaKey && !this.missing && key !== 'none') {
+      prepared?.dispose();
       if (mirror != null) this.setMirror(mirror);
       this.mediaError = false;
       if (this.input.kind === 'image') this.beginEntry();
       return;
     }
 
-    const incoming = new InputManager();
-    incoming.setPlayMode(PLAY_MODES[this.get('playMode')]);
-    incoming.setLoopXfade(this.get('loopXfade') > 0.5);
-    incoming.setLoopXfadeDur(this.get('loopXfadeDur'));
-    this.mediaKey = key;
-    this.missing = null;
-    this.mediaError = false;
+    let incoming = null;
+    const abandon = () => {
+      incoming?.dispose();
+      incoming = null;
+    };
 
     const swapIn = () => {
       const old = this.input;
-      // Release the outgoing decoder before the new texture is bound, so the
-      // GPU drops that stream as the layer takes the incoming one.
+      // One active decoder per layer: release the outgoing stream before the new
+      // texture is bound so the GPU never holds two layer inputs at once.
       old.dispose();
       this.input = incoming;
+      incoming = null;
+      this.mediaKey = key;
+      this.missing = null;
+      this.mediaError = false;
       this.#bindTexture(fitMode);
     };
 
     const showPattern = () => {
-      incoming.dispose();
+      abandon();
       this.input.dispose();
       this.input = new InputManager();
       this.#applyTransport();
@@ -531,20 +560,67 @@ export class Layer {
       this.mediaLabel = 'Test pattern';
       this.mediaStatus = '';
       this.mediaError = false;
+      this.missing = null;
       this.entryT = 1;
       this.entrying = false;
       this.#writeEntry();
       this.#bindTexture(fitMode);
     };
 
+    /** Keep the current picture when a replace fails mid-load (no test-pattern flash). */
+    const keepCurrent = (status, { missing = null, error = true } = {}) => {
+      abandon();
+      if (status) this.mediaStatus = status;
+      this.mediaError = !!error;
+      this.missing = missing;
+    };
+
     try {
       if (key === 'none') {
+        prepared?.dispose();
         showPattern();
         return;
       }
+
+      // Scene warm pool: adopt a ready decoder without opening the file again.
+      if (prepared && (prepared.kind === 'video' || prepared.kind === 'image') && prepared.isDrawable()) {
+        incoming = prepared;
+        prepared = null;
+        incoming.setPlayMode(PLAY_MODES[this.get('playMode')]);
+        incoming.setLoopXfade(this.get('loopXfade') > 0.5);
+        incoming.setLoopXfadeDur(this.get('loopXfadeDur'));
+        incoming.activateFromStandby();
+        if (!(await incoming.whenDrawable())) {
+          keepCurrent(this.mediaStatus || '', { error: false });
+          return;
+        }
+        this.mediaLabel = key.includes(':') ? key.slice(key.indexOf(':') + 1) : key;
+        this.mediaStatus = `${incoming.kind} ${incoming.width}x${incoming.height}`;
+        swapIn();
+        this.setMirror(mirror ?? false);
+        if (this.input.kind === 'image') this.beginEntry();
+        else {
+          this.entryT = 1;
+          this.entrying = false;
+          this.#writeEntry();
+        }
+        return;
+      }
+      prepared?.dispose();
+      prepared = null;
+
+      incoming = new InputManager();
+      incoming.setPlayMode(PLAY_MODES[this.get('playMode')]);
+      incoming.setLoopXfade(this.get('loopXfade') > 0.5);
+      incoming.setLoopXfadeDur(this.get('loopXfadeDur'));
+
       if (key.startsWith('cam:')) {
         this.mediaStatus = 'starting camera...';
         await incoming.useCamera(key.slice(4));
+        if (!(await incoming.whenDrawable())) {
+          keepCurrent('camera failed', { error: true });
+          return;
+        }
         this.mediaLabel = cameraLabel || 'Camera';
         this.mediaStatus = `camera ${incoming.width}x${incoming.height}`;
         swapIn();
@@ -560,6 +636,7 @@ export class Layer {
         this.mediaStatus = 'waiting for picture...';
         await incoming.usePicture(key);
         if (incoming.pictureNote) this.mediaStatus = incoming.pictureNote;
+        // Picture sources may start empty; still swap so the layer watches the feed.
         this.mediaError = !!incoming.pictureError;
         swapIn();
         this.setMirror(mirror ?? false);
@@ -571,24 +648,25 @@ export class Layer {
       if (key.startsWith('file:')) {
         const name = key.slice(5);
         const file = library?.get(name);
-        this.mediaLabel = name;
         if (!file) {
-          incoming.dispose();
-          this.missing = name;
-          this.mediaError = true;
-          this.mediaStatus = `missing: send "${name}" from Media Manager`;
+          keepCurrent(`missing: send "${name}" from Media Manager`, { missing: name, error: true });
           return;
         }
+        this.mediaLabel = name;
         this.mediaStatus = 'loading...';
         await incoming.useFile(file);
         if (incoming.kind !== 'video' && incoming.kind !== 'image') {
-          showPattern();
+          keepCurrent('unsupported clip', { error: true });
+          return;
+        }
+        if (!(await incoming.whenDrawable())) {
+          keepCurrent('clip not ready', { error: true });
           return;
         }
         this.mediaStatus = `${incoming.kind} ${incoming.width}x${incoming.height}`;
         swapIn();
         this.setMirror(mirror ?? false);
-        if (incoming.kind === 'image') this.beginEntry();
+        if (this.input.kind === 'image') this.beginEntry();
         else {
           this.entryT = 1;
           this.entrying = false;
@@ -599,17 +677,13 @@ export class Layer {
       if (key.startsWith('url:')) {
         const name = key.slice(4);
         const item = library?.mediaItem(name);
-        this.mediaLabel = name;
         if (!item?.url) {
-          incoming.dispose();
-          this.missing = name;
-          this.mediaError = true;
-          this.mediaStatus = `missing: send "${name}" from Media Manager`;
+          keepCurrent(`missing: send "${name}" from Media Manager`, { missing: name, error: true });
           return;
         }
+        this.mediaLabel = name;
         this.mediaStatus = 'loading...';
         incoming.onBrokenKey = (src) => {
-          this.mediaKey = 'none';
           this.mediaError = false;
           this.mediaStatus = '';
           if (!library || !src) return;
@@ -625,18 +699,18 @@ export class Layer {
           });
         };
         incoming.onExhausted = () => {
-          if (this.input !== incoming) return;
-          library?.remove(name);
+          if (this.mediaKey !== key) return;
+          // Live clip died after a successful swap — only then drop to pattern.
           showPattern();
+          library?.remove(name);
           window.dispatchEvent(new CustomEvent('vj-media-fallback'));
         };
         const played = await incoming.useUrl(item.url, item.alts || []);
-        if (!played || incoming.kind !== 'video') {
-          library?.remove(name);
-          showPattern();
+        if (!played || incoming.kind !== 'video' || !(await incoming.whenDrawable())) {
+          // Keep the outgoing picture; do not flash the test pattern on a failed switch.
+          keepCurrent('stream failed', { error: true });
           return;
         }
-        this.mediaKey = key;
         if (library) {
           const rejected = new Set(incoming.rejected || []);
           const saved = library.mediaItem(name);
@@ -657,9 +731,9 @@ export class Layer {
         this.#writeEntry();
       }
     } catch (err) {
-      incoming.dispose();
-      this.mediaError = true;
-      this.mediaStatus = err.message;
+      keepCurrent(err?.message || 'media error', { error: true });
+    } finally {
+      prepared?.dispose();
     }
   }
 

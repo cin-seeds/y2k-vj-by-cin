@@ -21,6 +21,16 @@ export async function captureThumbnail(file) {
   return null;
 }
 
+/** Still from a playable URL (asset protocol, blob:, https:). Same seek-past-black pass as Media Manager. */
+export async function captureThumbnailFromSrc(src, name = '') {
+  if (!src || typeof src !== 'string') return null;
+  const leaf = String(name || src);
+  if (IMAGE_EXT.test(leaf) || /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(src)) {
+    return captureImageSrc(src);
+  }
+  return captureVideoSrc(src);
+}
+
 function fallbackThumb() {
   const canvas = document.createElement('canvas');
   canvas.width = THUMB_W;
@@ -153,8 +163,22 @@ function releaseProbe(video, url) {
   if (url) URL.revokeObjectURL(url);
 }
 
-async function captureVideo(file) {
-  const url = URL.createObjectURL(file);
+async function captureImageSrc(src) {
+  const img = new Image();
+  try {
+    await new Promise((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('image'));
+      img.src = src;
+    });
+    if ((img.naturalWidth | 0) < 2 || (img.naturalHeight | 0) < 2) return null;
+    return paintFrame(img, img.naturalWidth, img.naturalHeight);
+  } catch {
+    return null;
+  }
+}
+
+async function captureVideoSrc(src, revokeUrl = '') {
   const video = document.createElement('video');
   video.muted = true;
   video.defaultMuted = true;
@@ -162,31 +186,44 @@ async function captureVideo(file) {
   video.preload = 'auto';
   video.setAttribute('muted', '');
   video.setAttribute('playsinline', '');
-  video.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:180px;opacity:0;pointer-events:none';
+  video.setAttribute('webkit-playsinline', '');
+  video.style.cssText = 'position:fixed;left:0;top:0;width:320px;height:180px;opacity:0.02;pointer-events:none';
   document.body.append(video);
-  video.src = url;
+  video.src = src;
   try {
     await waitFor(video, 'loadeddata', 8000);
+    try {
+      await video.play();
+      video.pause();
+    } catch { /* a later seek can still present a frame */ }
     const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
     const later = contentTime(dur);
     const targets = [0];
     if (later > 0.03) targets.push(later);
     if (dur > later + 0.2) targets.push(Math.min(dur * 0.2, dur - 0.04));
-    let last = null;
     for (const target of targets) {
       if (target > 0) await seekTo(video, target);
       await afterPresent();
       const sw = video.videoWidth | 0;
       const sh = video.videoHeight | 0;
       if (sw < 2 || sh < 2) continue;
-      const blank = frameIsBlank(video, sw, sh);
-      last = paintFrame(video, sw, sh);
-      if (!blank) return last;
+      if (frameIsBlank(video, sw, sh)) continue;
+      return paintFrame(video, sw, sh);
     }
-    return last || fallbackThumb();
+    return null;
+  } catch {
+    return null;
+  } finally {
+    releaseProbe(video, revokeUrl);
+  }
+}
+
+async function captureVideo(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const still = await captureVideoSrc(url, url);
+    return still || fallbackThumb();
   } catch {
     return fallbackThumb();
-  } finally {
-    releaseProbe(video, url);
   }
 }

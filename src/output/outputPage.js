@@ -63,14 +63,8 @@ if (!native) {
     const bh = bitmap.height || 0;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    if (bw > 0 && bh > 0) {
-      const scale = Math.min(canvas.width / bw, canvas.height / bh);
-      const dw = Math.round(bw * scale);
-      const dh = Math.round(bh * scale);
-      const dx = Math.round((canvas.width - dw) / 2);
-      const dy = Math.round((canvas.height - dh) / 2);
-      ctx.drawImage(bitmap, dx, dy, dw, dh);
-    }
+    // Desk already applied Fill / Fit / Original into this bitmap at window size.
+    if (bw > 0 && bh > 0) ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     try { bitmap.close(); } catch { /* already released */ }
   };
 

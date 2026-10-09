@@ -11,17 +11,37 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mpg|mpeg|wmv|flv)$/i;
 const AUDIO_EXT = /\.(mp3|wav|wave|ogg|oga|flac|aiff|aif|m4a)$/i;
 const SOURCE_KEY = 'vj.mediaSource';
+const ADDED_KEY = 'vj.mediaAdded';
+const SORT_KEY = 'vj.gallerySort';
 const SCALE_KEY = 'vj.galleryScale';
 const GALLERY_SCALES = ['small', 'medium', 'large'];
 const SCALE_ALIAS = { compact: 'small', small: 'small', medium: 'medium', large: 'large' };
+const SORT_MODES = ['name', 'kind', 'newest'];
+const SORT_ALIAS = { name: 'name', kind: 'kind', type: 'kind', newest: 'newest', date: 'newest', tag: 'name' };
 const SOURCE_EMPTY = {
   all: 'No media stored yet. Drop a video or image above.',
   video: 'No videos in the library yet.',
   image: 'No images in the library yet.',
   fetch: 'No fetched clips yet. Use Live Text-to-Visual to download a loop.',
   audio: 'No audio stored yet. Drop a track above, or download stock audio.',
-  brand: 'No brand assets yet. Tick Brand asset, then add a file.',
+  brand: 'No brand assets yet. Tick Brand on a clip in the gallery.',
 };
+
+/** Lowercase names currently shown in Media Manager (for duplicate checks). */
+let libraryNameKeys = new Set();
+
+export function mediaLibraryHasName(name) {
+  const key = String(name || '').trim().toLowerCase();
+  return !!key && libraryNameKeys.has(key);
+}
+
+/** Ask before adding a second copy. Proceed keeps the existing stem-2 rename. */
+export function confirmDuplicateAdd(name) {
+  const leaf = String(name || '').trim() || 'that file';
+  return window.confirm(
+    `"${leaf}" is already in the Media Manager library.\n\nProceed to keep both (the new file will be renamed), or Cancel to skip this file.`,
+  );
+}
 
 function readSources() {
   try {
@@ -38,6 +58,31 @@ export function rememberMediaSource(name, source) {
   if (map[name] === source) return;
   map[name] = source;
   try { localStorage.setItem(SOURCE_KEY, JSON.stringify(map)); } catch { /* private mode */ }
+  noteMediaAdded(name);
+}
+
+function readAdded() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ADDED_KEY) || '{}');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/** First time this name enters the library. Keeps Sort By · Date Added stable. */
+export function noteMediaAdded(name, at) {
+  if (!name) return;
+  const map = readAdded();
+  if (map[name]) return;
+  const stamp = at == null ? Date.now() : Number(at);
+  if (!Number.isFinite(stamp) || stamp <= 0) return;
+  map[name] = stamp;
+  try { localStorage.setItem(ADDED_KEY, JSON.stringify(map)); } catch { /* private mode */ }
+}
+
+function mediaAddedAt(name) {
+  return Number(readAdded()[name]) || 0;
 }
 
 function isAudioRow(row) {
@@ -67,11 +112,17 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   const tagInput = document.getElementById('prep-tag-input');
   const tagAdd = document.getElementById('prep-tag-add');
   const tagFilters = document.getElementById('prep-tag-filters');
-  let mediaTags = readMediaTags();
+  const tagSuggest = document.getElementById('prep-tag-suggest');
+  const tagList = document.getElementById('prep-tag-list');
+  let mediaTags = effectiveMediaTags();
   let tagFilter = '';
   let sourceFilter = 'all';
   let query = '';
+  const savedSort = SORT_ALIAS[localStorage.getItem(SORT_KEY)] || 'name';
+  let sortBy = SORT_MODES.includes(savedSort) ? savedSort : 'name';
   let thumbObserver = null;
+  const sortSelect = document.getElementById('prep-sort');
+  if (sortSelect) sortSelect.value = sortBy;
   const block = document.getElementById('global-delete');
   const preview = document.createElement('video');
   preview.className = 'gallery-preview';
@@ -92,43 +143,57 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     modal.hidden = true;
   }
 
+  /** Open project Source/ when prepareDir provides it; else machine global_media. */
+  async function sharedSaveDir() {
+    if (typeof prepareDir === 'function') {
+      const dir = await prepareDir();
+      if (dir) return dir;
+    }
+    if (IS_TAURI) {
+      try {
+        const dir = await invoke('global_media_dir');
+        if (dir) return dir;
+      } catch { /* fall through */ }
+    }
+    return '';
+  }
+
   async function catalog() {
+    // Project Source/Stock first (same name keeps that path), then the shared
+    // library so every project still sees the common clips and their tags.
     const disk = [];
+    const seen = new Set();
+    const pushRows = (rows) => {
+      for (const row of rows || []) {
+        const key = String(row?.name || '').toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        disk.push(row);
+      }
+    };
     if (IS_TAURI) {
       try {
         const beside = typeof projectMediaDirs === 'function' ? await projectMediaDirs() : [];
-        const dirs = Array.isArray(beside) ? beside.filter(Boolean) : [];
-        if (dirs.length) {
-          const seenBeside = new Set();
-          for (const dir of dirs) {
-            const rows = await invoke('list_dir_media', { dir });
-            if (!Array.isArray(rows)) continue;
-            for (const row of rows) {
-              const key = String(row?.name || '').toLowerCase();
-              if (!key || seenBeside.has(key)) continue;
-              seenBeside.add(key);
-              disk.push(row);
-            }
-          }
-        } else {
-          const rows = await invoke('list_global_media', { saveDir: stockSaveDir() });
-          if (Array.isArray(rows)) disk.push(...rows);
+        const projectDirs = Array.isArray(beside) ? beside.filter(Boolean) : [];
+        for (const dir of projectDirs) {
+          pushRows(await invoke('list_dir_media', { dir }));
+        }
+        pushRows(await invoke('list_global_media', { saveDir: stockSaveDir() }));
+        if (!projectDirs.length) {
           const source = typeof sourceDir === 'function' ? await sourceDir() : '';
-          if (source) {
-            const prepared = await invoke('list_dir_media', { dir: source });
-            if (Array.isArray(prepared)) disk.push(...prepared);
-          }
+          if (source) pushRows(await invoke('list_dir_media', { dir: source }));
         }
       } catch (err) {
         showToast?.(err?.message || 'Could not read Media Manager', true);
       }
     }
-    const seen = new Set(disk.map((row) => row.name));
     const local = [];
     for (const name of library.names) {
-      if (seen.has(name)) continue;
+      const key = String(name || '').toLowerCase();
+      if (!key || seen.has(key)) continue;
       const item = library.mediaItem(name);
-      seen.add(name);
+      seen.add(key);
+      if (item?.file?.lastModified) noteMediaAdded(name, item.file.lastModified);
       local.push({
         name,
         path: '',
@@ -141,8 +206,10 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       const stored = await library.cache.entries('audio');
       for (const row of stored) {
         const name = row.file?.name;
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
+        const key = String(name || '').toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        if (row.file?.lastModified) noteMediaAdded(name, row.file.lastModified);
         audio.push({ name, path: '', thumbnail: '', kind: 'audio' });
       }
     } catch { /* the audio cache is optional */ }
@@ -229,11 +296,24 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     return hay.includes(query);
   }
 
+  function sortRows(rows) {
+    const copy = rows.slice();
+    const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    if (sortBy === 'kind') {
+      return copy.sort((a, b) => rowKind(a).localeCompare(rowKind(b)) || byName(a, b));
+    }
+    if (sortBy === 'newest') {
+      return copy.sort((a, b) => (mediaAddedAt(b.name) - mediaAddedAt(a.name)) || byName(a, b));
+    }
+    return copy.sort(byName);
+  }
+
   function paint(rows) {
     latest = rows;
+    libraryNameKeys = new Set(rows.map((row) => String(row.name || '').toLowerCase()).filter(Boolean));
     const live = new Set(rows.map((row) => row.name));
     for (const name of [...selected]) if (!live.has(name)) selected.delete(name);
-    const visible = rows.filter((row) => rowVisible(row));
+    const visible = sortRows(rows.filter((row) => rowVisible(row)));
     stopPreview();
     grid.innerHTML = '';
     if (empty) {
@@ -272,6 +352,28 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       meta.textContent = branded ? 'Brand' : (fetched ? 'Fetched' : kindLabel(kind));
       meta.title = branded ? 'Brand asset' : (fetched && kind !== 'audio' ? `Fetched ${kindLabel(kind).toLowerCase()}` : kindLabel(kind));
       if (branded) card.classList.add('is-brand');
+      const brandTick = document.createElement('label');
+      brandTick.className = 'global-brand-tick';
+      brandTick.title = branded ? 'Remove Brand' : 'Mark as Brand';
+      const brandBox = document.createElement('input');
+      brandBox.type = 'checkbox';
+      brandBox.checked = branded;
+      brandBox.setAttribute('aria-label', `Brand ${row.name}`);
+      brandBox.addEventListener('click', (event) => event.stopPropagation());
+      brandBox.addEventListener('change', (event) => {
+        event.stopPropagation();
+        if (brandBox.checked) {
+          addMediaTag(row.name, 'brand');
+          window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name: row.name, path: row.path || '' } }));
+        } else {
+          removeMediaTag(row.name, 'brand');
+          window.dispatchEvent(new CustomEvent('vj-brand-clear', { detail: { name: row.name } }));
+        }
+      });
+      const brandText = document.createElement('span');
+      brandText.textContent = 'Brand';
+      brandTick.append(brandBox, brandText);
+      brandTick.addEventListener('click', (event) => event.stopPropagation());
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'global-delete';
@@ -282,12 +384,29 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         event.stopPropagation();
         requestDelete(row);
       });
-      const tagged = tagsFor(row.name);
-      const tags = document.createElement('span');
+      const tagged = tagsFor(row.name).filter((tag) => tag.toLowerCase() !== 'brand');
+      const tags = document.createElement('div');
       tags.className = 'global-tags';
-      tags.textContent = tagged.join(' · ');
-      tags.title = tagged.join(', ');
       if (!tagged.length) tags.hidden = true;
+      for (const tag of tagged) {
+        const chip = document.createElement('span');
+        chip.className = 'global-tag';
+        const text = document.createElement('span');
+        text.className = 'global-tag-name';
+        text.textContent = tag;
+        const drop = document.createElement('button');
+        drop.type = 'button';
+        drop.className = 'global-tag-x';
+        drop.textContent = '\u00d7';
+        drop.title = `Remove tag ${tag}`;
+        drop.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          removeMediaTag(row.name, tag);
+        });
+        chip.append(text, drop);
+        tags.append(chip);
+      }
       card.dataset.name = row.name;
       card.dataset.path = row.path || '';
       if (audio) {
@@ -296,9 +415,9 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         mark.className = 'audio-mark';
         mark.textContent = '\u266A';
         mark.title = 'Audio';
-        card.append(meta, mark, tags, label, remove);
+        card.append(meta, brandTick, mark, tags, label, remove);
       } else {
-        card.append(meta, img, tags, label, remove);
+        card.append(meta, brandTick, img, tags, label, remove);
       }
       card.addEventListener('click', () => toggleSelect(row.name));
       card.addEventListener('keydown', (event) => {
@@ -313,6 +432,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     }
     paintSend();
     paintTagFilters();
+    paintTagSuggest();
   }
 
   function tagsFor(name) {
@@ -343,40 +463,72 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     for (const row of latest) {
       for (const tag of tagsFor(row.name)) {
         const key = tag.toLowerCase();
+        if (key === 'brand') continue;
         if (!seen.has(key)) seen.set(key, tag);
       }
     }
-    return [...seen.values()];
+    return [...seen.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   }
 
   function paintTagFilters() {
     if (!tagFilters) return;
     const tags = collectedTags();
-    if (tagFilter && !tags.some((tag) => tag.toLowerCase() === tagFilter.toLowerCase())) tagFilter = '';
+    if (tagFilter && tagFilter.toLowerCase() !== 'brand'
+      && !tags.some((tag) => tag.toLowerCase() === tagFilter.toLowerCase())) {
+      tagFilter = '';
+    }
     tagFilters.hidden = tags.length === 0;
     tagFilters.innerHTML = '';
     for (const tag of tags) {
       const on = tag.toLowerCase() === tagFilter.toLowerCase();
-      const chip = document.createElement('div');
+      const chip = document.createElement('button');
+      chip.type = 'button';
       chip.className = 'prep-tag';
       chip.classList.toggle('is-on', on);
-      const name = document.createElement('button');
-      name.type = 'button';
-      name.className = 'prep-tag-name';
-      name.textContent = tag;
-      name.title = on ? `Showing ${tag}` : `Show clips tagged ${tag}`;
-      name.addEventListener('click', () => {
+      chip.textContent = tag;
+      chip.title = on ? `Showing ${tag}` : `Show clips tagged ${tag}`;
+      chip.addEventListener('click', () => {
         tagFilter = on ? '' : tag;
         paint(latest);
       });
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'prep-tag-x';
-      remove.textContent = '\u00d7';
-      remove.title = `Remove ${tag}`;
-      remove.addEventListener('click', () => clearTag(tag));
-      chip.append(name, remove);
       tagFilters.append(chip);
+    }
+  }
+
+  function paintTagSuggest() {
+    const tags = collectedTags();
+    if (tagList) {
+      tagList.innerHTML = '';
+      for (const tag of tags) {
+        const opt = document.createElement('option');
+        opt.value = tag;
+        tagList.append(opt);
+      }
+    }
+    if (!tagSuggest) return;
+    if (!selected.size || !tags.length) {
+      tagSuggest.hidden = true;
+      tagSuggest.innerHTML = '';
+      return;
+    }
+    tagSuggest.hidden = false;
+    tagSuggest.innerHTML = '';
+    const lead = document.createElement('span');
+    lead.className = 'prep-tag-suggest-label';
+    lead.textContent = 'Existing';
+    tagSuggest.append(lead);
+    for (const tag of tags) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'prep-tag-pick';
+      btn.textContent = tag;
+      btn.title = `Tag selected clips as ${tag}`;
+      btn.addEventListener('click', () => {
+        if (tagInput) tagInput.value = tag;
+        if (tagAdd) tagAdd.disabled = false;
+        applyTag();
+      });
+      tagSuggest.append(btn);
     }
   }
 
@@ -403,18 +555,6 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     }
     if (tagInput) tagInput.value = '';
     if (tagAdd) tagAdd.disabled = true;
-    paint(latest);
-  }
-
-  function clearTag(tag) {
-    const key = tag.toLowerCase();
-    for (const name of Object.keys(mediaTags)) {
-      const list = tagsFor(name).filter((item) => item.toLowerCase() !== key);
-      if (list.length) mediaTags[name] = list;
-      else delete mediaTags[name];
-    }
-    if (tagFilter.toLowerCase() === key) tagFilter = '';
-    writeMediaTags();
     paint(latest);
   }
 
@@ -485,6 +625,11 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     render();
   }
 
+  function allowDuplicate(name) {
+    if (!mediaLibraryHasName(name)) return true;
+    return confirmDuplicateAdd(name);
+  }
+
   function ingest(files, event, { play = false } = {}) {
     let queued = 0;
     for (const file of files) {
@@ -492,8 +637,11 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       const video = file.type.startsWith('video/') || VIDEO_EXT.test(name);
       const image = file.type.startsWith('image/') || IMAGE_EXT.test(name);
       const audioFile = file.type.startsWith('audio/') || AUDIO_EXT.test(name);
+      if (!audioFile && !video && !image) continue;
+      if (!allowDuplicate(name)) continue;
       if (audioFile) {
         const path = pathFrom(file, event);
+        noteMediaAdded(name);
         if (isTauri()) {
           queueAudioPrep(name, path, path ? null : file, { play });
         } else {
@@ -506,24 +654,18 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         queued += 1;
         continue;
       }
-      if (!video && !image) continue;
+      noteMediaAdded(name);
       rememberMediaSource(name, 'user');
       const path = pathFrom(file, event);
       if (isTauri() && video) {
-        queueMediaPrep(name, path, path ? null : file, { brand: brandUpload() });
+        queueMediaPrep(name, path, path ? null : file);
         queued += 1;
         continue;
       }
       if (isTauri() && image && path) {
-        const asBrand = brandUpload();
-        const prepared = typeof prepareDir === 'function' ? prepareDir() : (typeof sourceDir === 'function' ? sourceDir() : Promise.resolve(''));
-        prepared.then((saveDir) => invoke('copy_into_global_media', { inputPath: path, saveDir: saveDir || '' }))
-          .then((saved) => {
-            const leaf = String(saved || path).split(/[\\/]/).pop() || name;
-            if (asBrand) {
-              addMediaTag(leaf, 'brand');
-              window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name: leaf, path: saved || path } }));
-            }
+        sharedSaveDir()
+          .then((saveDir) => invoke('copy_into_global_media', { inputPath: path, saveDir: saveDir || '' }))
+          .then(() => {
             window.dispatchEvent(new CustomEvent('vj-global-media'));
           })
           .catch((err) => showToast?.(err?.message || 'Could not save that image', true));
@@ -531,10 +673,6 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         continue;
       }
       library.add([file]);
-      if (brandUpload()) {
-        addMediaTag(name, 'brand');
-        window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name, path: '' } }));
-      }
       queued += 1;
     }
     if (queued && !isTauri()) render();
@@ -556,17 +694,16 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
       const paths = Array.isArray(picked) ? picked : [picked];
       for (const path of paths) {
         const name = String(path).split(/[\\/]/).pop() || 'media';
+        if (!allowDuplicate(name)) continue;
+        noteMediaAdded(name);
         if (VIDEO_EXT.test(name) || IMAGE_EXT.test(name)) rememberMediaSource(name, 'user');
         if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
-        else if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null, { brand: brandUpload() });
+        else if (VIDEO_EXT.test(name)) queueMediaPrep(name, path, null);
         else if (IMAGE_EXT.test(name)) {
-        const saveDir = typeof prepareDir === 'function' ? await prepareDir() : (typeof sourceDir === 'function' ? await sourceDir() : '');
-        const saved = await invoke('copy_into_global_media', { inputPath: path, saveDir: saveDir || '' });
-        const leaf = String(saved || path).split(/[\\/]/).pop() || name;
-        if (brandUpload()) {
-          addMediaTag(leaf, 'brand');
-          window.dispatchEvent(new CustomEvent('vj-brand-ready', { detail: { name: leaf, path: saved || path } }));
-        }
+          const saveDir = await sharedSaveDir();
+          const saved = await invoke('copy_into_global_media', { inputPath: path, saveDir: saveDir || '' });
+          const leaf = String(saved || path).split(/[\\/]/).pop() || name;
+          noteMediaAdded(leaf);
         }
       }
       window.dispatchEvent(new CustomEvent('vj-global-media'));
@@ -651,7 +788,7 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   });
   window.addEventListener('vj-global-media', () => render());
   window.addEventListener('vj-media-tags', () => {
-    mediaTags = readMediaTags();
+    mediaTags = effectiveMediaTags();
     paint(latest);
   });
   library.onChange(() => render());
@@ -718,6 +855,13 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     query = search.value.trim().toLowerCase();
     if (latest.length || query) paint(latest);
   });
+  sortSelect?.addEventListener('change', () => {
+    sortBy = SORT_ALIAS[sortSelect.value] || 'name';
+    if (!SORT_MODES.includes(sortBy)) sortBy = 'name';
+    sortSelect.value = sortBy;
+    try { localStorage.setItem(SORT_KEY, sortBy); } catch { /* ignore */ }
+    if (latest.length) paint(latest);
+  });
   bindPrepSplit(prep);
 
   async function libraryAudio() {
@@ -730,7 +874,31 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     render();
   }
 
-  return { open: show, refresh: render, ingest, close, libraryAudio, showSource };
+  /** Disk path for a Media Manager row, when known. */
+  function pathOf(name) {
+    const key = String(name || '');
+    if (!key) return '';
+    const row = latest.find((item) => item.name === key);
+    return typeof row?.path === 'string' ? row.path : '';
+  }
+
+  /** Resolve a path even if the gallery has not been opened yet this session. */
+  async function resolvePath(name) {
+    const key = String(name || '');
+    if (!key) return '';
+    const known = pathOf(key);
+    if (known) return known;
+    try {
+      const rows = await catalog();
+      latest = rows;
+      const row = rows.find((item) => item.name === key);
+      return typeof row?.path === 'string' ? row.path : '';
+    } catch {
+      return '';
+    }
+  }
+
+  return { open: show, refresh: render, ingest, close, libraryAudio, showSource, pathOf, resolvePath };
 }
 
 const PREP_SPLIT_KEY = 'vj.prepSplit';
@@ -840,12 +1008,57 @@ function stockSaveDir() {
 
 const MEDIA_TAG_KEY = 'vj.mediaTags';
 
+/** Tags loaded from the open .vjproj so a USB show does not need localStorage. */
+let projectTagOverlay = null;
+
 function cleanTag(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 24);
 }
 
+function normalizeTagMap(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [name, tags] of Object.entries(raw)) {
+    const list = [];
+    const seen = new Set();
+    for (const tag of Array.isArray(tags) ? tags : []) {
+      const next = cleanTag(tag);
+      const key = next.toLowerCase();
+      if (!next || seen.has(key)) continue;
+      seen.add(key);
+      list.push(next);
+    }
+    if (name && list.length) out[name] = list.slice(0, 8);
+  }
+  return out;
+}
+
+/** Merge project tags over machine tags (project wins for the same clip). */
+export function effectiveMediaTags() {
+  return { ...readMediaTags(), ...(projectTagOverlay || {}) };
+}
+
+/** Apply tags from a loaded project. Pass null to clear when closing. */
+export function setProjectMediaTags(tags) {
+  projectTagOverlay = tags ? normalizeTagMap(tags) : null;
+  window.dispatchEvent(new CustomEvent('vj-media-tags'));
+}
+
+/** Tags to embed in the .vjproj for the given clip names (plus every Brand mark). */
+export function exportMediaTagsFor(names = []) {
+  const all = effectiveMediaTags();
+  const out = {};
+  const want = new Set((names || []).map((n) => String(n || '')).filter(Boolean));
+  for (const [name, tags] of Object.entries(all)) {
+    const branded = tags.some((tag) => String(tag).toLowerCase() === 'brand');
+    if (!want.has(name) && !branded) continue;
+    out[name] = tags.slice();
+  }
+  return out;
+}
+
 export function mediaTagsFor(name) {
-  const tags = readMediaTags()[name];
+  const tags = effectiveMediaTags()[name];
   return Array.isArray(tags) ? tags : [];
 }
 
@@ -853,6 +1066,22 @@ export function hasMediaTag(name, tag) {
   const key = cleanTag(tag).toLowerCase();
   if (!key) return false;
   return mediaTagsFor(name).some((item) => item.toLowerCase() === key);
+}
+
+/** Clip names marked Brand (project tags + local session tags). */
+export function brandTaggedNames() {
+  const all = effectiveMediaTags();
+  return Object.keys(all).filter((name) => (
+    Array.isArray(all[name]) && all[name].some((tag) => String(tag).toLowerCase() === 'brand')
+  ));
+}
+
+function touchProjectTagOverlay(name, tags) {
+  if (!projectTagOverlay) return;
+  const key = String(name || '');
+  if (!key) return;
+  if (tags?.length) projectTagOverlay[key] = tags.slice(0, 8);
+  else delete projectTagOverlay[key];
 }
 
 export function addMediaTag(name, tag) {
@@ -869,32 +1098,46 @@ export function addMediaTag(name, tag) {
   } catch {
     return false;
   }
+  // Keep the open project's tag map in sync so Save embeds Brand/tags without machine localStorage.
+  if (projectTagOverlay) {
+    const overlay = Array.isArray(projectTagOverlay[key]) ? projectTagOverlay[key].slice() : [];
+    if (!overlay.some((item) => item.toLowerCase() === next.toLowerCase())) {
+      overlay.push(next);
+      touchProjectTagOverlay(key, overlay);
+    }
+  }
   window.dispatchEvent(new CustomEvent('vj-media-tags'));
   return true;
 }
 
-function brandUpload() {
-  return !!document.getElementById('prep-brand')?.checked;
+/** Remove one tag from one clip. Does not clear that tag from other clips. */
+export function removeMediaTag(name, tag) {
+  const key = String(name || '');
+  const next = cleanTag(tag);
+  if (!key || !next) return false;
+  const all = readMediaTags();
+  const list = Array.isArray(all[key]) ? all[key] : [];
+  const kept = list.filter((item) => item.toLowerCase() !== next.toLowerCase());
+  if (kept.length === list.length) return false;
+  if (kept.length) all[key] = kept;
+  else delete all[key];
+  try {
+    if (!Object.keys(all).length) localStorage.removeItem(MEDIA_TAG_KEY);
+    else localStorage.setItem(MEDIA_TAG_KEY, JSON.stringify(all));
+  } catch {
+    return false;
+  }
+  if (projectTagOverlay) {
+    const overlay = Array.isArray(projectTagOverlay[key]) ? projectTagOverlay[key] : [];
+    touchProjectTagOverlay(key, overlay.filter((item) => item.toLowerCase() !== next.toLowerCase()));
+  }
+  window.dispatchEvent(new CustomEvent('vj-media-tags'));
+  return true;
 }
 
 function readMediaTags() {
   try {
-    const raw = JSON.parse(localStorage.getItem(MEDIA_TAG_KEY) || '{}');
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-    const out = {};
-    for (const [name, tags] of Object.entries(raw)) {
-      const list = [];
-      const seen = new Set();
-      for (const tag of Array.isArray(tags) ? tags : []) {
-        const next = cleanTag(tag);
-        const key = next.toLowerCase();
-        if (!next || seen.has(key)) continue;
-        seen.add(key);
-        list.push(next);
-      }
-      if (name && list.length) out[name] = list.slice(0, 8);
-    }
-    return out;
+    return normalizeTagMap(JSON.parse(localStorage.getItem(MEDIA_TAG_KEY) || '{}'));
   } catch {
     return {};
   }

@@ -196,9 +196,14 @@ export class InputManager {
     }
   }
 
-  async useFile(file) {
+  /**
+   * @param {File} file
+   * @param {{ standby?: boolean }} [opts] standby skips the loop-xfade alt decoder (warm pool)
+   */
+  async useFile(file, opts = {}) {
     this.dispose();
     this.#restoreGpu();
+    this.#standby = !!opts.standby;
     this.objectUrl = URL.createObjectURL(file);
 
     if (file.type.startsWith('image/')) {
@@ -233,11 +238,15 @@ export class InputManager {
    * muted, and playsinline. The layer texture's image is this element, so the
    * renderer uploads it with
    * texImage2D(TEXTURE_2D, 0, RGBA, RGBA, UNSIGNED_BYTE, video).
+   * @param {string} url
+   * @param {string[]} [alts]
+   * @param {{ standby?: boolean }} [opts]
    * @returns {Promise<boolean>} false when every stream failed and the test pattern is up
    */
-  async useUrl(url, alts = []) {
+  async useUrl(url, alts = [], opts = {}) {
     this.dispose();
     this.#restoreGpu();
+    this.#standby = !!opts.standby;
     this.#remote = true;
     this.rejected = [];
     this.#fallbacks = alts.filter((item) => webStreamUrl(item) && item !== url);
@@ -246,7 +255,55 @@ export class InputManager {
     return this.#playOrFallback(video);
   }
 
+  /** True when this input has a texture the compositor can sample (not the placeholder). */
+  isDrawable() {
+    if (this.kind === 'image') {
+      return !!(this.texture && this.texture !== blackPixel && this.width >= 2 && this.height >= 2);
+    }
+    if (this.kind === 'video') {
+      return !!(this.texture?.isStableVideo && this.video
+        && this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+        && this.width >= 2 && this.height >= 2);
+    }
+    if (this.kind === 'camera' || this.kind === 'picture') {
+      return !!(this.texture && this.texture !== blackPixel && this.width >= 2 && this.height >= 2);
+    }
+    return false;
+  }
+
+  /** Wait until isDrawable(), or false on timeout. */
+  whenDrawable(timeoutMs = 12000) {
+    if (this.isDrawable()) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const t0 = performance.now();
+      const tick = () => {
+        if (this.isDrawable()) {
+          resolve(true);
+          return;
+        }
+        if (performance.now() - t0 > timeoutMs) {
+          resolve(false);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
+  }
+
+  /** Leave standby and build the loop-xfade alt only when a live layer needs it. */
+  activateFromStandby() {
+    this.#standby = false;
+    this.userPaused = false;
+    if (this.texture?.isStableVideo) this.texture.userData.stamp = -1;
+    if (this.kind === 'video') {
+      this.play();
+      if (this.loopXfadeOn) this.#prepareAlt();
+    }
+  }
+
   #remote = false;
+  #standby = false;
 
   /** crossOrigin is set before src so the element does not start a tainted fetch. */
   #mountRemote(video, url) {
@@ -503,6 +560,7 @@ export class InputManager {
     this.objectUrl = null;
     this.#fallbacks = [];
     this.#remote = false;
+    this.#standby = false;
     this.kind = 'none';
     this.width = this.height = 1;
     this.direction = 1;
@@ -590,7 +648,7 @@ export class InputManager {
         video.removeEventListener('loadeddata', ready);
         this.#setLive(video, 'video');
         this.#watchLive(video);
-        this.#prepareAlt();
+        if (!this.#standby) this.#prepareAlt();
         resolve(true);
       };
       video.onerror = () => {
@@ -753,12 +811,14 @@ export class InputManager {
       }
       this.#attachVideoTexture(video, kind);
     };
-    const framed = video.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA && (video.videoWidth | 0) >= 2;
+    // Attach as soon as a frame exists so scene swaps never bind the placeholder.
+    const framed = video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && (video.videoWidth | 0) >= 2;
     if (kind === 'camera') {
       if ((video.videoWidth | 0) >= 2) arm();
       else video.addEventListener('resize', arm, { once: true });
     } else if (framed) arm();
     else {
+      video.addEventListener('loadeddata', arm, { once: true });
       video.addEventListener('canplaythrough', arm, { once: true });
       video.addEventListener('playing', arm, { once: true });
     }

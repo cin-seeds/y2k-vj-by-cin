@@ -113,8 +113,32 @@ export class SceneManager {
     this.#record(before);
   }
 
+  /** Move a scene so it sits at `toIndex` (0 … length). Used by pad drag-reorder. */
+  move(id, toIndex) {
+    const from = this.scenes.findIndex((s) => s.id === id);
+    if (from < 0) return false;
+    const max = this.scenes.length;
+    const target = Math.min(max, Math.max(0, Math.round(Number(toIndex) || 0)));
+    let insert = target;
+    if (from < insert) insert -= 1;
+    if (insert === from) return false;
+    const before = this.#clone();
+    const [scene] = this.scenes.splice(from, 1);
+    this.scenes.splice(insert, 0, scene);
+    this.#changed();
+    this.#record(before);
+    return true;
+  }
+
   get(id) {
     return this.scenes.find((s) => s.id === id);
+  }
+
+  /** Scene at a slot index in the current saved order (0 = first pad / APC slot). */
+  at(index) {
+    const i = index | 0;
+    if (i < 0 || i >= this.scenes.length) return null;
+    return this.scenes[i];
   }
 
   /** Still of the program output, taken after a launch. Omitted on older scenes. */
@@ -159,8 +183,9 @@ export class SceneManager {
       const cur = currentMedia[L];
       if (target && (target.key !== cur.key || !!target.mirror !== !!cur.mirror)) mediaChange.add(L);
     }
-    // Start loading the new clips immediately. The outgoing decoder stays up until
-    // the incoming one is ready, so the compositor never drops to a test pattern.
+    // Prefer warm decoders for clips already on the scene page. The outgoing
+    // decoder stays bound until the incoming one can draw, so the picture never
+    // drops to the test pattern or an empty still.
     for (const L of mediaChange) this.applyMedia(L, scene.media[L]);
 
     const dip = new Set();

@@ -83,9 +83,16 @@ export const LAYER_DEFS = [
 
   { id: 'mode', label: 'Shader', group: 'fx', min: 0, max: MODES.length - 1, step: 1, value: 0,
     options: MODE_LABELS },
+  { id: 'fitMode', label: 'Frame', group: 'layer', min: 0, max: 2, step: 1, value: 0,
+    options: ['Fill', 'Fit', 'Original'] },
   { id: 'scale', label: 'Scale', group: 'layer', min: 0.1, max: 3, value: 1 },
   { id: 'posX', label: 'Position X', group: 'layer', min: -1, max: 1, value: 0 },
   { id: 'posY', label: 'Position Y', group: 'layer', min: -1, max: 1, value: 0 },
+  { id: 'travel', label: 'Travel', group: 'layer', min: 0, max: 1, step: 1, value: 0,
+    options: ['Off', 'On'] },
+  { id: 'travelSpeed', label: 'Travel Speed', group: 'layer', min: 0.05, max: 2, value: 0.6 },
+  { id: 'travelStyle', label: 'Move Style', group: 'layer', min: 0, max: 1, step: 1, value: 1,
+    options: ['Cut', 'Fade'] },
   { id: 'reactivity', label: 'Audio Reactivity', group: 'layer', min: 0, max: 2, value: 1 },
   { id: 'audioBind', label: 'Audio Binding', group: 'layer', min: 0, max: 4, step: 1, value: 0,
     options: AUDIO_BINDS },
@@ -281,9 +288,21 @@ const LAYER_OVERRIDES = {
 };
 
 const NON_UNIFORM = new Set([
-  'opacity', 'blend', 'blendInvert', 'mode', 'scale', 'posX', 'posY', 'audioBind', 'playMode', 'beatSync',
+  'opacity', 'blend', 'blendInvert', 'mode', 'fitMode', 'scale', 'posX', 'posY', 'travel', 'travelSpeed', 'travelStyle',
+  'audioBind', 'playMode', 'beatSync',
   'loopXfade', 'loopXfadeDur', 'entryStyle', 'entryDur', 'engine', 'pCount', 'pSource', 'pColor',
 ]);
+
+/** Numeric layer fitMode → framing name used by Layer.updateUvScale. */
+export const FIT_MODES = ['fill', 'fit', 'original'];
+export function fitModeName(value) {
+  const i = Math.round(Number(value));
+  return FIT_MODES[i] || 'fill';
+}
+export function fitModeIndex(name) {
+  const i = FIT_MODES.indexOf(name);
+  return i >= 0 ? i : 0;
+}
 
 export const uniformName = (key) => 'u' + key[0].toUpperCase() + key.slice(1);
 export const layerParam = (layer, key) => `${layer}.${key}`;
@@ -328,9 +347,13 @@ const PARAM_META = {
   entryStyle: { friendlyLabel: 'Image Entry', description: 'How a still image arrives: cut, fade, zoom dissolve, or a glitch flash.', category: 'Source & Playback', neutralValue: 0 },
   entryDur: { friendlyLabel: 'Entry Time', description: 'Length of the image entry animation, in seconds.', unit: 's', category: 'Source & Playback', neutralValue: 0.6 },
   mode: { friendlyLabel: 'Layer Shader', description: 'The look painted on this layer after the source and the transform. Clean is the picture with no extra effect.', category: 'Source & Playback', neutralValue: 7 },
+  fitMode: { friendlyLabel: 'Frame', description: 'How this layer’s media sits in the frame. Fill crops to cover. Fit letterboxes so the whole image is visible. Original shows the whole frame at its own aspect with no crop and no forced upscale.', category: 'Geometry & Scale', neutralValue: 0 },
   scale: { friendlyLabel: 'Zoom Scale', description: 'Enlarges or shrinks the layer around its center before color and post effects.', unit: 'x', category: 'Geometry & Scale', neutralValue: 1 },
   posX: { friendlyLabel: 'Position X', description: 'Slides the layer left or right. 0 is centered. The track is a fraction of the frame.', category: 'Geometry & Scale', neutralValue: 0 },
   posY: { friendlyLabel: 'Position Y', description: 'Slides the layer up or down. 0 is centered.', category: 'Geometry & Scale', neutralValue: 0 },
+  travel: { friendlyLabel: 'Travel', description: 'Autopilot that moves the layer through random zooms and pans. Scale stays at least 1 so the frame stays filled. Turning it off restores the pose from when Travel was turned on.', category: 'Geometry & Scale', neutralValue: 0 },
+  travelSpeed: { friendlyLabel: 'Travel Speed', description: 'How quickly Travel eases between poses, and how often it picks a new one.', unit: 'x', category: 'Geometry & Scale', neutralValue: 0.6 },
+  travelStyle: { friendlyLabel: 'Move Style', description: 'Cut jumps to the next pose. Fade eases from the current pose to the next.', category: 'Geometry & Scale', neutralValue: 1 },
   reactivity: { friendlyLabel: 'Audio Reactivity', description: 'How strongly this layer’s shader listens to the audio bands. 0 ignores the sound.', unit: 'x', category: 'Audio Reactivity', neutralValue: 0 },
   audioBind: { friendlyLabel: 'Audio Band', description: 'Which part of the spectrum drives the shader: all bands, bass, mids, treble, or none.', category: 'Audio Reactivity', neutralValue: 4 },
   beatSync: { friendlyLabel: 'Beat Sync', description: 'Adds the tempo clock on top of the kick, so the picture pulses with the BPM.', unit: '%', category: 'Audio Reactivity', neutralValue: 0 },

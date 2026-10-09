@@ -1,6 +1,6 @@
 // Bottom dock: scene launcher pads + beat timeline.
 //   pads:   click = launch (crossfade), shift-click = MIDI learn, right-click = menu,
-//           drag onto the timeline to create a cue
+//           drag within the list to reorder (ids stay put), or onto the timeline for a cue
 //   track:  click = seek, drag a cue to move it, double-click / right-click a cue to delete
 
 import { beginDrag, endDrag, endDragSoon, isOurDrag, readDrag } from './dragPayload.js';
@@ -50,6 +50,7 @@ export class SceneBar {
     this.#bindTransport();
     this.#bindTrack();
     this.#bindMenu();
+    this.#bindPadReorder();
     this.#watchPadSpace();
 
     scenes.onChange(() => {
@@ -192,13 +193,16 @@ export class SceneBar {
     pad.style.setProperty('--c', s.color);
     pad.innerHTML = `<i>${index + 1}</i><span></span><b class="pad-progress"></b>`;
     pad.querySelector('span').textContent = s.name;
+    // Learn stays on scene id so it tracks this scene when the list is reordered.
     pad.dataset.midi = `scene:${s.id}`;
     const map = this.midi.mappingFor(`scene:${s.id}`);
-    pad.title = `${s.name}\nClick: launch \u00b7 Drag to timeline \u00b7 Right-click: menu` +
+    pad.title = `${s.name}\nClick: launch \u00b7 Drag to reorder or onto the timeline \u00b7 Right-click: menu` +
       (map ? `\nMIDI: ${map}` : '\nShift-click, or MIDI Learn, to bind a pad');
     pad.classList.toggle('mapped', !!map);
     pad.classList.toggle('armed', this.midi.learnTarget === `scene:${s.id}`);
     pad.classList.toggle('midi-hot', this.midi.learnTarget === `scene:${s.id}`);
+    pad.dataset.sceneId = s.id;
+    pad.dataset.index = String(index);
 
     pad.addEventListener('click', (e) => {
       if (e.shiftKey) this.midi.learn(`scene:${s.id}`);
@@ -211,7 +215,7 @@ export class SceneBar {
     pad.addEventListener('dragstart', (e) => {
       const itemData = { id: s.id, name: s.name, source: 'scene', color: s.color };
       beginDrag(e, itemData);
-      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.effectAllowed = 'copyMove';
       e.dataTransfer.setData('text/plain', JSON.stringify({
         type: 'SCENE_OR_CLIP',
         id: itemData.id,
@@ -219,13 +223,106 @@ export class SceneBar {
         data: itemData,
       }));
       document.body.classList.add('dragging-scene');
+      pad.classList.add('is-dragging');
     });
     pad.addEventListener('dragend', () => {
       document.body.classList.remove('dragging-scene');
+      pad.classList.remove('is-dragging');
+      this.#clearPadDropMarks();
       endDragSoon();
     });
     this.padEls.set(s.id, pad);
     return pad;
+  }
+
+  #isSceneDrag(payload) {
+    if (!payload?.id) return false;
+    if (payload.data?.source === 'scene') return true;
+    return !!this.scenes.get(payload.id);
+  }
+
+  #bindPadReorder() {
+    const el = this.padsEl;
+    if (!el) return;
+    let insertAt = -1;
+    const mark = (index) => {
+      const sceneCount = this.scenes.scenes.length;
+      insertAt = Math.min(Math.max(0, index), sceneCount);
+      this.#clearPadDropMarks();
+      const cells = [...el.children];
+      if (!cells.length) return;
+      if (insertAt >= sceneCount) {
+        const last = cells[Math.min(sceneCount, cells.length) - 1] || cells[cells.length - 1];
+        last?.classList.add(insertAt > 0 ? 'drop-after' : 'drop-before');
+        return;
+      }
+      cells[insertAt]?.classList.add('drop-before');
+    };
+    const allow = (e) => {
+      const payload = window.__vjDragPayload;
+      if (!this.#isSceneDrag(payload)) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      return true;
+    };
+    el.addEventListener('dragenter', (e) => { allow(e); });
+    el.addEventListener('dragover', (e) => {
+      if (!allow(e)) return;
+      mark(this.#padInsertIndex(e));
+    });
+    el.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && el.contains(e.relatedTarget)) return;
+      this.#clearPadDropMarks();
+      insertAt = -1;
+    });
+    el.addEventListener('drop', (e) => {
+      const payload = readDrag(e);
+      if (!this.#isSceneDrag(payload)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const at = insertAt >= 0 ? insertAt : this.#padInsertIndex(e);
+      this.#clearPadDropMarks();
+      insertAt = -1;
+      this.groupEdit(() => this.scenes.move(payload.id, at));
+    });
+  }
+
+  /** Insert index into the scene array (0 … length), not the empty filler cells. */
+  #padInsertIndex(e) {
+    const cells = [...this.padsEl.children];
+    const sceneCount = this.scenes.scenes.length;
+    if (!cells.length) return 0;
+    const x = e.clientX;
+    const y = e.clientY;
+
+    for (let i = 0; i < cells.length; i++) {
+      const rect = cells[i].getBoundingClientRect();
+      if (y < rect.top || y > rect.bottom) continue;
+      if (x < rect.left || x > rect.right) continue;
+      if (cells[i].classList.contains('pad-empty')) return Math.min(i, sceneCount);
+      return x < rect.left + rect.width / 2 ? i : Math.min(i + 1, sceneCount);
+    }
+
+    // Gaps between pads: nearest cell by X among scene slots (+ one empty end).
+    let best = sceneCount;
+    let bestDist = Infinity;
+    const limit = Math.min(cells.length, sceneCount + 1);
+    for (let i = 0; i < limit; i++) {
+      const rect = cells[i].getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const dist = Math.abs(x - cx);
+      if (dist >= bestDist) continue;
+      bestDist = dist;
+      best = x < cx ? i : i + 1;
+    }
+    return Math.min(Math.max(0, best), sceneCount);
+  }
+
+  #clearPadDropMarks() {
+    for (const node of this.padsEl.querySelectorAll('.drop-before, .drop-after')) {
+      node.classList.remove('drop-before', 'drop-after');
+    }
   }
 
   updateActive() {

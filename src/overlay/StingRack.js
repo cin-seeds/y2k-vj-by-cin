@@ -623,7 +623,7 @@ export class StingRack {
     if (!clips.length) {
       const empty = document.createElement('p');
       empty.className = 'brand-pick-empty';
-      empty.textContent = 'No brand assets yet. Tick Brand asset in Media Manager, then add the file.';
+      empty.textContent = 'No brand assets yet. Tick Brand on a clip in Media Manager.';
       pick.append(empty);
     } else {
       const grid = document.createElement('div');

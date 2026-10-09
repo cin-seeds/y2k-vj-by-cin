@@ -42,18 +42,26 @@ fn safe_filename(filename: &str) -> Result<String, String> {
   }
 }
 
+/// Portable projects keep clips in `<project>/Source/` (relative path `Source/<leaf>`).
 fn project_media_dir(project_path: &str) -> Result<(PathBuf, String), String> {
   let project = project_file_path(project_path)?;
   let parent = project.parent().ok_or_else(|| "That project has no folder.".to_string())?;
-  let stem = project.file_stem().and_then(|name| name.to_str()).unwrap_or("project");
-  let folder = format!("{stem}.media");
-  Ok((parent.join(&folder), folder))
+  Ok((parent.join("Source"), "Source".to_string()))
 }
 
 fn allow_project_media(app: &tauri::AppHandle, project_path: &str) {
   let Ok((dir, _)) = project_media_dir(project_path) else { return };
   if dir.is_dir() {
     let _ = allow_media_dir(app, &dir);
+  }
+  // Older projects may still keep a `<stem>.media` folder beside the .vjproj.
+  if let Ok(project) = project_file_path(project_path) {
+    if let (Some(parent), Some(stem)) = (project.parent(), project.file_stem().and_then(|n| n.to_str())) {
+      let legacy = parent.join(format!("{stem}.media"));
+      if legacy.is_dir() {
+        let _ = allow_media_dir(app, &legacy);
+      }
+    }
   }
 }
 
@@ -98,7 +106,7 @@ fn read_text_file(app: tauri::AppHandle, path: String) -> Result<String, String>
   std::fs::read_to_string(file).map_err(|err| err.to_string())
 }
 
-/// Copy a project file into `<project>.media` next to the .vjproj. Returns the relative path.
+/// Copy a file into `<project>/Source/` next to the .vjproj. Returns `Source/<leaf>`.
 #[tauri::command]
 fn copy_project_asset(
   app: tauri::AppHandle,
@@ -1453,6 +1461,7 @@ async fn transcode_cancel(job_id: String) -> Result<(), String> {
 
 /// Fit a video to 1920x1080 and write an H.264 MP4 into the global media library.
 /// The FFmpeg binary is the `ffmpeg` sidecar (src-tauri/bin/ffmpeg-<target>, copied beside the app).
+/// When `drop_audio` is true (Media Manager preference, default on), the AAC track is omitted.
 #[tauri::command]
 async fn transcode_media(
   app: tauri::AppHandle,
@@ -1460,6 +1469,7 @@ async fn transcode_media(
   input_path: String,
   save_dir: String,
   keyint: Option<u32>,
+  drop_audio: Option<bool>,
 ) -> Result<String, String> {
   let input = absolute_sanitized(Path::new(input_path.trim()))?;
   if !input.is_file() {
@@ -1478,35 +1488,41 @@ async fn transcode_media(
   let gop_n = keyint.unwrap_or(1).clamp(1, 250);
   let gop = gop_n.to_string();
   let preset = if gop_n > 1 { "veryfast" } else { "medium" };
+  let strip_audio = drop_audio.unwrap_or(true);
 
   ensure_ffmpeg_sidecar()?;
+  let mut args = vec![
+    "-y".into(),
+    "-nostdin".into(),
+    "-i".into(),
+    input_arg,
+    "-vf".into(),
+    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(1920-iw)/2:(1080-ih)/2".into(),
+    "-c:v".into(),
+    "libx264".into(),
+    "-preset".into(),
+    preset.into(),
+    "-pix_fmt".into(),
+    "yuv420p".into(),
+    "-g".into(),
+    gop,
+    "-bf".into(),
+    "0".into(),
+    "-movflags".into(),
+    "+faststart".into(),
+  ];
+  if strip_audio {
+    args.push("-an".into());
+  } else {
+    args.push("-c:a".into());
+    args.push("aac".into());
+  }
+  args.push(output.clone());
   let (mut rx, child) = app
     .shell()
     .sidecar("ffmpeg")
     .map_err(|err| ffmpeg_launch_error(&err.to_string()))?
-    .args([
-      "-y",
-      "-nostdin",
-      "-i",
-      &input_arg,
-      "-vf",
-      "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(1920-iw)/2:(1080-ih)/2",
-      "-c:v",
-      "libx264",
-      "-preset",
-      preset,
-      "-pix_fmt",
-      "yuv420p",
-      "-g",
-      &gop,
-      "-bf",
-      "0",
-      "-movflags",
-      "+faststart",
-      "-c:a",
-      "aac",
-      &output,
-    ])
+    .args(args)
     .spawn()
     .map_err(|err| ffmpeg_launch_error(&err.to_string()))?;
   transcodes().insert(job_id.clone(), RunningTranscode { child, output: dest.clone() });

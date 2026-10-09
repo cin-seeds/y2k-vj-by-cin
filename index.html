@@ -73,13 +73,8 @@
         <div class="prep-ingest">
           <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
             <b>Drop a video or image</b>
-            <span>mov, mp4, mp3, wav, jpg, png, or click. Audio is saved as a lighter file. Tick Brand asset to file a logo under Brand.</span>
+            <span>mov, mp4, mp3, wav, jpg, png, or click. Audio is saved as a lighter file. Tick Brand on a clip in the gallery to file it under Brand.</span>
           </div>
-          <label class="check prep-brand" for="prep-brand">
-            <input id="prep-brand" type="checkbox" />
-            Brand asset
-          </label>
-          <p class="hint">Ticked files are filed under Brand and show up in Brand Overlay.</p>
           <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
           <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
         </div>
@@ -88,15 +83,24 @@
           <div class="prep-gallery-bar">
             <h3>Gallery</h3>
             <div class="prep-tag-tools">
-              <input id="prep-tag-input" type="text" maxlength="24" placeholder="trees" spellcheck="false" autocomplete="off" aria-label="Tag for the selected clips" />
+              <input id="prep-tag-input" type="text" maxlength="24" placeholder="trees" spellcheck="false" autocomplete="off" aria-label="Tag for the selected clips" list="prep-tag-list" />
+              <datalist id="prep-tag-list"></datalist>
               <button id="prep-tag-add" type="button" disabled title="Tag the selected clips">Tag</button>
               <button id="prep-send" type="button" disabled>Add to Project</button>
             </div>
           </div>
+          <div id="prep-tag-suggest" class="prep-tag-suggest" hidden></div>
           <div id="prep-tag-filters" class="prep-tag-filters" hidden></div>
           <div class="prep-browse">
             <div class="gallery-find">
               <input id="prep-search" type="search" placeholder="Search name or tag" spellcheck="false" autocomplete="off" aria-label="Search the library" />
+              <label class="menu-field gallery-sort" for="prep-sort">Sort By
+                <select id="prep-sort" title="Sort the gallery">
+                  <option value="name">Name (A-Z)</option>
+                  <option value="kind">Kind</option>
+                  <option value="newest">Newest first</option>
+                </select>
+              </label>
             </div>
             <div class="gallery-sources" role="tablist" aria-label="Media type">
               <button type="button" role="tab" data-gallery-source="all" aria-selected="true">All</button>
@@ -139,27 +143,20 @@
         </div>
         <p id="midi-map-note" class="hint" hidden></p>
         <p class="hint">MIDI Learn highlights the next slider, menu, or pad you click. APC Mini mk2 binds Channel 1 without Learn. Hold Shift (note 122) for the second function on the track and scene buttons.</p>
-        <div class="midi-monitors">
-          <section class="midi-monitor" aria-label="Preview">
+        <div class="midi-perform">
+          <section class="midi-monitor" aria-label="Program">
             <header>
-              <h3>Preview</h3>
-              <button id="cue-mode-toggle" type="button" aria-pressed="false" title="Cue mode. A scene pad arms Preview. Press it again, or GO, to launch.">Cue</button>
+              <h3>Program</h3>
+              <button id="cue-mode-toggle" type="button" aria-pressed="false" title="Cue mode. A scene pad arms the next scene. Press it again, or GO, to launch.">Cue</button>
             </header>
             <div class="midi-monitor-stage">
-              <canvas id="cue-preview" width="320" height="180"></canvas>
-              <img id="cue-preview-img" alt="" hidden />
-              <p id="cue-preview-wait" hidden>Not played yet</p>
+              <canvas id="program-monitor" width="320" height="180"></canvas>
             </div>
-            <p id="cue-preview-name"></p>
-            <ul id="cue-preview-layers"></ul>
           </section>
-          <section class="midi-monitor" aria-label="Program">
-            <header><h3>Program</h3></header>
-            <canvas id="program-monitor" width="320" height="180"></canvas>
-          </section>
-        </div>
-        <div id="apc-view" hidden></div>
-        <div id="xdj-view" class="xdj" hidden>
+          <div id="split-midi" class="split-preview" role="separator" aria-orientation="horizontal" aria-label="Resize the MIDI board" aria-valuemin="16" aria-valuemax="62" aria-valuenow="36" tabindex="0" title="Drag to stretch or shrink the MIDI keys. Double-click to reset."></div>
+          <div class="midi-board">
+            <div id="apc-view" hidden></div>
+            <div id="xdj-view" class="xdj" hidden>
           <div class="xdj-bar">
             <span class="xdj-title">Pioneer XDJ-700</span>
             <label class="menu-field" for="xdj-count">Decks
@@ -172,6 +169,8 @@
             </label>
           </div>
           <div id="xdj-decks" class="xdj-row"></div>
+            </div>
+          </div>
         </div>
         <details id="acc-macros" class="fold">
           <summary>Macro Knobs</summary>
@@ -355,13 +354,6 @@
               <option value="9:16">9:16 (Vertical/Social)</option>
               <option value="1:1">1:1 (Square/Diamond LED)</option>
             </select>
-          </div>
-          <div class="row">
-            <label>Scale</label>
-            <div class="seg">
-              <button id="scale-fill" type="button" class="on">Fill</button>
-              <button id="scale-fit" type="button">Fit</button>
-            </div>
           </div>
           <div class="row">
             <label>Render scale</label>
@@ -804,7 +796,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             </li>
             <li>
               <h3>Media Manager</h3>
-              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264 into the library. Tag a logo <b>Brand asset</b> before it is stored. The gallery is kept across restarts. Select clips, tag them, then <b>Add to Project</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app. Drag the bar under the drop area to give the gallery more room.</p>
+              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264 into the library. Tick <b>Brand</b> on a clip in the gallery to file it under Brand. The gallery is kept across restarts. Select clips, tag them, then <b>Add to Project</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app. Drag the bar under the drop area to give the gallery more room.</p>
               <p><b>Project Media</b> lists only the clips added to this project. Each one is a reference to the library file. Click <b>+</b> to open <b>Media Manager</b>. On a card, <b>A</b>, <b>B</b>, or <b>C</b> assigns that clip. Removing a clip from the project drops it from this show. If a layer is playing it, that layer returns to the test pattern.</p>
             </li>
             <li>
@@ -849,7 +841,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             <li>
               <h3>Output and recording</h3>
               <p>In <b>Output</b>, set the <b>Preview</b> shape. <b>Master Output</b> chooses a display. Pick an NDI, Syphon, or SPOUT size and click <b>Send</b> when another app should receive the picture. <b>Advanced Output</b> drags the corner pins onto a projector.</p>
-              <p>In <b>Recordings</b>, set <b>Scale</b> to <b>Fill</b> or <b>Fit</b>, and <b>Render scale</b> to 0.5x, 0.75x, or 1x. The frame menu there is <b>16:9</b>, <b>9:16</b>, <b>1:1</b>, or <b>Native</b>. <b>Include audio</b> puts sound in the file. <b>Code</b>, <b>Screen</b>, and the logos each have <b>Include in Recording</b> and <b>Include in Output</b>. <b>● REC</b> is in the top bar. Click it again to stop.</p>
+              <p>In the layer inspector under <b>Geometry &amp; Scale</b>, set <b>Frame</b> to <b>Fill</b>, <b>Fit</b>, or <b>Original</b> for each layer. In <b>Recordings</b>, set <b>Render scale</b> to 0.5x, 0.75x, or 1x. The frame menu there is <b>16:9</b>, <b>9:16</b>, <b>1:1</b>, or <b>Native</b>. <b>Include audio</b> puts sound in the file. <b>Code</b>, <b>Screen</b>, and the logos each have <b>Include in Recording</b> and <b>Include in Output</b>. <b>● REC</b> is in the top bar. Click it again to stop.</p>
             </li>
             <li>
               <h3>Diagnostics</h3>
@@ -917,6 +909,11 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
         </section>
         <section class="prefs-block" aria-labelledby="prefs-media">
           <h3 id="prefs-media">Media</h3>
+          <label class="check" for="prep-drop-video-audio">
+            <input id="prep-drop-video-audio" type="checkbox" checked />
+            Strip audio from video imports
+          </label>
+          <p class="hint">When on, new Media Manager video transcodes (mp4, mov) are saved without an audio track. Stock audio and music files are unchanged. Clips already in the library keep their audio until you add them again.</p>
           <div class="stock-dir-field">
             <label for="project-root-dir">New Projects Folder</label>
             <div class="row stock-dir-row">
