@@ -635,37 +635,39 @@ body.hide-timeline .timeline-pane {
   font-size: 12px;
 }
 .scene-grid {
-  display: flex;
-  flex-flow: row nowrap;
-  align-items: stretch;
+  display: grid;
+  grid-template-columns: repeat(var(--scene-cols, 8), minmax(0, 1fr));
+  grid-auto-rows: var(--scene-row-h, 52px);
   gap: 8px;
+  align-content: start;
   width: 100%;
   height: 56px;
   flex: 0 0 56px;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 0 0 2px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0;
   scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: #3a4568 transparent;
 }
-.scene-grid::-webkit-scrollbar { height: 6px; }
+.scene-grid::-webkit-scrollbar { width: 6px; height: 6px; }
 .scene-grid::-webkit-scrollbar-track { background: transparent; }
 .scene-grid::-webkit-scrollbar-thumb { background: #3a4568; border-radius: 3px; }
 .scene-grid::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 .scene-grid .pad,
 .scene-grid .pad-empty {
-  flex: 0 0 148px;
-  width: 148px;
-  min-width: 148px;
-  max-width: 148px;
+  flex: none;
+  width: auto;
+  min-width: 0;
+  max-width: none;
   height: auto;
+  min-height: 0;
   align-self: stretch;
 }
 .scene-grid .pad {
-  min-height: 0;
-  padding: 4px 6px 6px;
+  padding: 8px 10px 10px;
 }
 .scene-grid .pad-empty {
   border: 1px dashed #2a3350;
@@ -3467,22 +3469,43 @@ body.perform-mode:not(.hud-perform) .hud-frame { display: none !important; }
 body.perform-mode, body.perform-mode * { resize: none; }
 
 body.live-mode .dock-timeline { display: none; }
+body.live-mode .workspace-pane,
+body.perform-mode .workspace-pane {
+  overflow: hidden;
+}
+body.live-mode .control-deck,
+body.perform-mode .control-deck {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
 body.perform-mode .scene-grid,
-body.live-mode .scene-grid { min-height: 0; }
+body.live-mode .scene-grid {
+  flex: 1 1 auto;
+  align-self: stretch;
+  height: 100%;
+  min-height: 72px;
+}
 body.perform-mode .scene-grid .pad,
 body.live-mode .scene-grid .pad {
-  flex: 0 0 148px;
-  width: 148px;
-  min-width: 148px;
-  max-width: 148px;
+  width: auto;
+  min-width: 0;
+  max-width: none;
   min-height: 0;
   max-height: none;
   height: auto;
-  font-size: 11px;
-  padding: 4px 6px 6px;
+  font-size: 12px;
+  padding: 8px 10px 10px;
 }
 body.live-mode .scene-grid .pad span,
-body.perform-mode .scene-grid .pad span { font-size: 11px; white-space: nowrap; }
+body.perform-mode .scene-grid .pad span {
+  font-size: 12px;
+  white-space: nowrap;
+}
+body.live-mode .scene-grid .pad i,
+body.perform-mode .scene-grid .pad i { font-size: 10px; }
 
 .tl-scroll,
 .dock-timeline,
@@ -3578,7 +3601,8 @@ body.dragging-scene .tl-track { border-color: var(--accent); box-shadow: inset 0
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
 }
 .scene-menu button { border: 0; text-align: left; background: transparent; padding: 5px 8px; }
-.scene-menu button:hover { background: #18203a; }
+.scene-menu button:hover:not(:disabled) { background: #18203a; }
+.scene-menu button:disabled { opacity: 0.35; cursor: default; }
 .scene-menu .danger { color: var(--rec); }
 .scene-colors {
   display: flex;
@@ -3969,6 +3993,7 @@ button.diag-flash-warn { animation: diag-glow-warn 2s ease; }
   min-height: 0;
 }
 .apc-pad {
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -3979,6 +4004,22 @@ button.diag-flash-warn { animation: diag-glow-warn 2s ease; }
   background: rgba(0, 0, 0, 0.35);
   overflow: hidden;
 }
+.apc-pad.can-reorder { cursor: grab; }
+.apc-pad.is-dragging { opacity: 0.45; }
+.apc-pad.drop-before::before,
+.apc-pad.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  z-index: 4;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.55);
+  pointer-events: none;
+}
+.apc-pad.drop-before::before { left: -2px; }
+.apc-pad.drop-after::after { right: -2px; }
 .apc-pad i, .apc-pad em {
   color: var(--dim);
   font-style: normal;

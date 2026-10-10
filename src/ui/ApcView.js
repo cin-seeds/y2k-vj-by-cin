@@ -3,6 +3,7 @@
 // shows the second function on the track and scene buttons.
 
 import { layerParam } from '../params.js';
+import { beginDrag, endDragSoon, readDrag } from './dragPayload.js';
 import {
   FADERS,
   LED,
@@ -30,7 +31,11 @@ export class ApcView {
     this.getMedia = opts.getMedia;
     this.momentary = opts.momentary;
     this.actions = opts.actions;
+    this.groupEdit = opts.groupEdit || ((fn) => fn());
+    this.openSceneMenu = opts.openSceneMenu || null;
     this.getPulse = opts.getPulse || (() => 0);
+    this._padDragged = false;
+    this._insertAt = -1;
     this.page = 0;
     this.bank = 0;
     this.follow = true;
@@ -215,22 +220,35 @@ export class ApcView {
     face.className = 'apc-face';
     const grid = document.createElement('div');
     grid.className = 'apc-grid';
+    this.gridEl = grid;
     for (let y = 7; y >= 0; y--) {
       for (let x = 0; x < 8; x++) {
         const note = x + y * 8;
         const pad = document.createElement('button');
         pad.type = 'button';
         pad.className = 'apc-pad';
+        pad.dataset.note = String(note);
         pad.innerHTML = '<i></i><b></b><em></em>';
         pad.addEventListener('click', () => {
+          if (this._padDragged) return;
           this.#pressPad(note, true);
           setTimeout(() => this.pads[y][x].classList.remove('held'), 140);
           this.#cell(note)?.apply?.();
         });
+        pad.addEventListener('contextmenu', (e) => {
+          if (this.page !== 0) return;
+          const scene = this.scenes.at(this.bank * 64 + note);
+          if (!scene || !this.openSceneMenu) return;
+          e.preventDefault();
+          this.openSceneMenu(scene.id, e.clientX, e.clientY);
+        });
+        pad.addEventListener('dragstart', (e) => this.#onPadDragStart(e, note, pad));
+        pad.addEventListener('dragend', () => this.#onPadDragEnd(pad));
         grid.append(pad);
         this.pads[y][x] = pad;
       }
     }
+    this.#bindPadReorder();
 
     const scenes = document.createElement('div');
     scenes.className = 'apc-scenes';
@@ -524,12 +542,26 @@ export class ApcView {
     const pad = this.pads[y][x];
     const note = x + y * 8;
     const cell = this.#cell(note);
+    const scenePage = this.page === 0 && !this.shiftHeld;
+    const canDrag = scenePage && !cell.empty;
+    pad.draggable = canDrag;
+    pad.setAttribute('draggable', canDrag ? 'true' : 'false');
+    pad.classList.toggle('can-reorder', canDrag);
     pad.querySelector('em').textContent = String(note);
     pad.classList.toggle('empty', !!cell.empty);
     pad.style.setProperty('--c', cell.color || 'transparent');
     pad.querySelector('i').textContent = cell.tag;
     pad.querySelector('b').textContent = cell.name;
-    pad.title = cell.empty ? `Empty · note ${note}` : `${cell.name} · note ${note}`;
+    const abs = this.bank * 64 + note;
+    if (cell.empty) {
+      pad.title = scenePage
+        ? `Empty · slot ${abs + 1} · Drop a scene here to reorder`
+        : `Empty · note ${note}`;
+    } else {
+      pad.title = scenePage
+        ? `${cell.name} · slot ${abs + 1}\nClick: launch · Drag to reorder · Right-click: menu`
+        : `${cell.name} · note ${note}`;
+    }
     if (cell.thumb) {
       pad.style.setProperty('--thumb', `url("${cell.thumb}")`);
       pad.classList.add('has-thumb');
@@ -538,6 +570,123 @@ export class ApcView {
       pad.classList.remove('has-thumb');
     }
     this.#setLed(pad, cell.led);
+  }
+
+  #isSceneDrag(payload) {
+    if (!payload?.id) return false;
+    if (payload.data?.source === 'scene') return true;
+    return !!this.scenes.get(payload.id);
+  }
+
+  #onPadDragStart(e, note, pad) {
+    if (this.page !== 0 || this.shiftHeld) {
+      e.preventDefault();
+      return;
+    }
+    const scene = this.scenes.at(this.bank * 64 + note);
+    if (!scene) {
+      e.preventDefault();
+      return;
+    }
+    this._padDragged = true;
+    beginDrag(e, { id: scene.id, name: scene.name, source: 'scene', color: scene.color });
+    e.dataTransfer.effectAllowed = 'copyMove';
+    document.body.classList.add('dragging-scene');
+    pad.classList.add('is-dragging');
+  }
+
+  #onPadDragEnd(pad) {
+    document.body.classList.remove('dragging-scene');
+    pad.classList.remove('is-dragging');
+    this.#clearPadDropMarks();
+    this._insertAt = -1;
+    endDragSoon();
+    setTimeout(() => { this._padDragged = false; }, 0);
+  }
+
+  #bindPadReorder() {
+    const grid = this.gridEl;
+    if (!grid) return;
+    const allow = (e) => {
+      if (this.page !== 0) return false;
+      const payload = window.__vjDragPayload;
+      if (!this.#isSceneDrag(payload)) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      return true;
+    };
+    const mark = (index) => {
+      const sceneCount = this.scenes.scenes.length;
+      const bankStart = this.bank * 64;
+      this._insertAt = Math.min(Math.max(0, index), sceneCount);
+      this.#clearPadDropMarks();
+      const note = this._insertAt - bankStart;
+      if (note < 0 || note > 64) return;
+      if (this._insertAt >= sceneCount || note >= 64) {
+        const lastAbs = Math.min(sceneCount, bankStart + 64) - 1;
+        const lastNote = lastAbs - bankStart;
+        if (lastNote >= 0 && lastNote < 64) {
+          this.pads[Math.floor(lastNote / 8)][lastNote % 8]?.classList.add(
+            this._insertAt > bankStart ? 'drop-after' : 'drop-before',
+          );
+        }
+        return;
+      }
+      this.pads[Math.floor(note / 8)][note % 8]?.classList.add('drop-before');
+    };
+    grid.addEventListener('dragenter', (e) => { allow(e); });
+    grid.addEventListener('dragover', (e) => {
+      if (!allow(e)) return;
+      mark(this.#padInsertIndex(e));
+    });
+    grid.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && grid.contains(e.relatedTarget)) return;
+      this.#clearPadDropMarks();
+      this._insertAt = -1;
+    });
+    grid.addEventListener('drop', (e) => {
+      const payload = readDrag(e);
+      if (!this.#isSceneDrag(payload) || this.page !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const at = this._insertAt >= 0 ? this._insertAt : this.#padInsertIndex(e);
+      this.#clearPadDropMarks();
+      this._insertAt = -1;
+      this.groupEdit(() => this.scenes.move(payload.id, at));
+    });
+  }
+
+  /** Absolute insert index into scenes[] (bank*64 + pad), same list Live uses. */
+  #padInsertIndex(e) {
+    const sceneCount = this.scenes.scenes.length;
+    const note = this.#padNoteAt(e);
+    if (note < 0) return Math.min(sceneCount, Math.max(0, this._insertAt));
+    const abs = this.bank * 64 + note;
+    if (abs >= sceneCount) return sceneCount;
+    const pad = this.pads[Math.floor(note / 8)][note % 8];
+    const rect = pad.getBoundingClientRect();
+    const before = e.clientX < rect.left + rect.width / 2;
+    return before ? abs : Math.min(abs + 1, sceneCount);
+  }
+
+  #padNoteAt(e) {
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        const pad = this.pads[y][x];
+        const r = pad.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+          return x + y * 8;
+        }
+      }
+    }
+    return -1;
+  }
+
+  #clearPadDropMarks() {
+    for (const node of this.gridEl?.querySelectorAll('.drop-before, .drop-after') || []) {
+      node.classList.remove('drop-before', 'drop-after');
+    }
   }
 
   #setLed(el, led) {

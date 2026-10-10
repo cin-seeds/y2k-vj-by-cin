@@ -22,6 +22,8 @@ const REMOTE_KEY = 'vj.remoteLoops';
 export class MediaLibrary {
   #thumbQueue = [];
   #thumbBusy = false;
+  /** When false, skip blob/video thumb capture (Live/Perform). Queue keeps filling. */
+  #heavyThumbWork = true;
 
   constructor() {
     this.items = new Map();
@@ -29,6 +31,26 @@ export class MediaLibrary {
     this.listeners = new Set();
     this.cache = new MediaCache();
     this.ready = this.#hydrate();
+  }
+
+  /**
+   * Gate Project Media / path→blob thumb work. Live desks should turn this off so
+   * WKWebView is not fetching whole clips and probing <video> under the preview.
+   */
+  setHeavyThumbWork(on) {
+    this.#heavyThumbWork = !!on;
+    if (!this.#heavyThumbWork) return;
+    // Resume work deferred while Live/Perform was up.
+    for (const item of this.items.values()) {
+      if (!this.#canThumb(item)) continue;
+      if (!item.thumbnail) this.#enqueueThumb(item.name);
+      else if (!this.#isImage(item) && (item.thumbRev | 0) < 2) this.#queueThumb(item);
+    }
+    this.#drainThumbs();
+  }
+
+  get heavyThumbWork() {
+    return this.#heavyThumbWork;
   }
 
   async #hydrate() {
@@ -207,6 +229,8 @@ export class MediaLibrary {
       item.thumbRev = 2;
       return;
     }
+    // Blank re-check draws to canvas (GPU readback) — defer while Live is busy.
+    if (!this.#heavyThumbWork) return;
     // Re-check stored stills: a black frame used to be locked after two tries.
     thumbnailIsBlank(item.thumbnail).then((blank) => {
       const current = this.items.get(item.name);
@@ -249,10 +273,10 @@ export class MediaLibrary {
   }
 
   async #drainThumbs() {
-    if (this.#thumbBusy) return;
+    if (this.#thumbBusy || !this.#heavyThumbWork) return;
     this.#thumbBusy = true;
     try {
-      while (this.#thumbQueue.length) {
+      while (this.#thumbQueue.length && this.#heavyThumbWork) {
         const name = this.#thumbQueue.shift();
         const item = this.items.get(name);
         if (!item || item.thumbnail || !this.#canThumb(item)) continue;
@@ -276,10 +300,14 @@ export class MediaLibrary {
         } catch (err) {
           console.warn('Could not thumbnail', name, err);
         }
+        // Yield so Live RAF / compositor can run between path→blob probes.
+        if (this.#thumbQueue.length && this.#heavyThumbWork) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
       }
     } finally {
       this.#thumbBusy = false;
-      if (this.#thumbQueue.length) this.#drainThumbs();
+      if (this.#thumbQueue.length && this.#heavyThumbWork) this.#drainThumbs();
     }
   }
 

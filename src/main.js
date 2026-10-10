@@ -124,6 +124,15 @@ params.history = createParamHistory((id, value) => params.set(id, value), { onCh
 $('undo-btn').addEventListener('click', () => params.history.undo());
 $('redo-btn').addEventListener('click', () => params.history.redo());
 const library = new MediaLibrary();
+// Declared early so Live perf guards can read it during boot / library hydrate.
+let deskMode = 'live';
+let deskReturn = 'live';
+// Default workspace is Live — don't path→blob thumb while the preview is coming up.
+try {
+  const ws = localStorage.getItem('vj.workspace') || 'live';
+  deskMode = ws === 'prep' || ws === 'midi' ? ws : 'live';
+  if (deskMode !== 'prep') library.setHeavyThumbWork(false);
+} catch { library.setHeavyThumbWork(false); }
 const audio = new AudioEngine();
 const bus = new LayerBus(LAYERS);
 const lfo = new LfoEngine();
@@ -692,7 +701,31 @@ function liveSceneClipKeys() {
   return layers.map((l) => l.mediaKey).filter((k) => k.startsWith('file:') || k.startsWith('url:'));
 }
 
+/** Live or Perform (midi desk): preview must stay smooth; Prep can do heavy media work. */
+function isShowDesk() {
+  return deskMode === 'live' || deskMode === 'midi';
+}
+
+/**
+ * Mac WKWebView: tiny warm pool under Live. All platforms: pause Project Media
+ * path→blob thumbs while the show desk is up (queue drains in Prep).
+ */
+function syncLivePerfGuards() {
+  const show = isShowDesk();
+  library.setHeavyThumbWork(!show);
+  if (!sceneWarm) return;
+  if (isMacDesktop() && show) {
+    sceneWarm.setBudget({ maxKeys: 2, maxActive: 1, maxParked: 1 });
+  } else if (isMacDesktop()) {
+    sceneWarm.setBudget({ maxKeys: 6, maxActive: 1, maxParked: 2 });
+  } else {
+    sceneWarm.setBudget({ maxKeys: 18, maxActive: 2, maxParked: 6 });
+  }
+}
+
 function syncSceneClipWarm() {
+  syncLivePerfGuards();
+  if (!sceneWarm || !scenes) return;
   sceneWarm.syncFromScenes(scenes.scenes, liveSceneClipKeys());
 }
 
@@ -1399,10 +1432,12 @@ function addFiles(fileList, { bin = false } = {}) {
 let libraryUiRefreshTimer = 0;
 function scheduleRefreshLibraryUi() {
   if (libraryUiRefreshTimer) return;
+  // Live/Perform: coalesce more aggressively — thumb emits used to rebuild the list every ~60ms.
+  const delay = isShowDesk() ? 400 : 60;
   libraryUiRefreshTimer = setTimeout(() => {
     libraryUiRefreshTimer = 0;
     refreshLibraryUi();
-  }, 60);
+  }, delay);
 }
 
 library.onChange(() => {
@@ -2481,6 +2516,7 @@ const sceneWarm = new SceneClipWarm({
   getFile: (name) => library.get(name),
   getRemote: (name) => library.mediaItem(name),
 });
+syncLivePerfGuards();
 
 const scenes = new SceneManager({
   params,
@@ -6797,8 +6833,6 @@ $('hud-dpi').addEventListener('change', () => {
   persistDesk();
 });
 
-let deskMode = 'live';
-let deskReturn = 'live';
 let midiMap = 'apc-mini-mk2';
 
 function applyMidiSurface() {
@@ -6840,6 +6874,8 @@ apcView = new ApcView({
   bus,
   panel,
   launch: (id) => triggerScene(id, undefined, { history: true }),
+  groupEdit: (fn) => params.history.group(fn),
+  openSceneMenu: (id, x, y) => sceneBar.openPadMenu(id, x, y),
   setHud: (on) => {
     setHudEnabled(on, { history: true });
     apcView?.refresh();
@@ -8388,6 +8424,7 @@ function setDeskMode(mode) {
   }
   // Prep keeps RAF / background pump / WebGL / master output running.
   syncFrameClock();
+  syncSceneClipWarm();
   if (prep) globalLibrary?.refresh();
   applyMidiSurface();
   if (midiOn) fitProgramMonitor();

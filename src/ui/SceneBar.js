@@ -130,14 +130,16 @@ export class SceneBar {
   }
 
   // ------------------------------------------------------------- pads
-  // Two rows, filled down each column, then onward to the right.
-  // Empty cells fill the visible width and leave one free cell after the
-  // last saved scene. Extra scenes add columns and the row scrolls.
+  // Adaptive CSS grid: columns from width, rows from height (preview split).
+  // Fill the visible N×M first; extra scenes add rows and the grid scrolls.
   #watchPadSpace() {
     this._slotCount = 0;
+    this._layoutKey = '';
     const sync = () => {
+      const { cols, rows } = this.#gridMetrics();
+      const key = `${cols}x${rows}`;
       const next = this.#slotCount();
-      if (next === this._slotCount) return;
+      if (key === this._layoutKey && next === this._slotCount) return;
       this.renderPads();
     };
     if (typeof ResizeObserver === 'function' && this.padsEl) {
@@ -151,28 +153,46 @@ export class SceneBar {
     setTimeout(sync, 120);
   }
 
-  #slotCount() {
+  #gridMetrics() {
     const el = this.padsEl;
     const gap = 8;
-    const slot = 148;
-    const w = el.clientWidth || 0;
-    const visible = Math.max(1, Math.floor((w + gap) / (slot + gap)));
+    const minCol = 120;
+    const minRow = 64;
+    const w = el?.clientWidth || 0;
+    const h = el?.clientHeight || 0;
+    const cols = Math.max(1, Math.floor((w + gap) / (minCol + gap)));
+    const rows = Math.max(1, h > 0 ? Math.floor((h + gap) / (minRow + gap)) : 1);
+    const rowH = h > 0
+      ? Math.max(48, Math.floor((h - (rows - 1) * gap) / rows))
+      : minRow;
+    return { cols, rows, gap, rowH };
+  }
+
+  #slotCount() {
+    const { cols, rows } = this.#gridMetrics();
+    const visible = cols * rows;
     const needed = this.scenes.scenes.length + 1;
     return Math.max(visible, needed);
   }
 
   renderPads() {
-    const scroll = this.padsEl.scrollLeft;
+    const scrollX = this.padsEl.scrollLeft;
+    const scrollY = this.padsEl.scrollTop;
     this.padsEl.innerHTML = '';
     this.padEls.clear();
     const scenes = this.scenes.scenes;
+    const { cols, rows, rowH } = this.#gridMetrics();
     const cells = this.#slotCount();
     this._slotCount = cells;
+    this._layoutKey = `${cols}x${rows}`;
+    this.padsEl.style.setProperty('--scene-cols', String(cols));
+    this.padsEl.style.setProperty('--scene-row-h', `${rowH}px`);
     for (let i = 0; i < cells; i++) {
       const scene = scenes[i];
       this.padsEl.append(scene ? this.#pad(scene, i) : this.#emptyCell());
     }
-    this.padsEl.scrollLeft = scroll;
+    this.padsEl.scrollLeft = scrollX;
+    this.padsEl.scrollTop = scrollY;
     this.updateActive();
   }
 
@@ -196,7 +216,7 @@ export class SceneBar {
     // Learn stays on scene id so it tracks this scene when the list is reordered.
     pad.dataset.midi = `scene:${s.id}`;
     const map = this.midi.mappingFor(`scene:${s.id}`);
-    pad.title = `${s.name}\nClick: launch \u00b7 Drag to reorder or onto the timeline \u00b7 Right-click: menu` +
+    pad.title = `${s.name}\nClick: launch \u00b7 Drag to reorder (drop marker) or onto the timeline \u00b7 Right-click: menu` +
       (map ? `\nMIDI: ${map}` : '\nShift-click, or MIDI Learn, to bind a pad');
     pad.classList.toggle('mapped', !!map);
     pad.classList.toggle('armed', this.midi.learnTarget === `scene:${s.id}`);
@@ -205,6 +225,7 @@ export class SceneBar {
     pad.dataset.index = String(index);
 
     pad.addEventListener('click', (e) => {
+      if (this._padDragged) return;
       if (e.shiftKey) this.midi.learn(`scene:${s.id}`);
       else this.onLaunch(s.id);
     });
@@ -213,6 +234,7 @@ export class SceneBar {
       this.#openMenu(s.id, e.clientX, e.clientY);
     });
     pad.addEventListener('dragstart', (e) => {
+      this._padDragged = true;
       const itemData = { id: s.id, name: s.name, source: 'scene', color: s.color };
       beginDrag(e, itemData);
       e.dataTransfer.effectAllowed = 'copyMove';
@@ -230,6 +252,7 @@ export class SceneBar {
       pad.classList.remove('is-dragging');
       this.#clearPadDropMarks();
       endDragSoon();
+      setTimeout(() => { this._padDragged = false; }, 0);
     });
     this.padEls.set(s.id, pad);
     return pad;
@@ -304,14 +327,15 @@ export class SceneBar {
       return x < rect.left + rect.width / 2 ? i : Math.min(i + 1, sceneCount);
     }
 
-    // Gaps between pads: nearest cell by X among scene slots (+ one empty end).
+    // Gaps: nearest cell by 2D distance among scene slots (+ one empty end).
     let best = sceneCount;
     let bestDist = Infinity;
     const limit = Math.min(cells.length, sceneCount + 1);
     for (let i = 0; i < limit; i++) {
       const rect = cells[i].getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
-      const dist = Math.abs(x - cx);
+      const cy = rect.top + rect.height / 2;
+      const dist = (x - cx) ** 2 + (y - cy) ** 2;
       if (dist >= bestDist) continue;
       bestDist = dist;
       best = x < cx ? i : i + 1;
@@ -364,7 +388,14 @@ export class SceneBar {
         const name = prompt('Scene name', scene.name);
         if (name) this.scenes.rename(id, name);
       } else if (action === 'update') this.scenes.overwrite(id);
-      else if (action === 'midi') this.midi.learn(`scene:${id}`);
+      else if (action === 'move-left' || action === 'move-right') {
+        const i = this.scenes.scenes.findIndex((row) => row.id === id);
+        if (i < 0) return;
+        if (action === 'move-left' && i > 0) this.groupEdit(() => this.scenes.move(id, i - 1));
+        if (action === 'move-right' && i < this.scenes.scenes.length - 1) {
+          this.groupEdit(() => this.scenes.move(id, i + 2));
+        }
+      } else if (action === 'midi') this.midi.learn(`scene:${id}`);
       else if (action === 'color') this.scenes.setColor(id, hit.dataset.color);
       else if (action === 'delete' && confirm(`Delete "${scene.name}"? Its timeline cues are removed too.`)) {
         this.groupEdit(() => {
@@ -382,14 +413,25 @@ export class SceneBar {
     });
   }
 
+  /** Shared with Perform APC pads (same scene list / menu). */
+  openPadMenu(id, x, y) {
+    this.#openMenu(id, x, y);
+  }
+
   #openMenu(id, x, y) {
     this.menuEl.dataset.scene = id;
     const current = this.scenes.get(id)?.color;
+    const index = this.scenes.scenes.findIndex((row) => row.id === id);
+    const last = this.scenes.scenes.length - 1;
     for (const swatch of this.menuEl.querySelectorAll('.scene-colors button')) {
       const on = swatch.dataset.color === current;
       swatch.classList.toggle('is-on', on);
       swatch.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
+    const left = this.menuEl.querySelector('[data-action="move-left"]');
+    const right = this.menuEl.querySelector('[data-action="move-right"]');
+    if (left) left.disabled = index <= 0;
+    if (right) right.disabled = index < 0 || index >= last;
     this.menuEl.hidden = false;
     const r = this.menuEl.getBoundingClientRect();
     this.menuEl.style.left = `${Math.min(x, innerWidth - r.width - 8)}px`;

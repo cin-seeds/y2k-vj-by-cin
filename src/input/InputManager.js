@@ -339,7 +339,18 @@ export class InputManager {
 
   setLoopXfade(on) {
     this.loopXfadeOn = !!on;
-    if (!this.loopXfadeOn) this.loopMix = 0;
+    if (!this.loopXfadeOn) {
+      this.loopMix = 0;
+      // Drop the second decoder when xfade is off (Mac WKWebView pays for idle alts).
+      if (this.alt) {
+        this.#killVideo(this.alt);
+        if (this.altTex && this.altTex !== blackPixel && this.altTex !== this.texture) {
+          this.altTex.dispose();
+        }
+        this.alt = null;
+        this.altTex = null;
+      }
+    }
     if (this.kind === 'video') this.#applyLoopFlag(this.video);
   }
 
