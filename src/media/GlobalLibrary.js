@@ -102,7 +102,7 @@ function kindLabel(kind) {
 }
 
 export function bindGlobalLibrary({
-  library, inBin, onAdd, onDeleted, projectSnapshot, showToast,
+  library, inBin, onAdd, onRemove, onDeleted, projectSnapshot, showToast,
   sourceDir, prepareDir, projectMediaDirs, libraryDir, fetchedDir,
 }) {
   const modal = document.getElementById('global-library');
@@ -110,6 +110,7 @@ export function bindGlobalLibrary({
   const empty = document.getElementById('prep-gallery-empty');
   const drop = document.getElementById('global-drop');
   const send = document.getElementById('prep-send');
+  const removeBtn = document.getElementById('prep-remove');
   const thumbs = new Map();
   const selected = new Set();
   const tagInput = document.getElementById('prep-tag-input');
@@ -244,9 +245,16 @@ export function bindGlobalLibrary({
 
   function paintSend() {
     const waiting = [...selected].filter((name) => !inBin(name));
+    const present = [...selected].filter((name) => inBin(name));
     if (send) {
       send.disabled = waiting.length === 0;
       send.textContent = waiting.length ? `Add ${waiting.length} to Project` : 'Add to Project';
+    }
+    if (removeBtn) {
+      removeBtn.disabled = present.length === 0 || !onRemove;
+      removeBtn.textContent = present.length
+        ? `Remove ${present.length} from Project`
+        : 'Remove from Project';
     }
   }
 
@@ -648,6 +656,33 @@ export function bindGlobalLibrary({
     showToast?.(sent === 1 ? `Added ${picked[0].name} to the project` : `Added ${sent} clips to the project`);
   }
 
+  async function removeSelected() {
+    if (!onRemove) return;
+    const names = [...selected].filter((name) => inBin(name));
+    if (!names.length) {
+      showToast?.('Select clips that are already in this project');
+      return;
+    }
+    let removed = 0;
+    for (const name of names) {
+      try {
+        await onRemove(name);
+        selected.delete(name);
+        removed += 1;
+      } catch (err) {
+        console.warn('Could not remove from project', name, err);
+      }
+    }
+    paint(latest);
+    if (!removed) {
+      showToast?.('Could not remove those clips from the project');
+      return;
+    }
+    showToast?.(removed === 1
+      ? `Removed ${names[0]} from the project`
+      : `Removed ${removed} clips from the project`);
+  }
+
   function show() {
     open = true;
     modal.hidden = false;
@@ -833,6 +868,7 @@ export function bindGlobalLibrary({
   });
   library.onChange(() => render());
   send?.addEventListener('click', sendSelected);
+  removeBtn?.addEventListener('click', () => { removeSelected(); });
   tagInput?.addEventListener('input', () => {
     if (tagAdd) tagAdd.disabled = !cleanTag(tagInput.value);
   });

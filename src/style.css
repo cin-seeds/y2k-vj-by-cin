@@ -174,6 +174,52 @@ body.panel-hidden { cursor: none; }
 .topbar .out-launch {
   flex-shrink: 0;
 }
+.project-load {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 220px;
+  flex: 0 1 180px;
+  padding: 2px 0;
+}
+.project-load[hidden] { display: none !important; }
+.project-load-label,
+#project-load-label {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-load-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: #1a2233;
+  overflow: hidden;
+}
+.project-load-bar > i {
+  display: block;
+  height: 100%;
+  width: 32%;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: left center;
+}
+.project-load.is-indeterminate .project-load-bar > i {
+  width: 40%;
+  animation: project-load-slide 1.1s ease-in-out infinite;
+}
+.project-load:not(.is-indeterminate) .project-load-bar > i {
+  width: var(--project-load-pct, 0%);
+  transition: width 0.2s ease;
+}
+@keyframes project-load-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(280%); }
+}
 .history-launch {
   margin-left: auto;
   display: flex;
@@ -323,10 +369,8 @@ body.panel-hidden { cursor: none; }
 body.timeline-resizing,
 body.timeline-resizing * { cursor: row-resize !important; }
 body.perform-mode .timeline-resizable-divider,
-body.live-mode .timeline-resizable-divider,
 body.hide-timeline .timeline-resizable-divider { display: none; }
 body.perform-mode .timeline-pane,
-body.live-mode .timeline-pane,
 body.hide-timeline .timeline-pane {
   height: auto !important;
   min-height: 0;
@@ -3468,7 +3512,16 @@ body.perform-mode label[for="view-mode"] { display: none !important; }
 body.perform-mode:not(.hud-perform) .hud-frame { display: none !important; }
 body.perform-mode, body.perform-mode * { resize: none; }
 
-body.live-mode .dock-timeline { display: none; }
+/* Live keeps the beat timeline + pull-bar; Perform still hides it. */
+body.live-mode .dock-timeline {
+  display: flex;
+  min-height: 0;
+}
+body.live-mode .timeline-resizable-divider { display: flex; }
+body.live-mode .timeline-pane {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
 body.live-mode .workspace-pane,
 body.perform-mode .workspace-pane {
   overflow: hidden;
@@ -3478,9 +3531,44 @@ body.perform-mode .control-deck {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 72px;
   overflow: hidden;
 }
+body.live-mode .mixer {
+  flex: 0 1 auto;
+  min-height: 64px;
+  max-height: var(--live-mixer-h, 42%);
+  overflow: auto;
+}
+body.live-mode .live-mixer-divider {
+  display: flex;
+  flex: 0 0 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  cursor: row-resize;
+  touch-action: none;
+  position: relative;
+  z-index: 3;
+  border-top: 1px solid #2a3548;
+  background: #10151f;
+}
+body.live-mode .live-mixer-divider::before {
+  content: '';
+  width: 42px;
+  height: 4px;
+  background: radial-gradient(circle, #8ea0c4 1.15px, transparent 1.35px) 0 50% / 8px 4px repeat-x;
+}
+body.live-mode .live-mixer-divider:hover,
+body.live-mode .live-mixer-divider.dragging {
+  border-color: var(--accent);
+  background: rgba(0, 240, 255, 0.12);
+}
+body.live-mode .live-mixer-divider:hover::before,
+body.live-mode .live-mixer-divider.dragging::before {
+  background: radial-gradient(circle, var(--accent) 1.15px, transparent 1.35px) 0 50% / 8px 4px repeat-x;
+}
+body.live-mixer-divider { display: none; }
 body.perform-mode .scene-grid,
 body.live-mode .scene-grid {
   flex: 1 1 auto;

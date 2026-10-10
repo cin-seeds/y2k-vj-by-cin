@@ -24,6 +24,9 @@ export class MediaLibrary {
   #thumbBusy = false;
   /** When false, skip blob/video thumb capture (Live/Perform). Queue keeps filling. */
   #heavyThumbWork = true;
+  #thumbTracking = false;
+  #thumbMarkDone = 0;
+  #thumbMarkTotal = 0;
 
   constructor() {
     this.items = new Map();
@@ -51,6 +54,32 @@ export class MediaLibrary {
 
   get heavyThumbWork() {
     return this.#heavyThumbWork;
+  }
+
+  /** Start counting thumb jobs for a project-load progress bar. */
+  startThumbTracking() {
+    this.#thumbTracking = true;
+    this.#thumbMarkDone = 0;
+    this.#thumbMarkTotal = this.#thumbQueue.length + (this.#thumbBusy ? 1 : 0);
+  }
+
+  stopThumbTracking() {
+    this.#thumbTracking = false;
+  }
+
+  /** pending includes the in-flight job; done/total are for the current track session. */
+  thumbProgress() {
+    const pending = this.#thumbQueue.length + (this.#thumbBusy ? 1 : 0);
+    const total = Math.max(
+      this.#thumbMarkTotal,
+      this.#thumbMarkDone + pending,
+    );
+    return {
+      pending,
+      busy: this.#thumbBusy,
+      done: this.#thumbMarkDone,
+      total,
+    };
   }
 
   async #hydrate() {
@@ -250,6 +279,7 @@ export class MediaLibrary {
   #enqueueThumb(name) {
     if (!name || this.#thumbQueue.includes(name)) return;
     this.#thumbQueue.push(name);
+    if (this.#thumbTracking) this.#thumbMarkTotal += 1;
     this.#drainThumbs();
   }
 
@@ -279,18 +309,30 @@ export class MediaLibrary {
       while (this.#thumbQueue.length && this.#heavyThumbWork) {
         const name = this.#thumbQueue.shift();
         const item = this.items.get(name);
-        if (!item || item.thumbnail || !this.#canThumb(item)) continue;
+        if (!item || item.thumbnail || !this.#canThumb(item)) {
+          if (this.#thumbTracking) this.#thumbMarkDone += 1;
+          continue;
+        }
         try {
           let thumbnail = await this.#captureFor(item);
           const current = this.items.get(name);
-          if (!current || (item.file && current.file !== item.file) || (!item.file && current.url !== item.url)) continue;
-          if (!thumbnail) continue;
+          if (!current || (item.file && current.file !== item.file) || (!item.file && current.url !== item.url)) {
+            if (this.#thumbTracking) this.#thumbMarkDone += 1;
+            continue;
+          }
+          if (!thumbnail) {
+            if (this.#thumbTracking) this.#thumbMarkDone += 1;
+            continue;
+          }
           if (!this.#isImage(current)) {
             const blank = await thumbnailIsBlank(thumbnail);
             if (blank) {
               // One more pass — decoder sometimes needs a second open.
               thumbnail = await this.#captureFor(current);
-              if (!thumbnail || await thumbnailIsBlank(thumbnail)) continue;
+              if (!thumbnail || await thumbnailIsBlank(thumbnail)) {
+                if (this.#thumbTracking) this.#thumbMarkDone += 1;
+                continue;
+              }
             }
           }
           current.thumbnail = thumbnail;
@@ -300,6 +342,7 @@ export class MediaLibrary {
         } catch (err) {
           console.warn('Could not thumbnail', name, err);
         }
+        if (this.#thumbTracking) this.#thumbMarkDone += 1;
         // Yield so Live RAF / compositor can run between path→blob probes.
         if (this.#thumbQueue.length && this.#heavyThumbWork) {
           await new Promise((r) => setTimeout(r, 0));

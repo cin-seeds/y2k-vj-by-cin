@@ -707,17 +707,18 @@ function isShowDesk() {
 }
 
 /**
- * Mac WKWebView: tiny warm pool under Live. All platforms: pause Project Media
- * path→blob thumbs while the show desk is up (queue drains in Prep).
+ * Mac WKWebView: no standby decoders under Live/Perform (idle jank). Prep can
+ * warm a small pool. All platforms: pause Project Media path→blob thumbs on
+ * show desks (queue drains in Prep).
  */
 function syncLivePerfGuards() {
   const show = isShowDesk();
   library.setHeavyThumbWork(!show);
   if (!sceneWarm) return;
   if (isMacDesktop() && show) {
-    sceneWarm.setBudget({ maxKeys: 2, maxActive: 1, maxParked: 1 });
+    sceneWarm.setBudget({ maxKeys: 0, maxActive: 0, maxParked: 0 });
   } else if (isMacDesktop()) {
-    sceneWarm.setBudget({ maxKeys: 6, maxActive: 1, maxParked: 2 });
+    sceneWarm.setBudget({ maxKeys: 4, maxActive: 1, maxParked: 2 });
   } else {
     sceneWarm.setBudget({ maxKeys: 18, maxActive: 2, maxParked: 6 });
   }
@@ -2459,6 +2460,79 @@ async function removeFromBin(name) {
   refreshMediaSelect();
 }
 
+let projectLoadGen = 0;
+let projectLoadTimer = 0;
+
+function setProjectLoadUi({ show, label, done = 0, total = 0, indeterminate = true } = {}) {
+  const el = $('project-load');
+  const text = $('project-load-label');
+  const fill = $('project-load-fill');
+  if (!el) return;
+  el.hidden = !show;
+  if (!show) {
+    el.classList.remove('is-indeterminate');
+    el.style.removeProperty('--project-load-pct');
+    return;
+  }
+  if (text && label) text.textContent = label;
+  const known = total > 0 && !indeterminate;
+  el.classList.toggle('is-indeterminate', !known);
+  if (fill && known) {
+    const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+    el.style.setProperty('--project-load-pct', `${pct}%`);
+  }
+}
+
+function projectWarmBusy() {
+  try { return !!sceneWarm?.busy; } catch { return false; }
+}
+
+function watchProjectLoadAftermath(gen) {
+  if (projectLoadTimer) {
+    clearTimeout(projectLoadTimer);
+    projectLoadTimer = 0;
+  }
+  library.startThumbTracking();
+  const tick = () => {
+    if (gen !== projectLoadGen) return;
+    const warm = projectWarmBusy();
+    const thumbsOn = library.heavyThumbWork;
+    const p = library.thumbProgress();
+    if (thumbsOn && (p.pending > 0 || p.busy)) {
+      const label = p.total > 0
+        ? `Thumbnails ${Math.min(p.done, p.total)}/${p.total}…`
+        : 'Loading thumbnails…';
+      setProjectLoadUi({
+        show: true,
+        label,
+        done: p.done,
+        total: p.total,
+        indeterminate: p.total <= 0,
+      });
+      projectLoadTimer = setTimeout(tick, 200);
+      return;
+    }
+    if (warm) {
+      setProjectLoadUi({ show: true, label: 'Warming scene clips…', indeterminate: true });
+      projectLoadTimer = setTimeout(tick, 200);
+      return;
+    }
+    library.stopThumbTracking();
+    setProjectLoadUi({ show: false });
+  };
+  tick();
+}
+
+async function runProjectLoad(work) {
+  const gen = ++projectLoadGen;
+  setProjectLoadUi({ show: true, label: 'Loading project media…', indeterminate: true });
+  try {
+    await work();
+  } finally {
+    if (gen === projectLoadGen) watchProjectLoadAftermath(gen);
+  }
+}
+
 async function hydrateProjectMedia() {
   await library.ensureCached(project.mediaPool.map((item) => item.name));
   if (!isTauri()) return;
@@ -2505,7 +2579,7 @@ library.ready.then(async () => {
     }
     try { localStorage.setItem(BIN_SPLIT, '1'); } catch { /* private mode */ }
   }
-  await hydrateProjectMedia();
+  await runProjectLoad(() => hydrateProjectMedia());
   mediaHydrated = true;
   refreshLibraryUi();
   refreshMediaSelect();
@@ -2703,6 +2777,17 @@ $('master-speed')?.addEventListener('dblclick', () => {
 function setUiMode(mode) {
   const live = mode === 'live';
   document.body.classList.toggle('live-mode', live);
+  if (live) {
+    // Defer so timeline/mixer helpers exist even when uiMode restores mid-boot.
+    requestAnimationFrame(() => {
+      try {
+        const h = Number(localStorage.getItem('vj.timelineH'));
+        applyTimelineSplit(Number.isFinite(h) && h > 0 ? h : 120);
+        const mixerH = Number(localStorage.getItem('vj.liveMixerH'));
+        if (Number.isFinite(mixerH) && mixerH > 0) applyLiveMixerSplit(mixerH);
+      } catch { /* ignore */ }
+    });
+  }
   try { localStorage.setItem('vj.uiMode', live ? 'live' : 'timeline'); } catch { /* ignore */ }
   persistProjectView();
 }
@@ -4649,7 +4734,7 @@ async function pointProjectAtFolder(projectPath) {
   openProjectPath = projectPath;
   const { convertFileSrc } = await import('@tauri-apps/api/core');
   await allowLibraryFolder(projectHome(projectPath));
-  await hydrateProjectMedia();
+  await runProjectLoad(() => hydrateProjectMedia());
   for (let i = 0; i < 3; i += 1) {
     const slot = stings.slots[i];
     const rel = slot?.assetPath || '';
@@ -4957,21 +5042,23 @@ async function loadProject(file, sourcePath = '') {
   for (const scene of doc.scenes) grab(scene.media);
   grab(data.live?.media);
   for (const name of brandTaggedNames()) names.add(name);
-  await library.ensureCached([...names]);
-  const pool = doc.mediaPool.map((item) => ({ ...item }));
-  const have = new Set(pool.map((item) => item.name));
-  for (const name of names) {
-    if (have.has(name)) continue;
-    pool.push({ id: name, name, kind: mediaKind(name), path: '' });
-    have.add(name);
-  }
-  for (const item of pool) {
-    if (item?.name && item.path && !absoluteMediaPath(item.path) && !isLibraryReference(item.path)) {
-      brandAssetPaths.set(item.name, item.path);
+  await runProjectLoad(async () => {
+    await library.ensureCached([...names]);
+    const pool = doc.mediaPool.map((item) => ({ ...item }));
+    const have = new Set(pool.map((item) => item.name));
+    for (const name of names) {
+      if (have.has(name)) continue;
+      pool.push({ id: name, name, kind: mediaKind(name), path: '' });
+      have.add(name);
     }
-  }
-  project.setMediaPool(pool);
-  await hydrateProjectMedia();
+    for (const item of pool) {
+      if (item?.name && item.path && !absoluteMediaPath(item.path) && !isLibraryReference(item.path)) {
+        brandAssetPaths.set(item.name, item.path);
+      }
+    }
+    project.setMediaPool(pool);
+    await hydrateProjectMedia();
+  });
   timeline.pause();
   clearShowBuffers();
   scenes.replaceAll(doc.scenes);
@@ -7773,6 +7860,64 @@ function bindTimelineZoom(el) {
   });
 }
 
+/** Live: drag between scene pads and mixer to share leftover height under the timeline. */
+function applyLiveMixerSplit(px, save = false) {
+  const workspace = document.querySelector('.workspace-pane');
+  const mixer = $('mixer');
+  if (!workspace || !mixer) return 0;
+  const room = workspace.getBoundingClientRect().height || 0;
+  const minMixer = 64;
+  const maxMixer = Math.max(minMixer, Math.round(room * 0.55));
+  const next = Math.round(Math.min(maxMixer, Math.max(minMixer, px)));
+  $('app')?.style.setProperty('--live-mixer-h', `${next}px`);
+  if (save) {
+    try { localStorage.setItem('vj.liveMixerH', String(next)); } catch { /* ignore */ }
+  }
+  return next;
+}
+function bindLiveMixerSplit(el) {
+  if (!el) return;
+  let pointer = 0;
+  let startY = 0;
+  let originH = 160;
+  const onMove = (e) => {
+    if (e.pointerId !== pointer) return;
+    // Dragging the bar up shrinks the mixer (more room for scenes).
+    const dy = (startY - e.clientY) / uiZoom();
+    applyLiveMixerSplit(originH + dy);
+  };
+  const onUp = (e) => {
+    if (e.pointerId !== pointer) return;
+    pointer = 0;
+    el.classList.remove('dragging');
+    document.body.classList.remove('timeline-resizing');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    const h = $('mixer')?.getBoundingClientRect().height || originH;
+    applyLiveMixerSplit(h, true);
+  };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || isPerformMode) return;
+    if (!document.body.classList.contains('live-mode')) return;
+    e.preventDefault();
+    pointer = e.pointerId;
+    startY = e.clientY;
+    originH = $('mixer')?.getBoundingClientRect().height || 160;
+    try { el.setPointerCapture(e.pointerId); } catch { /* synthetic press */ }
+    el.classList.add('dragging');
+    document.body.classList.add('timeline-resizing');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+}
+{
+  const saved = Number(localStorage.getItem('vj.liveMixerH'));
+  if (Number.isFinite(saved) && saved > 0) applyLiveMixerSplit(saved);
+  bindLiveMixerSplit(document.querySelector('.live-mixer-divider'));
+}
+
 window.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase();
   if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -8543,6 +8688,9 @@ globalLibrary = bindGlobalLibrary({
       globalLibrary?.refresh();
     }
     return !!added;
+  },
+  onRemove: async (name) => {
+    await removeFromBin(name);
   },
 });
 paintAudioLibrary();

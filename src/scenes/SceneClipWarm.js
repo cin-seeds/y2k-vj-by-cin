@@ -55,6 +55,15 @@ export class SceneClipWarm {
     this.#trimToBudget();
   }
 
+  /** True while a standby decoder is still opening. */
+  get busy() {
+    if (this.active > 0) return true;
+    for (const entry of this.entries.values()) {
+      if (entry.promise && !entry.ready) return true;
+    }
+    return false;
+  }
+
   /** Drop anything not needed; start loads for missing keys. Skip keys already live on a layer. */
   sync(keys, liveKeys = []) {
     const live = new Set((liveKeys || []).filter(warmable));

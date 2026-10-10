@@ -55,6 +55,12 @@ export class SceneBar {
 
     scenes.onChange(() => {
       this.#clampBank();
+      // Launch only flips activeId — do not wipe buttons under the pointer.
+      if (this.#sceneListKey() === this._sceneListKey && this.padEls.size) {
+        this.#syncPadChrome();
+        this.renderCues();
+        return;
+      }
       this.renderPads();
       this.renderCues();
     });
@@ -132,25 +138,77 @@ export class SceneBar {
   // ------------------------------------------------------------- pads
   // Adaptive CSS grid: columns from width, rows from height (preview split).
   // Fill the visible N×M first; extra scenes add rows and the grid scrolls.
+  #sceneListKey() {
+    return this.scenes.scenes.map((s) => s.id).join('\0');
+  }
+
+  /** Update labels/colors/active without destroying pad buttons (keeps click handlers). */
+  #syncPadChrome() {
+    const scenes = this.scenes.scenes;
+    for (let i = 0; i < scenes.length; i++) {
+      const s = scenes[i];
+      const pad = this.padEls.get(s.id);
+      if (!pad) {
+        this.renderPads();
+        return;
+      }
+      pad.style.setProperty('--c', s.color);
+      pad.dataset.index = String(i);
+      const num = pad.querySelector('i');
+      if (num) num.textContent = String(i + 1);
+      const label = pad.querySelector('span');
+      if (label) label.textContent = s.name;
+      const map = this.midi.mappingFor(`scene:${s.id}`);
+      pad.classList.toggle('mapped', !!map);
+      pad.classList.toggle('armed', this.midi.learnTarget === `scene:${s.id}`);
+      pad.classList.toggle('midi-hot', this.midi.learnTarget === `scene:${s.id}`);
+    }
+    this.updateActive();
+  }
+
   #watchPadSpace() {
     this._slotCount = 0;
     this._layoutKey = '';
-    const sync = () => {
-      const { cols, rows } = this.#gridMetrics();
+    this._padSceneN = -1;
+    this._padSyncTimer = 0;
+    this._lastRowH = -1;
+    const applyCss = (cols, rowH) => {
+      this.padsEl.style.setProperty('--scene-cols', String(cols));
+      if (Math.abs(rowH - this._lastRowH) >= 2) {
+        this._lastRowH = rowH;
+        this.padsEl.style.setProperty('--scene-row-h', `${rowH}px`);
+      }
+    };
+    const syncNow = () => {
+      // Never wipe pads under an active press / HTML5 drag.
+      if (this._padArmed || this._padDragged) return;
+      const { cols, rows, rowH } = this.#gridMetrics();
       const key = `${cols}x${rows}`;
       const next = this.#slotCount();
-      if (key === this._layoutKey && next === this._slotCount) return;
+      const sceneN = this.scenes.scenes.length;
+      if (key === this._layoutKey && next === this._slotCount && sceneN === this._padSceneN) {
+        applyCss(cols, rowH);
+        return;
+      }
       this.renderPads();
+    };
+    const sync = () => {
+      if (this._padSyncTimer) clearTimeout(this._padSyncTimer);
+      this._padSyncTimer = setTimeout(() => {
+        this._padSyncTimer = 0;
+        syncNow();
+      }, 150);
     };
     if (typeof ResizeObserver === 'function' && this.padsEl) {
       this._padObserver = new ResizeObserver(sync);
-      for (const node of [this.padsEl, this.padsEl.parentElement, document.querySelector('.center'), document.querySelector('.workspace-pane')]) {
+      // Observe parents only — watching padsEl itself re-fires when --scene-row-h changes.
+      for (const node of [this.padsEl.parentElement, document.querySelector('.center'), document.querySelector('.workspace-pane')]) {
         if (node) this._padObserver.observe(node);
       }
     }
     window.addEventListener('resize', sync);
-    requestAnimationFrame(() => requestAnimationFrame(sync));
-    setTimeout(sync, 120);
+    requestAnimationFrame(() => requestAnimationFrame(syncNow));
+    setTimeout(syncNow, 120);
   }
 
   #gridMetrics() {
@@ -185,6 +243,9 @@ export class SceneBar {
     const cells = this.#slotCount();
     this._slotCount = cells;
     this._layoutKey = `${cols}x${rows}`;
+    this._padSceneN = scenes.length;
+    this._sceneListKey = this.#sceneListKey();
+    this._lastRowH = rowH;
     this.padsEl.style.setProperty('--scene-cols', String(cols));
     this.padsEl.style.setProperty('--scene-row-h', `${rowH}px`);
     for (let i = 0; i < cells; i++) {
@@ -224,17 +285,66 @@ export class SceneBar {
     pad.dataset.sceneId = s.id;
     pad.dataset.index = String(index);
 
-    pad.addEventListener('click', (e) => {
-      if (this._padDragged) return;
-      if (e.shiftKey) this.midi.learn(`scene:${s.id}`);
+    // Cancel HTML5 drag until the pointer actually moved — Mac WKWebView otherwise
+    // starts a drag on micro-jitter and suppresses the click that should launch.
+    const DRAG_PX = 6;
+    let downX = 0;
+    let downY = 0;
+    let dragging = false;
+    let launched = false;
+
+    const launch = (shift) => {
+      if (dragging || launched) return;
+      launched = true;
+      if (shift) this.midi.learn(`scene:${s.id}`);
       else this.onLaunch(s.id);
+    };
+
+    pad.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      downX = e.clientX;
+      downY = e.clientY;
+      dragging = false;
+      launched = false;
+      this._padArmed = s.id;
+      this._padDragged = false;
+      this._padDragMoved = false;
+    });
+    pad.addEventListener('pointerup', (e) => {
+      if (this._padArmed !== s.id) return;
+      this._padArmed = null;
+      if (dragging || this._padDragMoved) return;
+      // Fallback when WKWebView suppresses click after a cancelled micro-drag.
+      const shift = e.shiftKey;
+      setTimeout(() => {
+        if (!launched && !dragging && !this._padDragMoved) launch(shift);
+      }, 0);
+    });
+    pad.addEventListener('pointercancel', () => {
+      if (this._padArmed === s.id) this._padArmed = null;
+    });
+    pad.addEventListener('click', (e) => {
+      if (dragging || this._padDragMoved) return;
+      launch(e.shiftKey);
     });
     pad.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.#openMenu(s.id, e.clientX, e.clientY);
     });
     pad.addEventListener('dragstart', (e) => {
+      const x = e.clientX || downX;
+      const y = e.clientY || downY;
+      if (Math.hypot(x - downX, y - downY) < DRAG_PX) {
+        // Let the subsequent click launch; do not start a DnD gesture.
+        e.preventDefault();
+        dragging = false;
+        this._padDragged = false;
+        this._padDragMoved = false;
+        return;
+      }
+      dragging = true;
       this._padDragged = true;
+      this._padDragMoved = true;
       const itemData = { id: s.id, name: s.name, source: 'scene', color: s.color };
       beginDrag(e, itemData);
       e.dataTransfer.effectAllowed = 'copyMove';
@@ -252,7 +362,12 @@ export class SceneBar {
       pad.classList.remove('is-dragging');
       this.#clearPadDropMarks();
       endDragSoon();
-      setTimeout(() => { this._padDragged = false; }, 0);
+      this._padArmed = null;
+      dragging = false;
+      setTimeout(() => {
+        this._padDragged = false;
+        this._padDragMoved = false;
+      }, 0);
     });
     this.padEls.set(s.id, pad);
     return pad;

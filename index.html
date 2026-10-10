@@ -40,6 +40,10 @@
           <button id="mode-midi" type="button" aria-pressed="false">Perform</button>
         </div>
         <span class="logo">Y2K&nbsp;VJ<em>//</em>BY&nbsp;CÍN</span>
+        <div id="project-load" class="project-load" hidden aria-live="polite">
+          <span id="project-load-label">Loading project media…</span>
+          <div class="project-load-bar" aria-hidden="true"><i id="project-load-fill"></i></div>
+        </div>
         <div class="history-launch">
           <button id="undo-btn" type="button" title="Undo (Ctrl+Z)" disabled>Undo</button>
           <button id="redo-btn" type="button" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" disabled>Redo</button>
@@ -87,6 +91,7 @@
               <datalist id="prep-tag-list"></datalist>
               <button id="prep-tag-add" type="button" disabled title="Tag the selected clips">Tag</button>
               <button id="prep-send" type="button" disabled>Add to Project</button>
+              <button id="prep-remove" type="button" disabled title="Remove selected clips from this project (keeps them in Media Manager)">Remove from Project</button>
             </div>
           </div>
           <div id="prep-tag-suggest" class="prep-tag-suggest" hidden></div>
@@ -644,6 +649,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           <div class="control-deck">
           <div id="scene-pads" class="scene-grid" aria-label="Scenes"></div>
           </div>
+          <div class="live-mixer-divider" role="separator" aria-orientation="horizontal" aria-label="Resize mixer" title="Drag to resize the mixer under the scenes"></div>
           <div id="mixer" class="mixer"></div>
           </div>
           </div>
@@ -756,7 +762,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
           <button id="global-upload" type="button">Upload</button>
           <button id="global-close" type="button">Close</button>
         </header>
-        <p class="hint">Stored clips. Select them in Media Manager and add them to the project.</p>
+        <p class="hint">Stored clips. Select them in Media Manager to add to or remove from the project.</p>
         <div id="global-drop" class="global-drop" tabindex="0">Drop media here, or click to choose files</div>
         <div id="global-grid" class="global-grid"></div>
         <p id="global-empty" class="hint">No media stored yet.</p>
@@ -796,7 +802,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
             </li>
             <li>
               <h3>Media Manager</h3>
-              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264 into the library. Tick <b>Brand</b> on a clip in the gallery to file it under Brand. The gallery is kept across restarts. Select clips, tag them, then <b>Add to Project</b>. <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app. Drag the bar under the drop area to give the gallery more room.</p>
+              <p>Drop a video or image, or click the drop area. Videos are fitted to 1920×1080 and encoded H.264 into the library. Tick <b>Brand</b> on a clip in the gallery to file it under Brand. The gallery is kept across restarts. Select clips, tag them, then <b>Add to Project</b> or <b>Remove from Project</b> (library files stay). <b>Bypass Transcode &amp; Add Directly</b> skips the conversion. Transcoding runs in the desktop app. Drag the bar under the drop area to give the gallery more room.</p>
               <p><b>Project Media</b> lists only the clips added to this project. Each one is a reference to the library file. Click <b>+</b> to open <b>Media Manager</b>. On a card, <b>A</b>, <b>B</b>, or <b>C</b> assigns that clip. Removing a clip from the project drops it from this show. If a layer is playing it, that layer returns to the test pattern.</p>
             </li>
             <li>
