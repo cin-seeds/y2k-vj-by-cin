@@ -344,7 +344,7 @@ export class InputManager {
   }
 
   setLoopXfadeDur(sec) {
-    this.loopXfadeDur = Math.min(2, Math.max(0.1, sec));
+    this.loopXfadeDur = Math.min(3, Math.max(0.05, Number(sec) || 0.4));
   }
 
   setLoopPoints(inn, out) {

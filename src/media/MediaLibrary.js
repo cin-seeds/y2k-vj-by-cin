@@ -108,14 +108,16 @@ export class MediaLibrary {
   }
 
   /** A streamed loop. The card keeps the MP4 address; playback uses that URL. */
-  addRemote({ name, url, thumbnail, alts }) {
+  addRemote({ name, url, thumbnail, alts, path }) {
     if (!name || !url) return null;
     const prev = this.items.get(name);
+    const disk = typeof path === 'string' && path ? path : (prev?.path || '');
     const item = {
       id: name,
       name,
       file: prev?.file || null,
       url,
+      path: disk,
       kind: IMAGE_EXT.test(name) ? 'image' : 'video',
       thumbnail: thumbnail || prev?.thumbnail || null,
       thumbRev: prev?.thumbRev || 0,
@@ -184,7 +186,8 @@ export class MediaLibrary {
   }
 
   #canThumb(item) {
-    return !!(item && (item.file || item.url) && item.kind !== 'audio');
+    const disk = typeof item?.path === 'string' && item.path.trim();
+    return !!(item && (item.file || item.url || disk) && item.kind !== 'audio');
   }
 
   #persistThumb(item) {
@@ -228,8 +231,21 @@ export class MediaLibrary {
 
   async #captureFor(item) {
     if (item.file) return captureThumbnail(item.file);
-    if (!item.url) return null;
-    return captureThumbnailFromSrc(item.url, item.name);
+    // Prefer disk path (same as Media Manager): convertFileSrc → fetch blob → seek-past-black.
+    // Never feed a bare asset-protocol URL as the primary path — it often blacks out in <video>.
+    const disk = typeof item.path === 'string' ? item.path.trim() : '';
+    if (disk) {
+      try {
+        const { convertFileSrc } = await import('@tauri-apps/api/core');
+        const src = convertFileSrc(disk);
+        if (src && !/^file:/i.test(src)) {
+          const still = await captureThumbnailFromSrc(src, item.name || disk);
+          if (still) return still;
+        }
+      } catch { /* try url below */ }
+    }
+    if (item.url) return captureThumbnailFromSrc(item.url, item.name);
+    return null;
   }
 
   async #drainThumbs() {
@@ -282,6 +298,7 @@ export class MediaLibrary {
         name: row.name,
         file: null,
         url: row.url,
+        path: typeof row.path === 'string' ? row.path : '',
         kind: IMAGE_EXT.test(row.name) ? 'image' : 'video',
         thumbnail: row.thumbnail || null,
         thumbRev: row.thumbnail ? 2 : 0,
@@ -297,6 +314,7 @@ export class MediaLibrary {
       rows.push({
         name: item.name,
         url: item.url,
+        path: item.path || '',
         thumbnail: item.thumbnail || '',
         alts: (item.alts || []).filter((url) => /\.(mp4|webm)(\?|#|$)/i.test(url) && !/\.(ogv|ogg|ogx)(\?|#|$)/i.test(url)),
       });

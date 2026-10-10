@@ -145,7 +145,7 @@ export class Panel {
         if (document.activeElement !== sel) sel.value = String(v);
       }
       if ((def.key === 'mode' || def.key === 'engine') && def.layer === this.selected) this.updateVisibility({ foldShader: true });
-      else if (def.key === 'palette' && def.layer === this.selected) this.updateVisibility();
+      else if ((def.key === 'palette' || def.key === 'loopXfade') && def.layer === this.selected) this.updateVisibility();
       if (def.key === 'mode' || def.key === 'opacity' || def.key === 'engine' || def.key === 'pCount') {
         this.#syncStrip(def.layer);
       }
@@ -1263,6 +1263,9 @@ export class Panel {
             || (def.group === 'video' && video)
             || (def.group === 'image' && image));
       if (def.key === 'colorDepth' && this.params.get(layerParam(def.layer, 'palette')) !== 0) shown = false;
+      if (def.key === 'loopXfadeDur') {
+        shown = shown && this.params.get(layerParam(def.layer, 'loopXfade')) > 0.5;
+      }
       if (def.key === 'reactivity' || def.key === 'audioBind' || def.key === 'beatSync') {
         const fx = engine === ENGINE_FX && mode !== 'clean' && mode !== 'minidv';
         const swarm = engine === ENGINE_PARTICLES;

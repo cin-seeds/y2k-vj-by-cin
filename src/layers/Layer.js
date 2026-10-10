@@ -696,6 +696,7 @@ export class Layer {
             url: rest[0],
             thumbnail: current.thumbnail,
             alts: rest.slice(1),
+            path: current.path,
           });
         };
         incoming.onExhausted = () => {
@@ -721,6 +722,7 @@ export class Layer {
             url: incoming.playedUrl || item.url,
             thumbnail: saved?.thumbnail || item.thumbnail,
             alts,
+            path: saved?.path || item.path,
           });
         }
         this.mediaStatus = `${incoming.kind} ${incoming.width}x${incoming.height}`;

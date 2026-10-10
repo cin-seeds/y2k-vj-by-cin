@@ -1169,9 +1169,14 @@ function refreshLibraryUi() {
     card.innerHTML = '<div class="media-thumb-wrap"><img class="media-thumb" alt="" /><div class="media-badges"></div><div class="media-actions"></div></div><span class="media-name"></span>';
     const audioFile = entry.kind === 'audio' || mediaKind(name) === 'audio';
     const thumb = card.querySelector('.media-thumb');
-    if (!audioFile && item?.thumbnail) thumb.src = item.thumbnail;
-    else thumb.hidden = true;
     thumb.alt = '';
+    if (!audioFile && item?.thumbnail) {
+      thumb.src = item.thumbnail;
+      thumb.hidden = false;
+    } else {
+      thumb.removeAttribute('src');
+      thumb.hidden = true;
+    }
     if (audioFile) {
       card.classList.add('is-audio');
       const mark = document.createElement('i');
@@ -1193,6 +1198,9 @@ function refreshLibraryUi() {
       card.querySelector('.media-name').title = openedProjectFile()
         ? `${name} is missing from this project folder`
         : `${name} is missing from the Media Library folder`;
+    } else if (!audioFile && library.has(name) && !item?.thumbnail) {
+      // Empty/loading wrap until #drainThumbs emits and we repaint with the still.
+      card.classList.add('loading');
     }
     const badges = card.querySelector('.media-badges');
     for (const id of used) {
@@ -1388,6 +1396,15 @@ function addFiles(fileList, { bin = false } = {}) {
   return added;
 }
 
+let libraryUiRefreshTimer = 0;
+function scheduleRefreshLibraryUi() {
+  if (libraryUiRefreshTimer) return;
+  libraryUiRefreshTimer = setTimeout(() => {
+    libraryUiRefreshTimer = 0;
+    refreshLibraryUi();
+  }, 60);
+}
+
 library.onChange(() => {
   // A layer waiting on a missing file picks it up as soon as it's added.
   for (const l of layers) {
@@ -1395,6 +1412,8 @@ library.onChange(() => {
       assignMediaToLayer(l.missing, l.id, { history: false });
     }
   }
+  // Project Media reads item.thumbnail — repaint after async #drainThumbs stills arrive.
+  scheduleRefreshLibraryUi();
   refreshLayerUi();
   apcView?.refresh();
 });
@@ -1536,49 +1555,47 @@ function paintLibraryDir(path, chosen) {
   input.title = chosen ? (path || 'Media Library folder') : (path ? `${path} (app media folder)` : 'App media folder');
 }
 
+function savedStockDir() {
+  try { return localStorage.getItem(STOCK_DIR_KEY)?.trim() || ''; } catch { return ''; }
+}
+
+function savedRecordDir() {
+  try { return localStorage.getItem(RECORD_DIR_KEY)?.trim() || ''; } catch { return ''; }
+}
+
+/** Active fetch/stock write path. Project Stock wins while a show is open — prefs stay untouched. */
 async function ensureStockDir({ create = false } = {}) {
   const projectStock = await ensureNamedChild('Stock', { create });
-  if (projectStock) {
-    try { localStorage.setItem(STOCK_DIR_KEY, projectStock); } catch { /* private mode */ }
-    paintStockDir(projectStock);
-    return projectStock;
-  }
-  let saved = '';
-  try { saved = localStorage.getItem(STOCK_DIR_KEY)?.trim() || ''; } catch { saved = ''; }
+  if (projectStock) return projectStock;
+  const saved = savedStockDir();
   if (saved) {
-    paintStockDir(saved);
+    if (create && isTauri()) {
+      await invoke('ensure_folder', { path: saved }).catch(() => {});
+      await allowLibraryFolder(saved);
+    }
     return saved;
   }
-  if (!isTauri()) {
-    paintStockDir('');
-    return '';
-  }
+  if (!isTauri()) return '';
   const dir = await invoke('default_stock_dir');
   try { localStorage.setItem(STOCK_DIR_KEY, dir); } catch { /* private mode */ }
-  paintStockDir(dir);
   return dir;
 }
 
+/** Active recordings write path. Project Recordings wins while a show is open — prefs stay untouched. */
 async function ensureRecordDir({ create = false } = {}) {
   const projectRecordings = await ensureNamedChild('Recordings', { create });
-  if (projectRecordings) {
-    try { localStorage.setItem(RECORD_DIR_KEY, projectRecordings); } catch { /* private mode */ }
-    paintRecordDir(projectRecordings);
-    return projectRecordings;
-  }
-  let saved = '';
-  try { saved = localStorage.getItem(RECORD_DIR_KEY)?.trim() || ''; } catch { saved = ''; }
+  if (projectRecordings) return projectRecordings;
+  const saved = savedRecordDir();
   if (saved) {
-    paintRecordDir(saved);
+    if (create && isTauri()) {
+      await invoke('ensure_folder', { path: saved }).catch(() => {});
+      await allowLibraryFolder(saved);
+    }
     return saved;
   }
-  if (!isTauri()) {
-    paintRecordDir('');
-    return '';
-  }
+  if (!isTauri()) return '';
   const dir = await invoke('default_recordings_dir');
   try { localStorage.setItem(RECORD_DIR_KEY, dir); } catch { /* private mode */ }
-  paintRecordDir(dir);
   return dir;
 }
 
@@ -1586,10 +1603,41 @@ function savedLibraryDir() {
   try { return localStorage.getItem(LIBRARY_DIR_KEY)?.trim() || ''; } catch { return ''; }
 }
 
-async function mediaLibraryRoot() {
+/** Shared Media Manager library. Preference folder when set; else app global_media. */
+async function mediaLibraryRoot({ create = false } = {}) {
   const saved = savedLibraryDir();
-  if (saved) return saved;
+  if (saved) {
+    if (create && isTauri()) {
+      await invoke('ensure_folder', { path: saved }).catch(() => {});
+      await allowLibraryFolder(saved);
+    }
+    return saved;
+  }
   return ensureGlobalMediaRoot();
+}
+
+/** Paint Preferences folder fields from saved choices (never from a project override). */
+async function refreshPrefFolderFields() {
+  let stock = savedStockDir();
+  if (!stock && isTauri()) {
+    stock = await invoke('default_stock_dir').catch(() => '') || '';
+    if (stock) {
+      try { localStorage.setItem(STOCK_DIR_KEY, stock); } catch { /* private mode */ }
+    }
+  }
+  paintStockDir(stock);
+
+  let record = savedRecordDir();
+  if (!record && isTauri()) {
+    record = await invoke('default_recordings_dir').catch(() => '') || '';
+    if (record) {
+      try { localStorage.setItem(RECORD_DIR_KEY, record); } catch { /* private mode */ }
+    }
+  }
+  paintRecordDir(record);
+
+  await ensureLibraryDir();
+  await ensureProjectRootDir().catch(() => {});
 }
 
 function paintProjectRoot(path, chosen) {
@@ -1761,13 +1809,9 @@ async function adoptProjectFolders(projectPath) {
   await invoke('ensure_folder', { path: stock }).catch(() => {});
   await invoke('ensure_folder', { path: recordings }).catch(() => {});
   await invoke('ensure_folder', { path: source }).catch(() => {});
-  try {
-    localStorage.setItem(STOCK_DIR_KEY, stock);
-    localStorage.setItem(RECORD_DIR_KEY, recordings);
-    localStorage.setItem(SOURCE_DIR_KEY, source);
-  } catch { /* private mode */ }
-  paintStockDir(stock);
-  paintRecordDir(recordings);
+  // Keep Preferences Fetched Media / Recordings choices; only track Source for this show.
+  try { localStorage.setItem(SOURCE_DIR_KEY, source); } catch { /* private mode */ }
+  window.dispatchEvent(new CustomEvent('vj-global-media'));
 }
 
 async function createNewProjectFile() {
@@ -1805,7 +1849,8 @@ async function ensureSourceDir() {
 
 /**
  * Where new media / brand / show audio land while a project is open:
- * `<project>/Source/`. Without an open project, fall back to machine global_media.
+ * `<project>/Source/`. Without an open project, the Preferences Media Library folder
+ * (or app global_media when unset).
  */
 async function projectMediaWriteDir() {
   const path = openedProjectFile();
@@ -1817,13 +1862,14 @@ async function projectMediaWriteDir() {
       return dir;
     }
   }
-  return ensureGlobalMediaRoot();
+  return mediaLibraryRoot({ create: true });
 }
 
 async function ensureLibraryDir() {
   const saved = savedLibraryDir();
   if (saved) {
     paintLibraryDir(saved, true);
+    if (isTauri()) await allowLibraryFolder(saved);
     return saved;
   }
   const dir = await mediaLibraryRoot();
@@ -2250,7 +2296,7 @@ async function ensureBrandInLibrary(name, path = '') {
   if (resolved && isTauri() && absoluteMediaPath(resolved)) {
     try {
       const { convertFileSrc } = await import('@tauri-apps/api/core');
-      library.addRemote({ name: key, url: convertFileSrc(resolved) });
+      library.addRemote({ name: key, url: convertFileSrc(resolved), path: resolved });
       return library.has(key);
     } catch {
       return false;
@@ -2352,7 +2398,7 @@ function addToBin(entry) {
     const playable = absoluteMediaPath(rawPath) ? rawPath : '';
     if (playable) {
       import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
-        library.addRemote({ name, url: convertFileSrc(playable) });
+        library.addRemote({ name, url: convertFileSrc(playable), path: playable });
       });
     }
   }
@@ -2404,7 +2450,7 @@ async function hydrateProjectMedia() {
     const ready = await mediaFileReady(path);
     if (!ready) continue;
     // Always re-point at the project file so a USB show wins over a same-named IndexedDB blob.
-    library.addRemote({ name: item.name, url: convertFileSrc(path) });
+    library.addRemote({ name: item.name, url: convertFileSrc(path), path });
     const rel = besideStoredPath(projectPath, path);
     if (rel) brandAssetPaths.set(item.name, rel);
   }
@@ -4475,7 +4521,7 @@ async function connectFoundFile(name, filePath) {
     return;
   }
   const { convertFileSrc } = await import('@tauri-apps/api/core');
-  library.addRemote({ name, url: convertFileSrc(filePath) });
+  library.addRemote({ name, url: convertFileSrc(filePath), path: filePath });
 }
 
 function besideStoredPath(projectPath, filePath) {
@@ -7163,10 +7209,7 @@ function openPrefs(open) {
   $('prefs-modal').hidden = !open;
   if (open) {
     openGuide(false);
-    ensureStockDir().catch(() => {});
-    ensureRecordDir().catch(() => {});
-    ensureLibraryDir().catch(() => {});
-    ensureProjectRootDir().catch(() => {});
+    refreshPrefFolderFields().catch(() => {});
     refreshAudioOutputs({ ask: true }).catch((err) => console.warn('Audio output list failed', err));
   }
 }
@@ -7180,11 +7223,14 @@ $('stock-dir-pick').addEventListener('click', async () => {
   if (typeof picked !== 'string' || !picked) return;
   try { localStorage.setItem(STOCK_DIR_KEY, picked); } catch { /* private mode */ }
   paintStockDir(picked);
+  await invoke('ensure_folder', { path: picked }).catch(() => {});
+  await allowLibraryFolder(picked);
   window.dispatchEvent(new CustomEvent('vj-global-media'));
+  showToast('Fetched Media folder updated');
 });
 $('stock-dir-open').addEventListener('click', async () => {
   try {
-    const path = $('stock-dir')?.value || await ensureStockDir();
+    const path = $('stock-dir')?.value || savedStockDir() || await ensureStockDir();
     await openSavedFolder(path, 'Choose the fetched media folder first.');
   } catch (err) {
     showToast(err?.message || 'Could not open that folder.', true);
@@ -7200,10 +7246,12 @@ $('record-dir-pick').addEventListener('click', async () => {
   if (typeof picked !== 'string' || !picked) return;
   try { localStorage.setItem(RECORD_DIR_KEY, picked); } catch { /* private mode */ }
   paintRecordDir(picked);
+  await invoke('ensure_folder', { path: picked }).catch(() => {});
+  showToast('Recordings folder updated');
 });
 $('record-dir-open').addEventListener('click', async () => {
   try {
-    const path = $('record-dir')?.value || await ensureRecordDir();
+    const path = $('record-dir')?.value || savedRecordDir() || await ensureRecordDir();
     await openSavedFolder(path, 'Choose the recordings folder first.');
   } catch (err) {
     showToast(err?.message || 'Could not open that folder.', true);
@@ -7272,11 +7320,14 @@ $('media-library-pick').addEventListener('click', async () => {
   if (typeof picked !== 'string' || !picked) return;
   try { localStorage.setItem(LIBRARY_DIR_KEY, picked); } catch { /* private mode */ }
   paintLibraryDir(picked, true);
+  await invoke('ensure_folder', { path: picked }).catch(() => {});
   await allowLibraryFolder(picked);
+  window.dispatchEvent(new CustomEvent('vj-global-media'));
+  showToast('Media Library folder updated');
 });
 $('media-library-open').addEventListener('click', async () => {
   try {
-    const path = $('media-library-dir')?.value || await ensureLibraryDir();
+    const path = $('media-library-dir')?.value || savedLibraryDir() || await ensureLibraryDir();
     await openSavedFolder(path, 'Choose the Media Library folder first.');
   } catch (err) {
     showToast(err?.message || 'Could not open that folder.', true);
@@ -8427,6 +8478,8 @@ globalLibrary = bindGlobalLibrary({
   library,
   showToast,
   sourceDir: async () => currentSourceDir(),
+  libraryDir: async () => mediaLibraryRoot({ create: false }),
+  fetchedDir: async () => savedStockDir(),
   projectMediaDirs: async () => {
     const path = openedProjectFile();
     if (!path) return [];
@@ -8437,7 +8490,7 @@ globalLibrary = bindGlobalLibrary({
     }
     return dirs;
   },
-  // Open project → write into <project>/Source/. Else machine global_media.
+  // Open project → <project>/Source/. Else Preferences Media Library folder.
   prepareDir: projectMediaWriteDir,
   inBin: (name) => project.mediaPool.some((item) => item.name === name),
   projectSnapshot,

@@ -71,9 +71,9 @@
           </div>
         </header>
         <div class="prep-ingest">
-          <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video to transcode">
+          <div id="prep-drop" class="prep-drop" tabindex="0" role="button" aria-label="Drop a video, image, or audio file">
             <b>Drop a video or image</b>
-            <span>mov, mp4, mp3, wav, jpg, png, or click. Audio is saved as a lighter file. Tick Brand on a clip in the gallery to file it under Brand.</span>
+            <span>mov, mp4, mp3, wav, jpg, png, or click. Images are copied in; video is transcoded. Audio is saved as a lighter file. Tick Brand on a clip in the gallery to file it under Brand.</span>
           </div>
           <p id="prep-empty" class="prep-empty">Nothing in the queue.</p>
           <ol id="prep-queue" class="prep-queue" aria-live="polite"></ol>
@@ -113,7 +113,7 @@
           </div>
           <div class="prep-gallery-scroll">
             <div id="prep-grid" class="global-grid prep-grid"></div>
-            <p id="prep-gallery-empty" class="hint">No media stored yet. Drop a video above.</p>
+            <p id="prep-gallery-empty" class="hint">No media stored yet. Drop a video or image above.</p>
           </div>
         </div>
       </section>
@@ -930,7 +930,7 @@ CUSTOM CODED FOR LATE FUTURE</textarea>
               <button id="media-library-pick" type="button">Choose</button>
               <button id="media-library-open" type="button" title="Show this folder in the file browser">Open</button>
             </div>
-            <p class="hint">Clip, audio, and logo paths in a project are relative to this folder. Leave it unset to use the app media folder.</p>
+            <p class="hint">Shared Media Manager library, and relative clip paths in projects. Leave unset to use the app media folder. With a project open, new drops still go in that project’s Source folder.</p>
           </div>
           <div class="stock-dir-field">
             <label for="stock-dir">Fetched Media Folder</label>

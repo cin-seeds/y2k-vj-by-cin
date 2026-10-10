@@ -46,8 +46,9 @@ export class MidiManager {
 
   /**
    * Open MIDI. Call this from a click or other user gesture so the OS/browser
-   * can show a permission prompt. On desktop, empty or failed Web MIDI falls
-   * through to the native midir path (Windows, macOS, and Linux).
+   * can show a permission prompt. Desktop (Tauri) always opens native midir
+   * first; Web MIDI is only for the browser build (or a last-resort fallback
+   * if native fails entirely).
    */
   async init() {
     if (!this.supported) throw new Error('MIDI access failed — try again');
@@ -67,45 +68,45 @@ export class MidiManager {
   }
 
   async #open() {
-    let webAccess = null;
-    let webErr = null;
-    if (typeof navigator.requestMIDIAccess === 'function') {
-      try {
-        // Must start from a user gesture. WebView2 on Windows often never shows
-        // a prompt and can hang — time out so midir can take over.
-        webAccess = await raceTimeout(
-          navigator.requestMIDIAccess({ sysex: false }),
-          3000,
-          'MIDI access timed out',
-        );
-      } catch (err) {
-        webErr = err;
-      }
-    }
-
-    const webInputs = webAccess ? webAccess.inputs.size : 0;
-    if (webAccess && webInputs > 0) {
-      this.#useAccess(webAccess);
-      return;
-    }
-
+    // Desktop: midir first. Web MIDI on macOS can list ports but never deliver
+    // midimessage and may never prompt — do not prefer it when inputs.size > 0.
     if (this.#inTauri()) {
       try {
-        // Prefer native whenever Web MIDI failed or listed no inputs, so the
-        // midir poller (not an empty Web MIDI map) owns hot-plug on Windows.
         const native = await this.#nativeAccess();
         this.#useAccess(native);
         return;
       } catch (nativeErr) {
-        if (!webAccess) throw webErr || nativeErr;
+        // Only fall back when native failed entirely, never when Web MIDI
+        // merely listed ports that would leave midir unused.
+        if (typeof navigator.requestMIDIAccess === 'function') {
+          try {
+            const webAccess = await raceTimeout(
+              navigator.requestMIDIAccess({ sysex: false }),
+              3000,
+              'MIDI access timed out',
+            );
+            this.#useAccess(webAccess);
+            return;
+          } catch { /* prefer the native error */ }
+        }
+        throw nativeErr;
       }
     }
 
-    if (webAccess) {
-      this.#useAccess(webAccess);
-      return;
+    // Browser / non-Tauri: Web MIDI only.
+    if (typeof navigator.requestMIDIAccess !== 'function') {
+      throw new Error('MIDI access failed — try again');
     }
-    throw webErr || new Error('MIDI access failed — try again');
+    try {
+      const webAccess = await raceTimeout(
+        navigator.requestMIDIAccess({ sysex: false }),
+        3000,
+        'MIDI access timed out',
+      );
+      this.#useAccess(webAccess);
+    } catch (webErr) {
+      throw webErr || new Error('MIDI access failed — try again');
+    }
   }
 
   #useAccess(access) {

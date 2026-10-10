@@ -101,7 +101,10 @@ function kindLabel(kind) {
   return 'Video';
 }
 
-export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSnapshot, showToast, sourceDir, prepareDir, projectMediaDirs }) {
+export function bindGlobalLibrary({
+  library, inBin, onAdd, onDeleted, projectSnapshot, showToast,
+  sourceDir, prepareDir, projectMediaDirs, libraryDir, fetchedDir,
+}) {
   const modal = document.getElementById('global-library');
   const grid = document.getElementById('prep-grid');
   const empty = document.getElementById('prep-gallery-empty');
@@ -137,16 +140,21 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   let open = false;
   let pendingDelete = null;
   let latest = [];
+  let renderSeq = 0;
 
   function close() {
     open = false;
     modal.hidden = true;
   }
 
-  /** Open project Source/ when prepareDir provides it; else machine global_media. */
+  /** Open project Source/ when prepareDir provides it; else Media Library preference / global_media. */
   async function sharedSaveDir() {
     if (typeof prepareDir === 'function') {
       const dir = await prepareDir();
+      if (dir) return dir;
+    }
+    if (typeof libraryDir === 'function') {
+      const dir = await libraryDir();
       if (dir) return dir;
     }
     if (IS_TAURI) {
@@ -159,8 +167,8 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   }
 
   async function catalog() {
-    // Project Source/Stock first (same name keeps that path), then the shared
-    // library so every project still sees the common clips and their tags.
+    // Project Source/Stock first (same name keeps that path), then Preferences
+    // Media Library + Fetched Media, then the shared app library.
     const disk = [];
     const seen = new Set();
     const pushRows = (rows) => {
@@ -178,7 +186,17 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
         for (const dir of projectDirs) {
           pushRows(await invoke('list_dir_media', { dir }));
         }
-        pushRows(await invoke('list_global_media', { saveDir: stockSaveDir() }));
+        // Active write folder (project Source/ or Preferences Media Library).
+        const writeDir = await sharedSaveDir();
+        if (writeDir) pushRows(await invoke('list_dir_media', { dir: writeDir }));
+        // Preferences Media Library — even when a project Source/ is also listed.
+        if (typeof libraryDir === 'function') {
+          const shared = await libraryDir();
+          if (shared) pushRows(await invoke('list_dir_media', { dir: shared }));
+        }
+        const fetched = typeof fetchedDir === 'function' ? await fetchedDir() : stockSaveDir();
+        if (fetched) pushRows(await invoke('list_dir_media', { dir: fetched }));
+        pushRows(await invoke('list_global_media', { saveDir: fetched || stockSaveDir() }));
         if (!projectDirs.length) {
           const source = typeof sourceDir === 'function' ? await sourceDir() : '';
           if (source) pushRows(await invoke('list_dir_media', { dir: source }));
@@ -596,8 +614,19 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
   }
 
   async function render() {
+    const seq = ++renderSeq;
     const rows = await catalog();
+    // Drop stale catalogs so an older list cannot wipe a clip that just finished.
+    if (seq !== renderSeq) return;
     paint(rows);
+  }
+
+  /** After prep saves a file, make sure its kind is visible (leave Images → All if needed). */
+  function revealKind(name) {
+    const kind = rowKind({ name: String(name || '') });
+    if (sourceFilter === 'all' || sourceFilter === kind) return;
+    if (sourceFilter === 'brand' || sourceFilter === 'fetch') return;
+    applySource('all');
   }
 
   function sendSelected() {
@@ -786,7 +815,18 @@ export function bindGlobalLibrary({ library, inBin, onAdd, onDeleted, projectSna
     }
     if (open) close();
   });
-  window.addEventListener('vj-global-media', () => render());
+  window.addEventListener('vj-global-media', (event) => {
+    const name = event.detail?.name;
+    if (name) {
+      const source = event.detail?.source === 'fetch' || event.detail?.source === 'audio'
+        ? event.detail.source
+        : 'user';
+      noteMediaAdded(name);
+      rememberMediaSource(name, source);
+      revealKind(name);
+    }
+    render();
+  });
   window.addEventListener('vj-media-tags', () => {
     mediaTags = effectiveMediaTags();
     paint(latest);

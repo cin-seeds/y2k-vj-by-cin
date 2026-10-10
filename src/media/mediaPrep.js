@@ -35,6 +35,10 @@ function isVideo(file) {
   return file.type.startsWith('video/') || VIDEO_EXT.test(file.name || '');
 }
 
+function isImage(file) {
+  return file.type.startsWith('image/') || IMAGE_EXT.test(file.name || '');
+}
+
 function isAudio(file) {
   return file.type.startsWith('audio/') || AUDIO_EXT.test(file.name || '');
 }
@@ -69,7 +73,7 @@ function setPercent(job, percent) {
   job.row.classList.remove('busy');
 }
 
-function addJob(name, path, file, { brand = false } = {}) {
+function addJob(name, path, file, { brand = false, image = false } = {}) {
   const id = crypto.randomUUID();
   const row = document.createElement('li');
   row.className = 'prep-job';
@@ -91,7 +95,12 @@ function addJob(name, path, file, { brand = false } = {}) {
     settled: false,
     transcoding: false,
     brand: !!brand,
+    image: !!image,
   };
+  if (job.image) {
+    bypass.hidden = true;
+    bypass.disabled = true;
+  }
   bypass.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -162,8 +171,13 @@ async function stageFile(job, saveDir) {
   return path;
 }
 
-function noteGlobalSave() {
-  window.dispatchEvent(new CustomEvent('vj-global-media'));
+function noteGlobalSave(detail = {}) {
+  const name = typeof detail?.name === 'string' ? detail.name : '';
+  const source = detail.source === 'fetch' || detail.source === 'audio' ? detail.source : 'user';
+  if (name) rememberMediaSource(name, source);
+  window.dispatchEvent(new CustomEvent('vj-global-media', {
+    detail: name ? { name, source, path: detail.path || '' } : {},
+  }));
 }
 
 function noteBrandFile(name, path) {
@@ -178,10 +192,6 @@ function noteBrandFile(name, path) {
 function allowDuplicate(name) {
   if (!mediaLibraryHasName(name)) return true;
   return confirmDuplicateAdd(name);
-}
-
-async function importPrepared() {
-  noteGlobalSave();
 }
 
 let ensurePreparedDir = async () => '';
@@ -219,12 +229,13 @@ async function bypassDirect(job) {
     if (job.path && IS_TAURI) {
       const saveDir = await ensurePreparedDir();
       const saved = await invoke('copy_into_global_media', { inputPath: job.path, saveDir });
+      const leaf = String(saved).split(/[\\/]/).pop() || job.name;
       job.settled = true;
       setPercent(job, 100);
       paintJob(job, 'Saved to Media Manager', 'done');
       prepShowToast?.('Saved to Media Manager');
-      noteGlobalSave();
-      if (job.brand && !job.audio) noteBrandFile(String(saved).split(/[\\/]/).pop(), saved);
+      noteGlobalSave({ name: leaf, path: saved, source: job.audio ? 'audio' : 'user' });
+      if (job.brand && !job.audio) noteBrandFile(leaf, saved);
       if (job.audio) noteAudioReady(saved, job.play);
       return;
     }
@@ -236,7 +247,7 @@ async function bypassDirect(job) {
       setPercent(job, 100);
       paintJob(job, 'Saved to Media Manager', 'done');
       prepShowToast?.(`Saved ${file.name} to Media Manager`);
-      noteGlobalSave();
+      noteGlobalSave({ name: file.name, source: 'audio' });
       window.dispatchEvent(new CustomEvent('vj-audio-ready', {
         detail: { name: file.name, file, play: !!job.play },
       }));
@@ -249,7 +260,7 @@ async function bypassDirect(job) {
     setPercent(job, 100);
     paintJob(job, 'Saved to Media Manager', 'done');
     prepShowToast?.(`Saved ${added[0]} to Media Manager`);
-    noteGlobalSave();
+    noteGlobalSave({ name: added[0] });
     if (job.brand) noteBrandFile(added[0], '');
   } catch (err) {
     job.bypassed = false;
@@ -259,8 +270,53 @@ async function bypassDirect(job) {
   }
 }
 
+async function runImageJob(job, ensureStockDir, showToast) {
+  if (job.bypassed || job.settled) return;
+  job.bypass.disabled = true;
+  paintJob(job, 'Saving…', 'busy');
+  try {
+    if (IS_TAURI) {
+      const saveDir = await resolveSaveDir(ensureStockDir);
+      let inputPath = job.path;
+      if (!inputPath) {
+        if (!job.file) throw new Error('That image has no file path.');
+        paintJob(job, 'Copying…', 'busy');
+        inputPath = await stageFile(job, saveDir);
+      }
+      if (job.bypassed) return;
+      const output = await invoke('copy_into_global_media', { inputPath, saveDir: saveDir || '' });
+      job.settled = true;
+      setPercent(job, 100);
+      const leaf = String(output).split(/[\\/]/).pop() || job.name;
+      paintJob(job, `Saved ${leaf}`, 'done');
+      showToast(`Saved ${leaf} to Media Manager`);
+      noteGlobalSave({ name: leaf, path: output });
+      if (job.brand) noteBrandFile(leaf, output);
+      return;
+    }
+    if (!job.file || !libraryRef) throw new Error('That image could not be added.');
+    const added = libraryRef.add([job.file]);
+    if (!added.length) throw new Error('That image could not be added.');
+    job.settled = true;
+    setPercent(job, 100);
+    paintJob(job, 'Saved to Media Manager', 'done');
+    showToast(`Saved ${added[0]} to Media Manager`);
+    noteGlobalSave({ name: added[0] });
+    if (job.brand) noteBrandFile(added[0], '');
+  } catch (err) {
+    if (job.bypassed) return;
+    job.bypass.disabled = false;
+    paintJob(job, err?.message || 'Could not add the image', 'failed');
+    showToast(err?.message || 'Could not add the image', true);
+  }
+}
+
 async function runJob(job, ensureStockDir, showToast) {
   if (job.bypassed || job.settled) return;
+  if (job.image) {
+    await runImageJob(job, ensureStockDir, showToast);
+    return;
+  }
   if (!IS_TAURI) {
     console.warn('transcode_media needs the desktop app.');
     paintJob(job, 'Open the desktop app to transcode.', '');
@@ -300,7 +356,7 @@ async function runJob(job, ensureStockDir, showToast) {
     const leaf = String(output).split(/[\\/]/).pop() || job.name;
     paintJob(job, `Saved ${leaf}`, 'done');
     showToast(`Saved ${leaf} to Media Manager`);
-    try { await importPrepared(); } catch { /* the file is already in the global folder */ }
+    noteGlobalSave({ name: leaf, path: output, source: job.audio ? 'audio' : 'user' });
     if (job.audio) noteAudioReady(output, job.play, leaf);
     else if (job.brand) noteBrandFile(leaf, output);
   } catch (err) {
@@ -337,6 +393,10 @@ function enqueue(name, path, file, ensureStockDir, showToast, options = {}) {
   rememberMediaSource(name, 'user');
   addJob(name, path, file, options);
   pump(ensureStockDir, showToast);
+}
+
+function enqueueImage(name, path, file, ensureStockDir, showToast, options = {}) {
+  enqueue(name, path, file, ensureStockDir, showToast, { ...options, image: true });
 }
 
 export function queueMediaPrep(name, path, file, options = {}) {
@@ -388,14 +448,19 @@ export function bindMediaPrep({ library, ensureStockDir, showToast }) {
     zone.classList.remove('over');
     const files = [...(event.dataTransfer?.files || [])];
     const videos = files.filter(isVideo);
+    const images = files.filter(isImage);
     const audio = files.filter(isAudio);
-    if (!videos.length && !audio.length) {
+    if (!videos.length && !images.length && !audio.length) {
       showToast('Drop a video, image, or audio file.', true);
       return;
     }
     for (const file of videos) {
       if (!allowDuplicate(file.name)) continue;
       enqueue(file.name, pathFromFile(file, event), file, ensureStockDir, showToast);
+    }
+    for (const file of images) {
+      if (!allowDuplicate(file.name)) continue;
+      enqueueImage(file.name, pathFromFile(file, event), file, ensureStockDir, showToast);
     }
     for (const file of audio) {
       if (!allowDuplicate(file.name)) continue;
@@ -419,7 +484,11 @@ async function chooseFiles(ensureStockDir, showToast) {
       title: 'Media to prepare',
       filters: [{
         name: 'Media',
-        extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpg', 'mpeg', 'mp3', 'wav', 'aiff', 'aif', 'm4a', 'ogg', 'flac'],
+        extensions: [
+          'mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mpg', 'mpeg',
+          'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif',
+          'mp3', 'wav', 'aiff', 'aif', 'm4a', 'ogg', 'flac',
+        ],
       }],
     });
     if (!picked) return;
@@ -428,18 +497,20 @@ async function chooseFiles(ensureStockDir, showToast) {
       const name = String(path).split(/[\\/]/).pop() || 'media';
       if (!allowDuplicate(name)) continue;
       if (AUDIO_EXT.test(name)) queueAudioPrep(name, path, null);
+      else if (IMAGE_EXT.test(name)) enqueueImage(name, path, null, ensureStockDir, showToast);
       else if (VIDEO_EXT.test(name)) enqueue(name, path, null, ensureStockDir, showToast);
     }
     return;
   }
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = 'video/*,audio/*,.mp4,.mov,.m4v,.mkv,.webm,.avi,.mpg,.mpeg,.mp3,.wav,.aiff,.aif,.m4a,.ogg,.flac';
+  input.accept = 'image/*,video/*,audio/*,.mp4,.mov,.m4v,.mkv,.webm,.avi,.mpg,.mpeg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.mp3,.wav,.aiff,.aif,.m4a,.ogg,.flac';
   input.multiple = true;
   input.addEventListener('change', () => {
     for (const file of input.files || []) {
       if (!allowDuplicate(file.name)) continue;
       if (isAudio(file)) queueAudioPrep(file.name, '', file);
+      else if (isImage(file)) enqueueImage(file.name, '', file, ensureStockDir, showToast);
       else if (isVideo(file)) enqueue(file.name, '', file, ensureStockDir, showToast);
     }
   });

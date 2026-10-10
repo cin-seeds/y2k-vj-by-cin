@@ -75,7 +75,7 @@ export const LAYER_DEFS = [
     options: PLAY_MODE_LABELS },
   { id: 'loopXfade', label: 'Loop Crossfade', group: 'video', min: 0, max: 1, step: 1, value: 0,
     options: ['Off', 'On'] },
-  { id: 'loopXfadeDur', label: 'Loop Crossfade Time', group: 'video', min: 0.1, max: 2, value: 0.4 },
+  { id: 'loopXfadeDur', label: 'Crossfade Time', group: 'video', min: 0.05, max: 3, step: 0.05, value: 0.4 },
 
   { id: 'entryStyle', label: 'Image Entry Style', group: 'image', min: 0, max: 3, step: 1, value: 1,
     options: ENTRY_STYLE_LABELS },
@@ -343,7 +343,7 @@ const PARAM_META = {
   blendInvert: { friendlyLabel: 'Invert Blend', description: 'Flips the blend result before it is mixed, so the composite comes through as its negative.', category: 'Mix & Composite', neutralValue: 0 },
   playMode: { friendlyLabel: 'Playback', description: 'Loop, play once and hold the last frame, or bounce back and forth.', category: 'Source & Playback', neutralValue: 0 },
   loopXfade: { friendlyLabel: 'Loop Crossfade', description: 'Blends the end of a clip into its start so the loop point does not cut.', category: 'Source & Playback', neutralValue: 0 },
-  loopXfadeDur: { friendlyLabel: 'Loop Crossfade Time', description: 'How long the loop point takes to dissolve, in seconds.', unit: 's', category: 'Motion & Timing', neutralValue: 0.4 },
+  loopXfadeDur: { friendlyLabel: 'Crossfade Time', description: 'How long the loop point takes to dissolve, in seconds. Longer is usually more seamless on long clips.', unit: 's', category: 'Source & Playback', neutralValue: 0.4 },
   entryStyle: { friendlyLabel: 'Image Entry', description: 'How a still image arrives: cut, fade, zoom dissolve, or a glitch flash.', category: 'Source & Playback', neutralValue: 0 },
   entryDur: { friendlyLabel: 'Entry Time', description: 'Length of the image entry animation, in seconds.', unit: 's', category: 'Source & Playback', neutralValue: 0.6 },
   mode: { friendlyLabel: 'Layer Shader', description: 'The look painted on this layer after the source and the transform. Clean is the picture with no extra effect.', category: 'Source & Playback', neutralValue: 7 },

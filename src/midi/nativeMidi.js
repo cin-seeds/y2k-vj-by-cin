@@ -1,6 +1,6 @@
 // Desktop MIDI via midir (Windows, macOS, Linux). Shaped like Web MIDI's
 // MIDIAccess so MidiManager can attach the same way it does in a browser.
-// Used when requestMIDIAccess is missing, throws, or returns no inputs.
+// Primary path in the Tauri app; Web MIDI is browser-only.
 
 import { IS_TAURI, invoke } from '../ipc.js';
 

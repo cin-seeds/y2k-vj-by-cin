@@ -25,10 +25,24 @@ export async function captureThumbnail(file) {
 export async function captureThumbnailFromSrc(src, name = '') {
   if (!src || typeof src !== 'string') return null;
   const leaf = String(name || src);
-  if (IMAGE_EXT.test(leaf) || /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(src)) {
-    return captureImageSrc(src);
+  const image = IMAGE_EXT.test(leaf) || /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(src);
+  // Prefer a blob: URL — convertFileSrc / asset protocol often fails in <video> until fetched.
+  let objectUrl = '';
+  try {
+    const res = await fetch(src);
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob.size) objectUrl = URL.createObjectURL(blob);
+    }
+  } catch { /* try the raw src below */ }
+  try {
+    const play = objectUrl || src;
+    if (image) return await captureImageSrc(play);
+    return await captureVideoSrc(play, objectUrl);
+  } finally {
+    // captureVideoSrc revokes when it owns the URL; only revoke here for images / failed video open.
+    if (objectUrl && image) URL.revokeObjectURL(objectUrl);
   }
-  return captureVideoSrc(src);
 }
 
 function fallbackThumb() {

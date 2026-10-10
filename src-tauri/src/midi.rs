@@ -1,6 +1,5 @@
-// midir on Windows, macOS (CoreMIDI), and Linux (ALSA). The webview tries
-// requestMIDIAccess first from a user gesture; this path is used when that
-// API is missing, fails, or lists no inputs.
+// midir on Windows, macOS (CoreMIDI), and Linux (ALSA). Primary MIDI path in
+// the desktop app (opened from a user gesture via Enable MIDI).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, Once, OnceLock};

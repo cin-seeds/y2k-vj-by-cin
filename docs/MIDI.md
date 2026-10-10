@@ -9,7 +9,9 @@ The Akai APC Mini MK2 works without any setup. Every other controller uses MIDI 
 1. Plug in the APC Mini MK2 with USB.
 2. Click **Perform** in the top bar.
 3. Pick **APC Mini mk2** in the hardware menu.
-4. Click **Enable MIDI**. The app remembers this for next time.
+4. Click **Enable MIDI**. MIDI only opens from that click (not on page load). The app remembers this for next time.
+
+The desktop app uses native MIDI (midir). macOS may not show a system permission dialog — clicking **Enable MIDI** is still required. In a browser, MIDI uses Web MIDI (Chrome or Edge).
 
 The app finds the APC by its port name, which must contain "APC" or "Akai". It listens on MIDI channel 1.
 
