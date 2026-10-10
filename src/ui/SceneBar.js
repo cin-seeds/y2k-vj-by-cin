@@ -142,6 +142,11 @@ export class SceneBar {
     return this.scenes.scenes.map((s) => s.id).join('\0');
   }
 
+  /** Public: MIDI learn / mapping chrome without wiping pad buttons mid-click. */
+  refreshPadChrome() {
+    this.#syncPadChrome();
+  }
+
   /** Update labels/colors/active without destroying pad buttons (keeps click handlers). */
   #syncPadChrome() {
     const scenes = this.scenes.scenes;
@@ -166,6 +171,13 @@ export class SceneBar {
     this.updateActive();
   }
 
+  /** Flush a rebuild deferred while a pad was pressed / dragging. */
+  #flushPadRender() {
+    if (!this._padNeedsRender || this._padArmed || this._padDragged) return;
+    this._padNeedsRender = false;
+    this.renderPads();
+  }
+
   #watchPadSpace() {
     this._slotCount = 0;
     this._layoutKey = '';
@@ -181,7 +193,10 @@ export class SceneBar {
     };
     const syncNow = () => {
       // Never wipe pads under an active press / HTML5 drag.
-      if (this._padArmed || this._padDragged) return;
+      if (this._padArmed || this._padDragged) {
+        this._padNeedsRender = true;
+        return;
+      }
       const { cols, rows, rowH } = this.#gridMetrics();
       const key = `${cols}x${rows}`;
       const next = this.#slotCount();
@@ -234,6 +249,12 @@ export class SceneBar {
   }
 
   renderPads() {
+    // Never replace buttons under an active press / HTML5 drag (click would die).
+    if (this._padArmed || this._padDragged) {
+      this._padNeedsRender = true;
+      return;
+    }
+    this._padNeedsRender = false;
     const scrollX = this.padsEl.scrollLeft;
     const scrollY = this.padsEl.scrollTop;
     this.padsEl.innerHTML = '';
@@ -313,15 +334,20 @@ export class SceneBar {
     pad.addEventListener('pointerup', (e) => {
       if (this._padArmed !== s.id) return;
       this._padArmed = null;
-      if (dragging || this._padDragMoved) return;
+      if (dragging || this._padDragMoved) {
+        this.#flushPadRender();
+        return;
+      }
       // Fallback when WKWebView suppresses click after a cancelled micro-drag.
       const shift = e.shiftKey;
       setTimeout(() => {
         if (!launched && !dragging && !this._padDragMoved) launch(shift);
+        this.#flushPadRender();
       }, 0);
     });
     pad.addEventListener('pointercancel', () => {
       if (this._padArmed === s.id) this._padArmed = null;
+      this.#flushPadRender();
     });
     pad.addEventListener('click', (e) => {
       if (dragging || this._padDragMoved) return;
@@ -367,6 +393,7 @@ export class SceneBar {
       setTimeout(() => {
         this._padDragged = false;
         this._padDragMoved = false;
+        this.#flushPadRender();
       }, 0);
     });
     this.padEls.set(s.id, pad);

@@ -6360,7 +6360,8 @@ midi.onMacroLearn = (index, key) => macros.bind(index, key);
 midi.onControl = (key, value) => macros.setValue(key, value);
 midi.onChange = () => {
   panel.refreshMidi();
-  sceneBar.renderPads();
+  // Chrome only — full renderPads would destroy buttons under a Live pad click.
+  sceneBar.refreshPadChrome();
   renderMomentary();
   renderMacros();
   paintLearn();
